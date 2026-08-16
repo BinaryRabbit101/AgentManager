@@ -64,7 +64,7 @@ better-sqlite3 with the specified pragmas, the data-root/library-root directory 
 
 ## 6. Secrets
 
-The `SecretStore` interface with the `dpapi` provider (win-dpapi, CurrentUser + app entropy, base64 envelope at `state/secrets/secrets.json`), automatic `keyfile` fallback (AES-256-GCM, ACL'd key, warning + degraded health flag), the `env` provider, the `Secret` wrapper type, and the `ANTHROPIC_API_KEY` startup warning.
+The `SecretStore` interface with the `dpapi` provider (`@primno/dpapi` — amended from `win-dpapi`, see DESIGN §3.1 — CurrentUser + app entropy, base64 envelope at `state/secrets/secrets.json`), automatic `keyfile` fallback (AES-256-GCM, ACL'd key, warning + degraded health flag), the `env` provider, the `Secret` wrapper type, and the `ANTHROPIC_API_KEY` startup warning.
 
 **Acceptance**
 - Round-trip set/get/delete/list works under `dpapi`; `list()` returns previews only.

@@ -40,6 +40,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@primno/dpapi": "^2.0.1",
     "better-sqlite3": "^13.0.3",
     "pino": "^9.14.0",
     "ulid": "^3.0.2",
