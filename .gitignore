@@ -11,6 +11,9 @@ coverage/
 .env.*
 *.local.json
 
+# Agent worktrees (created by Claude Code inside the repo directory)
+.claude/worktrees/
+
 # Editor / OS noise
 .DS_Store
 Thumbs.db

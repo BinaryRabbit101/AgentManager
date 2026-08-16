@@ -5,7 +5,7 @@ import prettier from 'eslint-config-prettier';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**', 'coverage/**'],
+    ignores: ['dist/**', 'node_modules/**', 'coverage/**', '.claude/**'],
   },
 
   js.configs.recommended,
@@ -32,7 +32,7 @@ export default tseslint.config(
 
   // Config files live outside tsconfig's `include`, so type-aware rules cannot apply.
   {
-    files: ['**/*.js', '**/*.mjs'],
+    files: ['**/*.js', '**/*.mjs', '*.config.ts'],
     extends: [tseslint.configs.disableTypeChecked],
   },
 

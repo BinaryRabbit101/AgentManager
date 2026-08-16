@@ -2,6 +2,7 @@ dist/
 node_modules/
 coverage/
 package-lock.json
+.claude/
 
 # Design docs are hand-formatted prose; Prettier is scoped to code and config.
 **/*.md
