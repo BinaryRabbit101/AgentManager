@@ -301,9 +301,11 @@ Three facts that a naive design gets wrong:
   `canUseTool`. Auto-approved calls never reach `canUseTool`.
 
 Consequence: **restriction is expressed with `deny`, never by omission from `allow`.** Roster's
-compiler therefore always emits an explicit deny set, and always installs a `canUseTool` callback
-that default-denies anything not covered by the effective allow set (the last line of defence, and
-the hook the runner's question bridge uses). `permissionMode: "bypassPermissions"` is **not
+compiler therefore always emits an explicit deny set, and specifies a default-deny `canUseTool`
+*policy*: anything not covered by the effective allow set is denied unless a human answers (the
+last line of defence). The callback itself is **installed by the runner** (runner DESIGN §5.1),
+which implements this policy and layers its question bridge on top — roster's compiler does not
+set the `canUseTool` field, and roster remains the sole composer of rules and modes. `permissionMode: "bypassPermissions"` is **not
 selectable** from the roster schema at all — the only way to get it would be a foundation-level
 config escape hatch, and v1 does not provide one.
 
@@ -727,7 +729,7 @@ Roughly:
 | Definition | SDK option |
 |---|---|
 | `persona` + role addendum + **project instructions** + runtime block | `systemPrompt` (§5, §4) |
-| `permissions` composed (§6) | `allowedTools`, `disallowedTools`, `permissionMode`, `settings.permissions` for `ask`, `canUseTool` default-deny |
+| `permissions` composed (§6) | `allowedTools`, `disallowedTools`, `permissionMode`, `settings.permissions` for `ask`, default-deny `canUseTool` policy (callback installed by runner) |
 | `skills` | `plugins: [{ type: "local", path: agentDir }]` + `skills` |
 | `settingSources` | `settingSources` |
 | `integrations` (+ resolved secrets) | `mcpServers` |

@@ -503,7 +503,10 @@ does not block. Blocking on overlap is deferred until real usage shows it is nee
   the worktree is removed.
 - **Refusals**: network/UNC path, repo mid-rebase/merge, or a dirty primary tree when the
   assignment requires a clean base — each returns a typed refusal with a reason string, not
-  a generic error.
+  a generic error. `WorkspaceRefusal` carries `retryable: boolean` (requested by runner
+  §15.4): `true` means the condition will clear on its own — e.g. another write-capable
+  assignment currently holds the primary tree — so the runner may queue and retry; `false`
+  means the configuration can never work as-is and the assignment fails immediately.
 - **Merge-back is manual in v1.** AgentManager never merges, pushes, or deletes a branch with
   unmerged commits. On release, a worktree with no commits beyond `baseCommit` and no
   uncommitted changes is removed automatically (`git worktree remove`, then

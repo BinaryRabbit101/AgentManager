@@ -29,8 +29,10 @@ the exact `@anthropic-ai/claude-agent-sdk` version being pinned:
 "confirmed / absent / differs" and a one-line note. `SDK-NOTES.md` additionally records the
 no-rule-matched behaviour of every `PermissionMode` member and verifies DESIGN §6.2's permissiveness
 ordering (`plan < dontAsk < default < acceptEdits`) against it — in particular that `dontAsk` never
-prompts *and* auto-rejects what is not allowed. Any DESIGN.md assumption contradicted here is raised
-as a design change, not silently coded around.
+prompts *and* auto-rejects what is not allowed. (Runner's design has since verified exactly this —
+`canUseTool` is skipped and the call denied in `dontAsk`; see runner DESIGN §15.4 — so M0 confirms
+against the pinned SDK version rather than re-deriving it.) Any DESIGN.md assumption contradicted
+here is raised as a design change, not silently coded around.
 
 ---
 

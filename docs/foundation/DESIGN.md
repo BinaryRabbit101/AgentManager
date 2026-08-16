@@ -236,12 +236,13 @@ export type SecretResolver = Pick<SecretStore, 'get'>;
 
 `SecretResolver` is the type every other element codes against — roster's `compileSession` takes one, projects' env resolution takes one — so no feature module holds a handle that can `set` or `delete`.
 
-Secret values are wrapped in a `Secret` type whose `toString`, `toJSON`, and `util.inspect` all return `[redacted]`, so an accidental log or API serialization leaks nothing. Only `.reveal()` yields the plaintext, and it is called in exactly two authorized places:
+Secret values are wrapped in a `Secret` type whose `toString`, `toJSON`, and `util.inspect` all return `[redacted]`, so an accidental log or API serialization leaks nothing. Only `.reveal()` yields the plaintext, and it is called in exactly three authorized places:
 
 1. **Roster's option compiler** (roster §13), building the agent child process's environment and MCP server configs — the one place `secretRef` values become real strings.
 2. **The remote module's bearer-token check**, comparing a hash.
+3. **Runner's `attachAuthEnv()`** (runner §3.4), injecting `claude.oauthToken` into the SDK child environment — one key, one function, consistent with §3.3's key assignment.
 
-Any third call site is a review failure, not a judgement call.
+Any fourth call site is a review failure, not a judgement call.
 
 ### 3.3 Key namespace (v1)
 
