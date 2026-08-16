@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "marcus-inbox",
+  "name": "Marcus",
+  "avatar": { "kind": "initials", "value": "MI", "color": "#7c5cff" },
+  "specialty": "email-response",
+  "tagline": "Answers the mail the way you would.",
+  "tags": ["email", "support"],
+  "persona": { "mode": "replace", "file": "persona.md" },
+  "model": { "primary": "sonnet" },
+  "permissions": {
+    "mode": "dontAsk",
+    "allow": ["mcp__gmail__read_*", "mcp__gmail__draft_*"],
+    "deny": ["Edit", "Write", "NotebookEdit", "Bash"],
+    "ask": ["mcp__gmail__send_*"]
+  },
+  "settingSources": [],
+  "skills": { "mode": "none" },
+  "integrations": {
+    "gmail": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@example/gmail-mcp"],
+      "env": {
+        "GMAIL_PROFILE": "work",
+        "GMAIL_TOKEN": { "secretRef": "mcp.gmail.token" }
+      },
+      "toolPrefixHint": "mcp__gmail__"
+    }
+  },
+  "capabilities": { "overseer": false, "roles": [] },
+  "defaults": { "maxTurns": 20, "maxBudgetUsd": 0.5 },
+  "meta": {
+    "createdAt": "2026-08-16T11:30:00.000Z",
+    "updatedAt": "2026-08-16T11:30:00.000Z",
+    "origin": "drafted",
+    "duplicatedFrom": null
+  }
+}

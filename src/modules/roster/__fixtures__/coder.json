@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "priya-bugfix",
+  "name": "Priya",
+  "avatar": { "kind": "emoji", "value": "🐛" },
+  "specialty": "bug-patching",
+  "tagline": "Reproduces first, then fixes.",
+  "tags": ["backend", "php"],
+  "persona": { "mode": "append", "file": "persona.md" },
+  "model": { "primary": "sonnet", "fallback": "haiku", "effort": "high" },
+  "permissions": {
+    "mode": "acceptEdits",
+    "allow": ["Read", "Glob", "Grep", "Edit", "Bash(npm run test:*)"],
+    "deny": ["Bash(rm *)", "Bash(git push*)", "WebFetch"],
+    "ask": ["Bash(git commit*)"]
+  },
+  "settingSources": ["project"],
+  "skills": { "mode": "declared", "names": ["triage-a-stack-trace"] },
+  "capabilities": { "overseer": false, "roles": ["implementer", "skeptic", "reviewer"] },
+  "defaults": { "maxTurns": 60, "maxBudgetUsd": 2.5, "concurrencyWeight": 1 },
+  "meta": {
+    "createdAt": "2026-08-16T10:00:00.000Z",
+    "updatedAt": "2026-08-16T10:00:00.000Z",
+    "origin": "seed",
+    "duplicatedFrom": null
+  }
+}

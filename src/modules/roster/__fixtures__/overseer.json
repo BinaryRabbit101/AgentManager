@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "iris-overseer",
+  "name": "Iris",
+  "avatar": { "kind": "emoji", "value": "🧭" },
+  "specialty": "overseer",
+  "tagline": "Splits the work, keeps the thread.",
+  "tags": ["coordination"],
+  "persona": { "mode": "append", "file": "persona.md" },
+  "model": { "primary": "opus", "fallback": "sonnet", "effort": "high" },
+  "permissions": {
+    "mode": "default",
+    "allow": ["Read", "Glob", "Grep", "mcp__agentmanager__*"],
+    "deny": ["Edit", "Write", "NotebookEdit", "Bash(git push*)"],
+    "ask": []
+  },
+  "settingSources": ["project"],
+  "skills": { "mode": "none" },
+  "capabilities": { "overseer": true, "roles": ["overseer", "reviewer"] },
+  "defaults": { "maxTurns": 200, "maxBudgetUsd": 10, "concurrencyWeight": 2 },
+  "meta": {
+    "createdAt": "2026-08-16T09:15:00.000Z",
+    "updatedAt": "2026-08-16T12:45:00.000Z",
+    "origin": "seed",
+    "duplicatedFrom": null
+  }
+}

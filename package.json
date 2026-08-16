@@ -42,6 +42,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.233",
     "@primno/dpapi": "^2.0.1",
     "better-sqlite3": "^13.0.3",
     "pino": "^9.14.0",

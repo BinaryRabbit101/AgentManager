@@ -307,7 +307,11 @@ last line of defence). The callback itself is **installed by the runner** (runne
 which implements this policy and layers its question bridge on top — roster's compiler does not
 set the `canUseTool` field, and roster remains the sole composer of rules and modes. `permissionMode: "bypassPermissions"` is **not
 selectable** from the roster schema at all — the only way to get it would be a foundation-level
-config escape hatch, and v1 does not provide one.
+config escape hatch, and v1 does not provide one. (Amended at M0: the pinned SDK's `PermissionMode`
+union carries a sixth member, `auto`, that this design never accounts for; the schema makes it
+unrepresentable exactly like `bypassPermissions`. See SDK-NOTES.md D1. SDK-NOTES.md D2–D4 record
+further options — `tools` as a restriction list, `managedSettings`, `disableBypassPermissionsMode` —
+left as explicit M4/M5 decisions.)
 
 ### 6.2 Composition
 
@@ -683,7 +687,7 @@ POST /api/roster/draft
 ### 12.2 What Claude generates
 
 One `query()` call, via the same Agent SDK and the same subscription auth as everything else — no
-second auth path, no second SDK dependency. It runs deliberately inert: `allowedTools: []`,
+second auth path, no second SDK dependency. It runs deliberately inert: `tools: []` (amended at M0: `allowedTools` is an auto-approve list, not a restriction list — `allowedTools: []` would leave every built-in tool defined and merely denied, burning turns on rejected calls; `tools: []` disables them, see SDK-NOTES.md D5),
 `settingSources: []`, `skills: []`, no MCP servers, `permissionMode: "dontAsk"`, a short
 `maxTurns`, and `systemPrompt` as a full replacement string (this is not a coding task; the Claude
 Code preset is pure overhead here). Model: `sonnet` by default — drafting is a small structured task

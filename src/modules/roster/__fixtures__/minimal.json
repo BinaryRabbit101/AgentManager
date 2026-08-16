@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "nils",
+  "name": "Nils",
+  "specialty": "general",
+  "meta": {
+    "createdAt": "2026-08-16T08:00:00.000Z",
+    "updatedAt": "2026-08-16T08:00:00.000Z",
+    "origin": "manual"
+  }
+}
