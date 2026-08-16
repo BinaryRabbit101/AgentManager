@@ -2,9 +2,11 @@
  * `openStorage` — the whole of DESIGN §1.2/§1.3 boot sequence in one call.
  *
  * Bootstrap the data root → open the database with the §1.3 pragmas →
- * `quick_check` → apply pending migrations behind a backup → seed
- * `schema_meta`. Storage is the first `critical` module (§6.2), so every step
- * here either succeeds or throws; nothing degrades quietly.
+ * `quick_check` → apply pending migrations behind a backup (foundation's core
+ * set first, then each module's, §1.3) → seed `schema_meta` → build the `Store`
+ * repositories of §1.4 → prune `events` to its retention (§1.4). Storage is the
+ * first `critical` module (§6.2), so every step here either succeeds or throws;
+ * nothing degrades quietly.
  *
  * It takes plain options rather than a `ModuleContext`: config (§2) and logging
  * (§5) are separate modules that the composition root (M7) wires together, and
@@ -18,29 +20,68 @@ import { newIdAt } from './ids.js';
 import { silentLog, type LogFn } from './log.js';
 import {
   FOUNDATION_SET_ID,
+  moduleMigrationSets,
   runMigrations,
   userVersionTracker,
   type AppliedMigration,
   type MigrationSet,
+  type ModuleMigrations,
 } from './migrations.js';
 import { defaultMigrationsDir, type DataRootPaths } from './paths.js';
+import { createStore, type Store } from './repositories/index.js';
+import type { EventRetention } from './repositories/events.js';
 import type { Database } from './sqlite.js';
 import { isoTimestamp, systemClock, type Clock } from './time.js';
+
+/**
+ * §1.4's "Retention: 30 days or 200k rows, pruned on boot", which is also
+ * §2.3's `retention.eventDays` / `retention.eventMaxRows` default pair.
+ *
+ * Restated here rather than imported from the config module because storage
+ * must open without config present (install scripts, tests); the composition
+ * root passes the configured values through.
+ */
+export const DEFAULT_EVENT_RETENTION: EventRetention = {
+  eventDays: 30,
+  eventMaxRows: 200_000,
+};
 
 export interface OpenStorageOptions extends Omit<BootstrapOptions, 'log'> {
   /** Foundation's numbered set. Defaults to the packaged `migrations/` directory. */
   readonly migrationsDir?: string;
+  /**
+   * Element-owned migration sets, **in module topological order** (§1.3).
+   *
+   * The order is the module system's to produce (M7); storage applies what it
+   * is given, after foundation's core set, and tracks each in
+   * `schema_migrations`.
+   */
+  readonly moduleMigrations?: readonly ModuleMigrations[];
+  /** `events` retention. Defaults to {@link DEFAULT_EVENT_RETENTION}. */
+  readonly retention?: EventRetention;
+  /** Skip the boot-time `events` prune. For tests that assert on it themselves. */
+  readonly pruneEvents?: boolean;
   readonly log?: LogFn;
   /** Injectable clock, so `schema_meta.created_at` is testable (§6.1). */
   readonly clock?: Clock;
 }
 
 export interface Storage {
-  /** The one open handle. Feature modules get repositories instead (§1.3, M5). */
+  /**
+   * The one open handle.
+   *
+   * Present for foundation's own use — the composition root, the migration
+   * runner, diagnostics. Feature modules receive {@link Storage.store} through
+   * `ctx.store` and never this (§1.3).
+   */
   readonly db: Database;
+  /** The typed repositories of §1.4 — this is `ctx.store`. */
+  readonly store: Store;
   readonly paths: DataRootPaths;
   /** `PRAGMA user_version` after migrations — foundation's schema version. */
   readonly schemaVersion: number;
+  /** Final version of every applied set, keyed by set id (`foundation`, module ids). */
+  readonly setVersions: Readonly<Record<string, number>>;
   /** Stable identifier for this installation, minted on first run. */
   readonly installId: string;
   /** Migrations applied by this boot. Empty on a re-run. */
@@ -124,9 +165,26 @@ export function openStorage(options: OpenStorageOptions): Storage {
       tracker: userVersionTracker(db),
     };
 
-    const result = runMigrations({ db, sets: [foundationSet], backup, log });
+    // Foundation's core set first, unconditionally: `schema_migrations` and
+    // every table a module might reference come from it.
+    const sets: MigrationSet[] = [
+      foundationSet,
+      ...moduleMigrationSets(db, options.moduleMigrations ?? [], clock),
+    ];
+
+    const result = runMigrations({ db, sets, backup, log });
     const schemaVersion = result.versions[FOUNDATION_SET_ID] ?? 0;
     const installId = seedSchemaMeta(db, schemaVersion, clock());
+
+    const store = createStore({ db, transcriptsRoot: paths.transcripts, clock });
+
+    if (options.pruneEvents !== false) {
+      const retention = options.retention ?? DEFAULT_EVENT_RETENTION;
+      const pruned = store.events.prune(retention, clock());
+      if (pruned.byAge + pruned.byCap > 0) {
+        log('info', 'pruned events to retention', { ...pruned, ...retention });
+      }
+    }
 
     log('info', 'storage ready', {
       dataRoot: paths.dataRoot,
@@ -136,8 +194,10 @@ export function openStorage(options: OpenStorageOptions): Storage {
 
     const base = {
       db,
+      store,
       paths,
       schemaVersion,
+      setVersions: result.versions,
       installId,
       applied: result.applied,
       newestBackup: () => newestBackup(paths.backups),

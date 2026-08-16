@@ -64,6 +64,48 @@ export class MigrationSetError extends StorageError {
   override readonly name = 'MigrationSetError';
 }
 
+/**
+ * A repository was asked to act on a row that is not there.
+ *
+ * Distinguished from a bare `undefined` return because the two mean different
+ * things: `get` returning `undefined` is an answer, while `update` on a missing
+ * id is a caller bug that would otherwise succeed silently as a zero-row UPDATE.
+ */
+export class RecordNotFoundError extends StorageError {
+  override readonly name = 'RecordNotFoundError';
+
+  constructor(
+    readonly table: string,
+    readonly id: string,
+  ) {
+    super(`No row in ${table} with id ${JSON.stringify(id)}`);
+  }
+}
+
+/**
+ * A delete was refused by an `ON DELETE RESTRICT` foreign key (§1.4).
+ *
+ * "Deleting a project with history is refused; archive instead." The database
+ * enforces it; this type is what makes the reason legible to the caller instead
+ * of arriving as a raw `SQLITE_CONSTRAINT_FOREIGNKEY`.
+ */
+export class RestrictedDeleteError extends StorageError {
+  override readonly name = 'RestrictedDeleteError';
+
+  constructor(
+    readonly table: string,
+    readonly id: string,
+    detail: string,
+    options?: { cause?: unknown },
+  ) {
+    super(
+      `Refusing to delete ${table} ${JSON.stringify(id)}: rows elsewhere still reference it (${detail}). ` +
+        'Archive it instead — history is deliberately protected by ON DELETE RESTRICT (DESIGN §1.4).',
+      options,
+    );
+  }
+}
+
 /** Something tried to open a database file this process already holds open (§1.3). */
 export class DatabaseAlreadyOpenError extends StorageError {
   override readonly name = 'DatabaseAlreadyOpenError';

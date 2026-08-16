@@ -20,12 +20,13 @@
  * migration, the pre-run backup, forward-only, fatal-with-rollback — is already
  * shared and needs no change.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { MigrationError, MigrationSetError, describeError } from './errors.js';
 import { silentLog, type LogFn } from './log.js';
 import type { Database } from './sqlite.js';
+import { isoTimestamp, systemClock, type Clock } from './time.js';
 
 /** `NNNN_<name>.sql`, at least four digits so the set sorts as text and as a number. */
 const MIGRATION_PATTERN = /^(\d{4,})_([A-Za-z0-9][A-Za-z0-9._-]*)\.sql$/;
@@ -81,6 +82,98 @@ export function userVersionTracker(db: Database): MigrationTracker {
       db.pragma(`user_version = ${migration.version}`);
     },
   };
+}
+
+/**
+ * Tracks one module's set in `schema_migrations` (§1.3).
+ *
+ * "Module migrations are tracked per module in `schema_migrations(module TEXT,
+ * version INTEGER, applied_at TEXT, PRIMARY KEY (module, version))`.
+ * `user_version` stays reserved for foundation's own set; the two mechanisms
+ * never contend."
+ *
+ * A row per applied migration rather than a single high-water row: the ledger
+ * then answers "when did this module's 0003 land", which is the question asked
+ * when a module misbehaves after an upgrade, and it is written inside the
+ * migration's own transaction so the row and the schema it describes commit
+ * together.
+ *
+ * The table is created by foundation's `0001_init.sql`, which always runs
+ * first, so a module's very first migration has somewhere to be recorded.
+ */
+export function schemaMigrationsTracker(
+  db: Database,
+  moduleId: string,
+  clock: Clock = systemClock,
+): MigrationTracker {
+  return {
+    current: () =>
+      db
+        .prepare<[string], { version: number | null }>(
+          'SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?',
+        )
+        .get(moduleId)?.version ?? 0,
+    record: (migration) => {
+      db.prepare<[string, number, string]>(
+        'INSERT INTO schema_migrations (module, version, applied_at) VALUES (?, ?, ?)',
+      ).run(moduleId, migration.version, isoTimestamp(clock()));
+    },
+  };
+}
+
+/** One module's shipped migration directory: `migrations/<moduleId>/`. */
+export interface ModuleMigrations {
+  /** The module id, exactly as `Module.id` and `dependsOn` spell it. */
+  readonly moduleId: string;
+  /** Absolute path to `migrations/<moduleId>/`. */
+  readonly dir: string;
+}
+
+/**
+ * Turns an **already topologically ordered** module list into migration sets.
+ *
+ * §1.3: module sets are applied "in module topological order — the same order
+ * `dependsOn` produces at start-up, so a module's tables exist before any
+ * module that depends on it runs". The ordering itself is the module system's
+ * (M7): it owns `dependsOn` and the cycle detection, and duplicating a
+ * topological sort here would give the project two answers to the same
+ * question. This function preserves the order it is given and does not sort.
+ *
+ * Modules with no `migrations/<moduleId>/` directory are skipped rather than
+ * failing: shipping migrations is optional, and most modules have no tables.
+ */
+export function moduleMigrationSets(
+  db: Database,
+  modules: readonly ModuleMigrations[],
+  clock: Clock = systemClock,
+): readonly MigrationSet[] {
+  const seen = new Set<string>();
+  const sets: MigrationSet[] = [];
+
+  for (const module of modules) {
+    if (module.moduleId === FOUNDATION_SET_ID) {
+      throw new MigrationSetError(
+        `A module may not use the reserved set id "${FOUNDATION_SET_ID}": ` +
+          "`user_version` tracks foundation's own set and the two must not contend (§1.3).",
+      );
+    }
+    if (seen.has(module.moduleId)) {
+      throw new MigrationSetError(
+        `Module "${module.moduleId}" appears twice in the migration order; ` +
+          'each module contributes exactly one set.',
+      );
+    }
+    seen.add(module.moduleId);
+
+    if (!existsSync(module.dir)) continue;
+    sets.push({
+      id: module.moduleId,
+      dir: module.dir,
+      tracker: schemaMigrationsTracker(db, module.moduleId, clock),
+    });
+  }
+
+  return sets;
 }
 
 /**

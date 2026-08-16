@@ -1,12 +1,96 @@
 /**
- * Storage — the SQLite engine, the data-root tree, and the migration runner.
+ * Storage — the SQLite engine, the data-root tree, the migration runner, the
+ * core schema's typed repositories, and the transcript writer.
  *
- * Foundation milestone M4 (DESIGN §1.2, §1.3). The core schema and the typed
- * repositories of §1.4 are M5 and land on top of this; module registration and
- * the wiring to config and logging are M7. Everything here takes plain options,
- * so nothing in `src/storage/` imports another module.
+ * Foundation milestones M4 (DESIGN §1.2, §1.3) and M5 (§1.4, §1.5). Module
+ * registration and the wiring to config and logging are M7. Everything here
+ * takes plain options, so nothing in `src/storage/` imports another module.
+ *
+ * The headline of M5 is {@link Store}: `ctx.store` is this object, and every
+ * other element codes against the repositories hanging off it rather than
+ * against SQL.
  */
-export { openStorage, type OpenStorageOptions, type Storage } from './storage.js';
+export {
+  openStorage,
+  DEFAULT_EVENT_RETENTION,
+  type OpenStorageOptions,
+  type Storage,
+} from './storage.js';
+
+export { createStore, type CreateStoreOptions, type Store } from './repositories/index.js';
+export type {
+  AgentInput,
+  AgentRecord,
+  AgentsRepository,
+  AnswerInput,
+  AnsweredVia,
+  AssignmentInput,
+  AssignmentMember,
+  AssignmentMemberInput,
+  AssignmentPattern,
+  AssignmentRecord,
+  AssignmentRole,
+  AssignmentStatus,
+  AssignmentsRepository,
+  EventInput,
+  EventPruneResult,
+  EventQuery,
+  EventRecord,
+  EventRetention,
+  EventsRepository,
+  ListAgentsOptions,
+  ListAssignmentsOptions,
+  ListProjectsOptions,
+  ListSessionsFilter,
+  MailboxOptions,
+  MessageInput,
+  MessageRecord,
+  MessagesRepository,
+  ProjectInput,
+  ProjectPatch,
+  ProjectRecord,
+  ProjectsRepository,
+  QuestionInput,
+  QuestionKind,
+  QuestionRecommendation,
+  QuestionRecord,
+  QuestionStatus,
+  QuestionsRepository,
+  RecommendationInput,
+  RemoteTokenInput,
+  RemoteTokenRecord,
+  RemoteTokensRepository,
+  SessionInput,
+  SessionOrigin,
+  SessionPatch,
+  SessionRecord,
+  SessionStatus,
+  SessionsRepository,
+  SettingRecord,
+  SettingsRepository,
+  UsageDelta,
+  UsageEvent,
+  UsageRepository,
+  UsageTotals,
+} from './repositories/index.js';
+
+export {
+  createTranscriptStore,
+  transcriptRelativePath,
+  DEFAULT_FSYNC_EVERY_LINES,
+  DEFAULT_FSYNC_INTERVAL_MS,
+  TRANSCRIPT_EXTENSION,
+  type TranscriptEntry,
+  type TranscriptPrunedReason,
+  type TranscriptStore,
+  type TranscriptStoreOptions,
+  type TranscriptTail,
+  type TranscriptTailOk,
+  type TranscriptTailOptions,
+  type TranscriptTailPruned,
+  type TranscriptWriter,
+  type TranscriptWriterOptions,
+} from './transcripts.js';
 
 export { bootstrapDataRoot, type BootstrapOptions, type BootstrapResult } from './bootstrap.js';
 export {
@@ -29,7 +113,9 @@ export {
 
 export {
   discoverMigrations,
+  moduleMigrationSets,
   runMigrations,
+  schemaMigrationsTracker,
   userVersionTracker,
   FOUNDATION_SET_ID,
   type AppliedMigration,
@@ -38,6 +124,7 @@ export {
   type MigrationRunResult,
   type MigrationSet,
   type MigrationTracker,
+  type ModuleMigrations,
   type RunMigrationsOptions,
 } from './migrations.js';
 
@@ -64,6 +151,8 @@ export {
   DatabaseIntegrityError,
   MigrationError,
   MigrationSetError,
+  RecordNotFoundError,
+  RestrictedDeleteError,
   StorageError,
 } from './errors.js';
 
