@@ -96,6 +96,8 @@ Foundation ships only the core set (§1.4). Every other table belongs to the ele
 
 This is the mechanism by which `agent_ui_state` (roster), `project_default_agents` / `work_items` / `work_item_assignments` / `workspace_leases` (projects) and their successors reach the database without foundation having to know about them.
 
+*Amended at projects M1*: `ModuleContext` deliberately exposes no raw `db`, but a module needs SQL access to its **own** element tables. The sanctioned v1 pattern is the one the composition root already uses for foundation modules: the module's factory takes the storage handle from `main.ts` (`createProjectsModule(storage: () => Storage)`), and its use is scoped by review to the module's own tables — foreign tables stay behind `ctx.store` repositories. A first-class `ModuleContext` accessor (e.g. a per-module database view) is a candidate refinement once more elements exercise the pattern.
+
 ### 1.4 Core table inventory (v1)
 
 Foundation ships these tables in `0001_init.sql` because more than one element touches them. Column lists are the minimum contract; owning elements may add columns via later migrations.

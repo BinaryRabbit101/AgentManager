@@ -185,8 +185,9 @@ describe('boot', () => {
 
     expect(service.config.edition).toBe('work');
     expect(service.paths.dataRoot).toBe(resolve(dataRoot));
-    // §6.2's list order: `[storage, secrets, http, …]`.
-    expect(service.runtime.order).toEqual(['storage', 'secrets', 'http']);
+    // §6.2's list order: `[storage, secrets, http, roster, projects, runner]`,
+    // as far as the elements that exist.
+    expect(service.runtime.order).toEqual(['storage', 'secrets', 'http', 'projects']);
     expect(service.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(service.storage.schemaVersion).toBeGreaterThanOrEqual(1);
     expect(existsSync(join(dataRoot, 'state', 'agentmanager.db'))).toBe(true);
@@ -206,8 +207,19 @@ describe('boot', () => {
 
     const health = await service.health();
     expect(health.status).toBe('ok');
-    expect(health.modules.map((module) => module.id)).toEqual(['storage', 'secrets', 'http']);
-    expect(health.modules.every((module) => module.critical)).toBe(true);
+    expect(health.modules.map((module) => module.id)).toEqual([
+      'storage',
+      'secrets',
+      'http',
+      'projects',
+    ]);
+    // §6.2 names exactly these as critical; a feature module that fails must
+    // leave the service reachable rather than end the process.
+    expect(health.modules.filter((module) => module.critical).map((module) => module.id)).toEqual([
+      'storage',
+      'secrets',
+      'http',
+    ]);
 
     await service.shutdown();
     booted = [];
@@ -390,13 +402,21 @@ describe('boot', () => {
     const service = await bootTest({
       additionalModules: [
         { id: 'roster', dependsOn: ['storage'], init: () => ({}) },
-        { id: 'projects', dependsOn: ['roster'], init: () => ({}) },
+        { id: 'runner', dependsOn: ['roster'], init: () => ({}) },
       ],
     });
 
-    expect(service.runtime.order).toEqual(['storage', 'secrets', 'http', 'roster', 'projects']);
-    // No module ships migrations yet, so nothing beyond foundation's set ran.
-    expect(Object.keys(service.storage.setVersions)).toEqual(['foundation']);
+    expect(service.runtime.order).toEqual([
+      'storage',
+      'secrets',
+      'http',
+      'projects',
+      'roster',
+      'runner',
+    ]);
+    // Foundation's set first, then every module that actually ships one — which
+    // in this build is `projects` alone (the two fixtures have no directory).
+    expect(Object.keys(service.storage.setVersions)).toEqual(['foundation', 'projects']);
   });
 });
 

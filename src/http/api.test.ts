@@ -171,6 +171,7 @@ describe('api/health', () => {
       'storage',
       'secrets',
       'http',
+      'projects',
       'orchestrator',
     ]);
 
@@ -492,8 +493,12 @@ describe('the route table', () => {
     // §6.4's inventory: "/healthz, /api/health, /api/config/effective,
     // /api/logs*, /api/service/shutdown, /api/events […] and the static SPA
     // route". Pinned so a route cannot appear or vanish unremarked.
+    // Filtered to `http`'s own: feature modules register on the same table
+    // (§6.4), and this assertion is about foundation's surface, not theirs.
     expect(
-      booted.runtime.routes.routes.map((route) => `${route.method} ${route.path} ${route.remote}`),
+      booted.runtime.routes
+        .byModule('http')
+        .map((route) => `${route.method} ${route.path} ${route.remote}`),
     ).toEqual([
       'GET /healthz allow',
       'GET /api/health allow',

@@ -34,6 +34,7 @@ import {
   type HttpService,
 } from './http/index.js';
 import { createLogging, type Logging } from './logging/index.js';
+import { createProjectsModule } from './modules/projects/index.js';
 import {
   createSecretStore,
   warnOnAnthropicApiKeyOverride,
@@ -309,6 +310,7 @@ async function buildModuleList(options: {
     createStorageModule(options.storage),
     createSecretsModule({ get: options.secrets, conditions: options.secretConditions }),
     createHttpModule(options.http),
+    createProjectsModule(options.storage),
   ];
 
   if (config.edition === 'home' && config.modules.remote.enabled) {
