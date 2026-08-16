@@ -15,7 +15,10 @@
  *   `openStorage` directly, because the migration *order* comes from the module
  *   graph (foundation §1.3);
  * - M2's two routes, including that a refusal arrives as a typed JSON error
- *   rather than a stack.
+ *   rather than a stack;
+ * - M6's startup orphan reconciliation, which is a *boot task* — it only runs
+ *   because the module registered it, and only in the right phase because
+ *   foundation orders it before the listener binds (foundation §4.2).
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -25,6 +28,7 @@ import { boot, type BootOptions, type BootedService } from '../../main.js';
 
 import { PROJECTS_MODULE_ID, PROJECTS_SERVICE } from './module.js';
 import type { ProjectsService } from './service.js';
+import { isWorkspaceRefusal } from './types.js';
 import { makeDir, makeTempDir, repoRoot, type TempDir } from './__tests__/helpers.js';
 
 let dataRootDir: TempDir;
@@ -98,7 +102,13 @@ describe('module registration', () => {
     );
 
     expect(mine.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
+      'GET /api/projects',
+      'GET /api/projects/:id',
+      'GET /api/projects/:id/health',
+      'GET /api/projects/:id/workspaces',
+      'PATCH /api/projects/:id',
       'POST /api/projects',
+      'POST /api/projects/:id/workspaces/:leaseId/cleanup',
       'POST /api/projects/inspect',
     ]);
     // Quick-add has to work from the tailnet browser too (D3).
@@ -288,5 +298,48 @@ describe('POST /api/projects', () => {
     const second = await bootCore();
     const projects = second.runtime.registry.require<ProjectsService>(PROJECTS_SERVICE);
     expect(projects?.repository.get(created.body.id)?.localPath).toBe(folder);
+  });
+});
+
+describe('the workspace boot task (M6, DESIGN §4.4)', () => {
+  it('orphans a lease left active by a previous run and surfaces it in health', async () => {
+    const first = await bootCore();
+    const folder = makeDir(workspaceDir.path, 'Interrupted');
+    const created = await post<{ id: string }>('/api/projects', { localPath: folder });
+    const projects = first.runtime.registry.require<ProjectsService>(PROJECTS_SERVICE);
+    if (projects === undefined) throw new Error('the projects service is not published');
+
+    const lease = await projects.acquireWorkspace(created.body.id, 'assignment-1', { write: true });
+    if (isWorkspaceRefusal(lease)) throw new Error('the primary tree was refused');
+    expect(lease.state).toBe('active');
+
+    // "Killing the service mid-assignment": shutdown leaves the lease `active`,
+    // because nothing released it.
+    await first.shutdown();
+    service = undefined;
+
+    const second = await bootCore();
+    const restarted = second.runtime.registry.require<ProjectsService>(PROJECTS_SERVICE);
+    if (restarted === undefined) throw new Error('the projects service is not published');
+
+    // The boot task ran before the listener bound, so by the time anything can
+    // ask, last run's lease is already orphaned rather than still holding the
+    // primary tree.
+    const workspaces = await restarted.listWorkspaces(created.body.id);
+    expect(workspaces.map((entry) => entry.state)).toEqual(['orphaned']);
+    expect(
+      restarted.health(created.body.id).conditions.map((condition) => condition.code),
+    ).toContain('orphaned-worktrees');
+
+    // And the tree is free again: the same assignment re-acquires, without a
+    // second active lease for the pair.
+    const again = await restarted.acquireWorkspace(created.body.id, 'assignment-1', {
+      write: true,
+    });
+    if (isWorkspaceRefusal(again)) throw new Error('re-acquisition was refused');
+    expect(again.state).toBe('active');
+    expect(
+      (await restarted.listWorkspaces(created.body.id)).filter((entry) => entry.state === 'active'),
+    ).toHaveLength(1);
   });
 });

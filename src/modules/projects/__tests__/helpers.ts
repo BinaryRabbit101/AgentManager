@@ -20,7 +20,11 @@ import { createEventBus } from '../../bus.js';
 import type { AppEvent, EventBus } from '../../types.js';
 import { createProjectsService, type ProjectsService } from '../service.js';
 import { createProjectRepository, type ProjectRepository } from '../repository.js';
-import type { GitResult, GitRunner } from '../git.js';
+import { createGitRunner, type GitResult, type GitRunner } from '../git.js';
+import { createWorkspaceLeaseRepository, type WorkspaceLeaseRepository } from '../leases.js';
+import { createKeyedMutex } from '../mutex.js';
+import { createWorkspaceService, type WorkspaceService } from '../workspaces.js';
+import type { CommandResult, CommandRunner } from '../worktree.js';
 import { BUILT_IN_RETENTION_DEFAULTS } from '../types.js';
 
 /** The repository root, which also holds the shipped `migrations/` tree. */
@@ -89,9 +93,30 @@ export function recordingBus(events?: EventsRepository): { bus: EventBus; emitte
 export interface TestHarness {
   readonly storage: Storage;
   readonly repository: ProjectRepository;
+  readonly leases: WorkspaceLeaseRepository;
+  readonly workspaces: WorkspaceService;
   readonly service: ProjectsService;
   readonly events: AppEvent[];
   readonly dataRoot: string;
+  readonly worktreesRoot: string;
+}
+
+/** A command runner that records what it was asked to run and always succeeds. */
+export function recordingCommandRunner(
+  answer: (command: string) => CommandResult = () => ({ ok: true, stdout: '', stderr: '' }),
+): CommandRunner & {
+  readonly calls: { command: string; cwd: string; env: Record<string, string> }[];
+} {
+  const calls: { command: string; cwd: string; env: Record<string, string> }[] = [];
+  const runner = (
+    command: string,
+    cwd: string,
+    env: Readonly<Record<string, string>>,
+  ): Promise<CommandResult> => {
+    calls.push({ command, cwd, env: { ...env } });
+    return Promise.resolve(answer(command));
+  };
+  return Object.assign(runner, { calls });
 }
 
 /**
@@ -103,23 +128,80 @@ export function makeHarness(options: {
   readonly dataRoot: string;
   readonly git?: GitRunner;
   readonly probeWritable?: (directory: string) => string | undefined;
+  /** Defaults to `<dataRoot>\worktrees`, which is where foundation puts it. */
+  readonly worktreesRoot?: string;
+  readonly runCommand?: CommandRunner;
+  readonly longPaths?: () => boolean | undefined;
+  readonly allowPermissionElevation?: boolean;
+  /** §1.2's lazy drop; absent means "the roster knows every id". */
+  readonly knownAgent?: (agentId: string) => boolean;
+  readonly readInstructions?: (absolutePath: string) => string | undefined;
+  /** Receives what the module would log — the one-time long-path warning included. */
+  readonly onLog?: (level: 'info' | 'warn', message: string) => void;
 }): TestHarness {
   const storage = openTestStorage(options.dataRoot);
+  const clock = (): Date => new Date('2026-08-16T10:00:00.000Z');
   const repository = createProjectRepository({
     db: storage.db,
     projects: storage.store.projects,
     retentionDefaults: BUILT_IN_RETENTION_DEFAULTS,
-    clock: () => new Date('2026-08-16T10:00:00.000Z'),
+    clock,
+    ...(options.knownAgent === undefined ? {} : { knownAgent: options.knownAgent }),
   });
   const { bus, emitted } = recordingBus(storage.store.events);
+  const git = options.git ?? createGitRunner();
+  const worktreesRoot = options.worktreesRoot ?? storage.paths.worktrees;
+  const leases = createWorkspaceLeaseRepository(storage.db, clock);
+  const workspaces = createWorkspaceService({
+    projects: repository,
+    leases,
+    mutex: createKeyedMutex(),
+    bus,
+    clock,
+    worktreesRoot,
+    git,
+    runCommand: options.runCommand ?? recordingCommandRunner(),
+    // Tests never ask the real registry: the answer would differ per machine.
+    longPaths: options.longPaths ?? ((): boolean | undefined => true),
+    // Backoff is real behaviour, but a test must not spend seconds proving it.
+    removeDirectory: { attempts: 3, initialDelayMs: 1 },
+    ...(options.onLog === undefined
+      ? {}
+      : {
+          log: (level: 'info' | 'warn', message: string): void => {
+            options.onLog?.(level, message);
+          },
+        }),
+  });
   const service = createProjectsService({
     repository,
+    workspaces,
     bus,
     dataRoot: options.dataRoot,
-    ...(options.git === undefined ? {} : { git: options.git }),
+    git,
+    ...(options.allowPermissionElevation === undefined
+      ? {}
+      : { allowPermissionElevation: options.allowPermissionElevation }),
     ...(options.probeWritable === undefined ? {} : { probeWritable: options.probeWritable }),
+    ...(options.readInstructions === undefined
+      ? {}
+      : { readInstructions: options.readInstructions }),
   });
-  return { storage, repository, service, events: emitted, dataRoot: options.dataRoot };
+  return {
+    storage,
+    repository,
+    leases,
+    workspaces,
+    service,
+    events: emitted,
+    dataRoot: options.dataRoot,
+    worktreesRoot,
+  };
+}
+
+/** A real `git` runner, for the M6 tests that need an actual repository. */
+export function realGit(): GitRunner {
+  return createGitRunner();
 }
 
 /** Creates a directory, parents included, and returns it. */

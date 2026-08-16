@@ -111,8 +111,19 @@ export interface ProjectRepository {
   delete(id: string): boolean;
   /** The first free slug in the `app`, `app-2`, `app-3` series (§1.1). */
   allocateSlug(name: string): string;
-  /** The ordered default-agent list (§1.2), read from `project_default_agents`. */
+  /**
+   * The ordered default-agent list (§1.2), read from `project_default_agents`
+   * with ids the roster no longer knows dropped (§1.2's "lazily on read").
+   */
   defaultAgents(projectId: string): readonly string[];
+  /**
+   * The ids `defaultAgents` just dropped — agents deleted from the roster.
+   *
+   * Rows are kept rather than deleted: the drop is a *read* rule, and a project
+   * whose health payload says "one of your default agents is gone" is more use
+   * than one that silently forgot which (§2.3's `stale-agents`).
+   */
+  danglingDefaultAgents(projectId: string): readonly string[];
   /** Replaces the whole ordered list. Duplicates collapse, order is preserved. */
   setDefaultAgents(projectId: string, agentIds: readonly string[]): void;
 }
@@ -131,6 +142,16 @@ export interface ProjectRepositoryOptions {
   readonly clock: Clock;
   /** Told about anything a stored blob had to discard; the module logs it. */
   readonly onWarning?: (projectId: string, message: string) => void;
+  /**
+   * Whether the roster still knows an agent id (§1.2's lazy drop).
+   *
+   * The module backs this with foundation's `agents` index — the rebuildable
+   * projection roster pushes into (foundation §1.4) — rather than with roster's
+   * own registry, because a feature module never imports another feature module
+   * and the index is the sanctioned cross-element read path. Absent means "trust
+   * every id", which is what the M1/M2 tests and any caller with no roster want.
+   */
+  readonly knownAgent?: (agentId: string) => boolean;
 }
 
 interface DefaultAgentRow {
@@ -165,6 +186,18 @@ export function createProjectRepository(options: ProjectRepositoryOptions): Proj
     }
   });
 
+  const knownAgent = options.knownAgent ?? ((): boolean => true);
+
+  /** The stored list, split into the ids the roster still knows and the rest. */
+  function partitionAgents(projectId: string): { known: string[]; dangling: string[] } {
+    const known: string[] = [];
+    const dangling: string[] = [];
+    for (const row of selectAgents.all(projectId)) {
+      (knownAgent(row.agent_id) ? known : dangling).push(row.agent_id);
+    }
+    return { known, dangling };
+  }
+
   function warningsFor(projectId: string): ParseWarning | undefined {
     const sink = options.onWarning;
     return sink === undefined ? undefined : (message): void => sink(projectId, message);
@@ -174,7 +207,9 @@ export function createProjectRepository(options: ProjectRepositoryOptions): Proj
   function toProject(record: ProjectRecord): Project {
     const warn = warningsFor(record.id);
     const defaults = parseProjectDefaults(record.defaultsJson, warn);
-    const agentIds = selectAgents.all(record.id).map((row) => row.agent_id);
+    // §1.2: "A dangling `agent_id` (agent deleted from the roster) is dropped
+    // lazily on read and reported once in the project's health payload."
+    const agentIds = partitionAgents(record.id).known;
 
     return {
       id: record.id,
@@ -293,7 +328,9 @@ export function createProjectRepository(options: ProjectRepositoryOptions): Proj
     allocateSlug: (name) =>
       dedupeSlug(name, (candidate) => projects.getBySlug(candidate) !== undefined),
 
-    defaultAgents: (projectId) => selectAgents.all(projectId).map((row) => row.agent_id),
+    defaultAgents: (projectId) => partitionAgents(projectId).known,
+
+    danglingDefaultAgents: (projectId) => partitionAgents(projectId).dangling,
 
     setDefaultAgents: (projectId, agentIds) => {
       replaceAgents(projectId, agentIds);

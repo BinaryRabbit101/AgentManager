@@ -2,11 +2,15 @@
  * The projects element — the registry of the things agents get pointed at.
  *
  * Milestones landed here: **M1** (schema, path identity, slug generation, the
- * typed repository, module registration) and **M2** (register an existing
- * folder: inspect + create). M3's clone flow, M4's defaults and launch context,
- * M5's activity timeline, M6's workspace leases and the rest of
- * `docs/projects/IMPLEMENTATION.md` are deliberately not here — the tables they
- * need exist (`migrations/projects/0001_registry.sql`), the code does not.
+ * typed repository, module registration), **M2** (register an existing folder:
+ * inspect + create), **M4** (defaults, permission override storage, environment
+ * entries and the launch-context call) and **M6** (workspace leases: the primary
+ * tree, git worktrees, orphan reconciliation).
+ *
+ * M3's clone flow, M5's activity timeline and retention, M7's scope rewriting,
+ * M8's work items and M9's lifecycle/browse endpoint are deliberately not here —
+ * the tables they need exist (`migrations/projects/0001_registry.sql`), the code
+ * does not.
  */
 export {
   createProjectsModule,
@@ -25,10 +29,75 @@ export {
 export {
   createProjectRepository,
   type CreateProjectInput,
+  type ListProjectsOptions,
   type ProjectRepository,
   type ProjectRepositoryOptions,
   type UpdateProjectPatch,
 } from './repository.js';
+
+export {
+  createWorkspaceService,
+  type AcquireWorkspaceOptions,
+  type OrphanReconciliation,
+  type ReleaseWorkspaceOptions,
+  type WorkspaceReleaseResult,
+  type WorkspaceService,
+  type WorkspaceServiceOptions,
+} from './workspaces.js';
+
+export {
+  createWorkspaceLeaseRepository,
+  type CreateLeaseInput,
+  type WorkspaceLeaseRepository,
+} from './leases.js';
+
+export { createKeyedMutex, type KeyedMutex, type Release } from './mutex.js';
+
+export {
+  addWorktree,
+  commitsSince,
+  createCommandRunner,
+  deleteBranch,
+  headCommit,
+  isDirty,
+  pruneWorktrees,
+  readLongPathsEnabled,
+  removeDirectoryWithRetry,
+  removeWorktree,
+  repositoryBusyReason,
+  shortAssignmentId,
+  worktreeNaming,
+  worktreePathBudget,
+  MAX_PATH,
+  SHORT_ASSIGNMENT_ID_LENGTH,
+  WORKTREE_PATH_HEADROOM,
+  type CommandResult,
+  type CommandRunner,
+  type LongPathProbe,
+  type PathBudget,
+  type RemoveDirectoryOptions,
+  type RemoveDirectoryResult,
+  type WorktreeNaming,
+} from './worktree.js';
+
+export {
+  getEffectiveLaunchContext,
+  readInstructionsFile,
+  resolveInstructionsPath,
+  type LaunchContextDeps,
+} from './launchContext.js';
+
+export {
+  mergeDefaults,
+  readAgentIds,
+  readEnvEntries,
+  readInstructionsPath,
+  readPermissionElevation,
+  readPermissionOverride,
+  readProjectPatch,
+  FORBIDDEN_ENV_NAMES,
+  type ProjectPatchRequest,
+} from './settings.js';
 
 export {
   inspectLocalPath,
@@ -82,36 +151,58 @@ export {
 
 export {
   DuplicateProjectError,
+  ForbiddenEnvNameError,
   GitWorktreePathError,
   InvalidPathError,
   InvalidRequestError,
+  MissingElevationReasonError,
   NestedProjectError,
   PathInDataRootError,
   PathNotDirectoryError,
   PathNotFoundError,
   PathNotWritableError,
+  ProjectNotFoundError,
+  ProjectNotLaunchableError,
   ProjectsError,
   SlugExhaustedError,
+  WorkspaceLeaseNotFoundError,
+  WorkspaceNotLeasedError,
   type NestingRelation,
 } from './errors.js';
 
 export {
   isProjectStatus,
   isVcs,
+  isWorkspaceKind,
+  isWorkspaceLeaseState,
   isWorkspacePolicy,
+  isWorkspaceRefusal,
   BUILT_IN_RETENTION_DEFAULTS,
   PROJECT_STATUSES,
   VCS_KINDS,
+  WORKSPACE_KINDS,
+  WORKSPACE_LEASE_STATES,
   WORKSPACE_POLICIES,
+  type AcquireWorkspaceResult,
   type EnvEntry,
+  type LaunchContext,
   type PermissionElevation,
   type PermissionOverride,
   type Project,
   type ProjectDefaults,
+  type ProjectHealth,
+  type ProjectHealthCondition,
   type ProjectId,
   type ProjectStatus,
   type RetentionDefaults,
   type RetentionSettings,
   type Vcs,
+  type WorkspaceKind,
+  type WorkspaceLease,
+  type WorkspaceLeaseState,
+  type WorkspaceListEntry,
   type WorkspacePolicy,
+  type WorkspaceRefusal,
+  type WorkspaceRefusalCode,
+  type WorkspaceReview,
 } from './types.js';

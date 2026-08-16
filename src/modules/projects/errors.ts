@@ -215,6 +215,115 @@ export class GitWorktreePathError extends ProjectsError {
   }
 }
 
+/** Nothing is registered under that id (§5's `GET`/`PATCH` and the launch call). */
+export class ProjectNotFoundError extends ProjectsError {
+  override readonly name = 'ProjectNotFoundError';
+
+  constructor(readonly projectId: string) {
+    super('project_not_found', `No project is registered with id ${projectId}.`, 404, {
+      projectId,
+    });
+  }
+}
+
+/**
+ * An env variable name a project may never set (§1.4, D2).
+ *
+ * `ANTHROPIC_API_KEY` "silently overrides subscription auth" and
+ * `CLAUDE_CODE_OAUTH_TOKEN` *is* the subscription auth. Both are foundation's to
+ * place in `agentEnv`, never a project's — a project that could set either would
+ * change how the session authenticates from a settings form.
+ */
+export class ForbiddenEnvNameError extends ProjectsError {
+  override readonly name = 'ForbiddenEnvNameError';
+
+  constructor(readonly envName: string) {
+    super(
+      'forbidden_env_name',
+      `A project may not set ${envName}. Authentication comes from the owner's Claude ` +
+        "subscription and is foundation's `agentEnv`, not a project setting: " +
+        'ANTHROPIC_API_KEY silently overrides subscription auth and CLAUDE_CODE_OAUTH_TOKEN is ' +
+        'that auth (architecture D2, DESIGN §1.4).',
+      400,
+      { field: 'defaults.env', envName },
+    );
+  }
+}
+
+/**
+ * `permissionElevation` arrived without a justification (§1.2).
+ *
+ * "An elevation nobody had to justify is the failure mode the reason string
+ * exists to prevent", so the field is named in the refusal rather than left for
+ * the user to find.
+ */
+export class MissingElevationReasonError extends ProjectsError {
+  override readonly name = 'MissingElevationReasonError';
+
+  constructor() {
+    super(
+      'missing_elevation_reason',
+      'defaults.permissionElevation.reason is required and must be non-empty: an elevation ' +
+        "widens an agent's permissions, and the reason is what makes it reviewable (DESIGN §1.2).",
+      400,
+      { field: 'defaults.permissionElevation.reason' },
+    );
+  }
+}
+
+/**
+ * The launch-context call was made for an assignment that holds no lease.
+ *
+ * `cwd` is "the leased workspace root" (§5), so there is no honest answer
+ * before `acquireWorkspace` has run. Handing back `localPath` would give a
+ * writer the primary tree without the hold that makes §4.1's rule work.
+ */
+export class WorkspaceNotLeasedError extends ProjectsError {
+  override readonly name = 'WorkspaceNotLeasedError';
+
+  constructor(
+    readonly projectId: string,
+    readonly assignmentId: string,
+  ) {
+    super(
+      'workspace_not_leased',
+      `Assignment ${assignmentId} holds no active workspace lease on project ${projectId}. ` +
+        'Call acquireWorkspace before asking for the launch context (DESIGN §4.3).',
+      409,
+      { projectId, assignmentId },
+    );
+  }
+}
+
+/** The project cannot be launched against: `provisioning` (§2.2) or `archived` (§2.3). */
+export class ProjectNotLaunchableError extends ProjectsError {
+  override readonly name = 'ProjectNotLaunchableError';
+
+  constructor(
+    readonly projectId: string,
+    /** Named `projectStatus`, not `status`: the base class's `status` is HTTP's. */
+    readonly projectStatus: string,
+  ) {
+    super(
+      'project_not_launchable',
+      projectStatus === 'provisioning'
+        ? `Project ${projectId} is still provisioning; it cannot be launched against until the clone completes (DESIGN §2.2).`
+        : `Project ${projectId} is archived and accepts no new assignments (DESIGN §2.3).`,
+      409,
+      { projectId, projectStatus },
+    );
+  }
+}
+
+/** A lease id that is not this project's, or not there at all. */
+export class WorkspaceLeaseNotFoundError extends ProjectsError {
+  override readonly name = 'WorkspaceLeaseNotFoundError';
+
+  constructor(readonly leaseId: string) {
+    super('workspace_lease_not_found', `No workspace lease with id ${leaseId}.`, 404, { leaseId });
+  }
+}
+
 /** No free slug was available — 9998 projects share one name. Practically unreachable. */
 export class SlugExhaustedError extends ProjectsError {
   override readonly name = 'SlugExhaustedError';

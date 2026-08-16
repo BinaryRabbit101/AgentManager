@@ -33,13 +33,17 @@
  * `project_default_agents`.
  */
 import type { Storage } from '../../storage/index.js';
-import type { Module, ModuleContext, ModuleHandle } from '../types.js';
+import type { HealthCondition, Module, ModuleContext, ModuleHandle } from '../types.js';
 
-import type { GitRunner } from './git.js';
+import { createGitRunner, type GitRunner } from './git.js';
+import { createWorkspaceLeaseRepository } from './leases.js';
+import { createKeyedMutex } from './mutex.js';
 import { createProjectRepository, type ProjectRepository } from './repository.js';
 import { createProjectRoutes } from './routes.js';
 import { createProjectsService, type ProjectsService } from './service.js';
 import { BUILT_IN_RETENTION_DEFAULTS, type RetentionDefaults } from './types.js';
+import { createWorkspaceService, type WorkspaceService } from './workspaces.js';
+import { createCommandRunner, readLongPathsEnabled, type CommandRunner } from './worktree.js';
 
 /** The module id: `dependsOn`, the service registry and `migrations/projects/`. */
 export const PROJECTS_MODULE_ID = 'projects';
@@ -57,6 +61,10 @@ export const PROJECTS_SERVICE = 'projects';
 export interface ProjectsModuleOptions {
   readonly git?: GitRunner;
   readonly probeWritable?: (directory: string) => string | undefined;
+  /** Runs `defaults.setupCommand` in a fresh worktree (§4.4); the shell in production. */
+  readonly runCommand?: CommandRunner;
+  /** Reads `LongPathsEnabled`; the registry in production, a stub in tests. */
+  readonly longPaths?: () => boolean | undefined;
 }
 
 /**
@@ -91,29 +99,101 @@ export function createProjectsModule(
             `stored project settings were repaired on read: ${message}`,
           );
         },
+        // §1.2's lazy drop, resolved through foundation's rebuildable `agents`
+        // index — the projection roster pushes on every registry change
+        // (foundation §1.4, roster §2.2). Not through `ctx.require('roster')`:
+        // the index is a repository this element is already given, it answers
+        // the one question asked here in a single indexed lookup, and it leaves
+        // the read path working when the roster module is not in the list at
+        // all. Archived agents are *known* — §9.3 keeps them readable by id —
+        // so only a purged agent is dangling.
+        knownAgent: (agentId) => ctx.store.agents.get(agentId) !== undefined,
+      });
+
+      const git: GitRunner = options.git ?? createGitRunner();
+
+      const workspaces: WorkspaceService = createWorkspaceService({
+        projects: repository,
+        leases: createWorkspaceLeaseRepository(open.db, ctx.clock),
+        mutex: createKeyedMutex(),
+        bus: ctx.bus,
+        clock: ctx.clock,
+        // `<dataRoot>\worktrees` unless `projects.worktreesRoot` relocates it;
+        // foundation resolved that once, at boot (foundation §1.2).
+        worktreesRoot: open.paths.worktrees,
+        git,
+        runCommand: options.runCommand ?? createCommandRunner(),
+        longPaths: options.longPaths ?? readLongPathsEnabled,
+        log: (level, message, detail) => {
+          if (level === 'warn') ctx.logger.warn(detail ?? {}, message);
+          else ctx.logger.info(detail ?? {}, message);
+        },
       });
 
       const service: ProjectsService = createProjectsService({
         repository,
+        workspaces,
         bus: ctx.bus,
         dataRoot: open.paths.dataRoot,
-        ...(options.git === undefined ? {} : { git: options.git }),
+        allowPermissionElevation: ctx.config.policy.allowPermissionElevation,
+        git,
         ...(options.probeWritable === undefined ? {} : { probeWritable: options.probeWritable }),
+        log: (message, detail) => {
+          ctx.logger.warn(detail ?? {}, message);
+        },
       });
 
       ctx.provide(PROJECTS_SERVICE, service);
       ctx.registerRoutes(createProjectRoutes({ service, logger: ctx.logger }));
 
+      // §4.4's orphan recovery. A boot task, not `start()`: foundation runs it
+      // after storage is up and *before* any listener binds (foundation §4.2),
+      // so nothing can acquire a workspace in the window where last run's leases
+      // still look active.
+      ctx.registerBootTask(async () => {
+        const result = await workspaces.reconcileOrphans();
+        if (result.orphaned.length > 0) {
+          ctx.logger.warn(
+            { leases: result.orphaned.length, pruned: result.pruned.length },
+            'workspace leases from a previous run were marked orphaned and worktrees pruned',
+          );
+        }
+      }, 'projects:reconcile-workspaces');
+
       ctx.logger.info(
-        { dataRoot: open.paths.dataRoot, projectsRoot: ctx.config.projects.root },
+        {
+          dataRoot: open.paths.dataRoot,
+          projectsRoot: ctx.config.projects.root,
+          worktreesRoot: open.paths.worktrees,
+        },
         'project registry ready',
       );
 
       return {
-        health: () => ({
-          status: 'ok',
-          detail: { projects: repository.list({ includeArchived: true }).length },
-        }),
+        health: () => {
+          const projects = repository.list({ includeArchived: true });
+          // Health is derived on read (§2.3), so the aggregate is simply every
+          // project's own conditions, prefixed with the project so a UI banner
+          // can say which one it is about.
+          const conditions: HealthCondition[] = [];
+          for (const project of projects) {
+            for (const condition of service.health(project.id).conditions) {
+              conditions.push({
+                id: `projects.${condition.code}:${project.id}`,
+                level: condition.level,
+                message: `${project.name}: ${condition.message}`,
+              });
+            }
+          }
+          return {
+            // A project with a stale agent id or an orphaned worktree is a
+            // condition to show, not a module that is failing: everything else
+            // about the registry works.
+            status: 'ok',
+            conditions,
+            detail: { projects: projects.length, worktreesRoot: open.paths.worktrees },
+          };
+        },
       };
     },
   };
