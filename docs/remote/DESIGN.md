@@ -540,12 +540,34 @@ except authentication.
 6. The phone observes `session.question.answered` and `session.resumed` on the same stream it was
    already holding.
 
-**The honest gap**: with no browser tab open, nothing reaches the user. Foreground and backgrounded
-tabs get the WS; a closed tab gets nothing. Web Push needs HTTPS and a service worker, which needs
-`tailscale cert` (§9.2) — so remote's answer to orchestrator's open question about notification
-channels is: **v1 provides the tailnet browser as the surface and no push**; the enabling work is TLS
-termination, and it is deferred together (§14). Named rather than hand-waved, because an approval
-gate nobody sees for six hours is that question's whole point.
+**The gap in the browser, and what closes it**: with no browser tab open, nothing reaches the user
+*through this transport*. Foreground and backgrounded tabs get the WS; a closed tab gets nothing.
+**Browser** Web Push needs HTTPS and a service worker, which needs `tailscale cert` (§9.2), so it
+stays deferred together with TLS (§14) — that reasoning is unchanged.
+
+What closes the gap in v1 is a channel that does not travel over this transport at all.
+**Orchestrator owns the away-notification question and has decided it: the v1 push channel is
+[ntfy](https://ntfy.sh)** (orchestrator §10) — one outbound HTTPS POST from the core to a
+user-configured topic, delivered by the ntfy app to a phone that need not be on the tailnet. Remote's
+side of that decision:
+
+- **It is out-of-band.** The notification does not ride remote's listener, needs no inbound port, and
+  is unaffected by TLS being deferred here. Remote neither implements nor gates it.
+- **It carries no content.** The payload is a generic "AgentManager needs you" plus a **tailnet deep
+  link** to the question card. No question text, no agent names, no project or path names, no session
+  ids, no token — **nothing of substance transits ntfy's servers**, which is what makes a third-party
+  relay acceptable at all under D5.
+- **The link is not an authorization.** Tapping it opens the tailnet URL, which still requires the
+  device to be on the tailnet and still requires the bearer token (§4). A notification wakes the user;
+  the tailnet serves the answer. The API remains Tailscale-only.
+- **The topic URL is a secret.** An ntfy topic URL is a capability URL — anyone holding it can post to
+  it — so it lives in foundation's secret store as `notify.ntfy.topicUrl` (foundation §3.3), never in
+  config and never in the library.
+
+So the v1 answer is: **the tailnet browser is the surface, and ntfy is the wake-up** — with browser
+Web Push as the successor once TLS lands, at which point the third party is no longer needed at all.
+Named rather than hand-waved, because an approval gate nobody sees for six hours is that question's
+whole point.
 
 ---
 
@@ -725,8 +747,12 @@ Binding outputs the UI element designs against.
 10. **Reconnection is replay, not reload.** Persist the `/api/events` watermark and the transcript
     byte offset across a disconnect; on reconnect, replay then resume the stream. A tailnet drop must
     not cost the user their place, and it must not trigger a full refetch.
-11. **No push notifications in v1.** An open tab (foreground or background) receives events; a closed
-    tab receives nothing. The UI should not imply otherwise.
+11. **No *browser* push in v1; the wake-up is ntfy, out-of-band.** An open tab (foreground or
+    background) receives events; a closed tab receives nothing over this transport, and the UI must
+    not imply otherwise. Reaching a user with no tab open is orchestrator's ntfy channel
+    (orchestrator §10, §7.4 above): a generic "AgentManager needs you" plus a tailnet deep link,
+    carrying no question content. The UI may say a notification was sent; it must never suggest the
+    notification carried the question or that answering is possible off the tailnet.
 
 ---
 
@@ -744,7 +770,7 @@ implementation; each is a small, additive change to a wave-1/2 element.
 | **R5** | foundation §3.2 | Correct the authorized `.reveal()` list: **remote does not call `.reveal()`.** Bearer verification hashes the presented token and compares against `remote_tokens.token_hash`. | The list is meant to be exact (runner raised the same list in its §15.4 #19); item 2 as written implies a stored-secret read that does not exist. |
 | **R6** | foundation §6.4 / §5 | State explicitly that the **local** listener has no authentication, and that this is the intended trust boundary (any process running as the user can already read the DPAPI secrets). | Remote's policy is written as "auth is what the remote listener adds"; that only makes sense against a stated local baseline. |
 | **R7** | projects §2.1 / D5 | `GET /api/fs/browse` must **resolve symlinks and directory junctions before** the browse-root containment check, and reject UNC/network paths. | §3.3 allows the route remotely. Windows junctions inside `%USERPROFILE%` defeat a lexical prefix check, and this is the one endpoint where containment is the whole control. |
-| **R8** | orchestrator (open question: away-notification channel) | Remote answers the part it owns: **v1 = the tailnet browser, no push.** Push requires HTTPS + a service worker, hence `tailscale cert`, which is deferred (§14). If orchestrator needs out-of-band notification in v1, it needs a channel that is not this one. | An approval gate nobody sees for six hours is that question's entire concern; better to state the gap than to imply coverage. |
+| **R8** | orchestrator (away-notification channel) — **resolved, orchestrator's answer stands** | Remote asked for a channel that is not this one, having no *browser* push without TLS. Orchestrator answered with **ntfy** (orchestrator §10) and owns the question. Recorded here as the resolution: v1 push **is** ntfy, out-of-band via the ntfy app, carrying only a generic "AgentManager needs you" and a tailnet deep link — no question content, no secrets, nothing through a third party. Topic URL lives in foundation's secret store (`notify.ntfy.topicUrl`). Remote implements and gates nothing here; §7.4 is amended to match. | Remote's position ("no push") was scoped to its own transport and was correct about it — browser Web Push still needs `tailscale cert` and stays deferred (§14). The gap it named is closed by a channel that never touches this listener, which is exactly what remote asked for. |
 
 ---
 
@@ -753,7 +779,7 @@ implementation; each is a small, additive change to a wave-1/2 element.
 | Deferred | Why / what would unblock it |
 |---|---|
 | **TLS via `tailscale cert` / `tailscale serve`** | WireGuard already encrypts device-to-device. Adds certificate renewal as a new failure mode. Unblocks: Web Push, `Secure` cookies, and identity headers — so it is the single highest-value deferral to revisit. |
-| **Web Push notifications for questions and approval gates** | Requires HTTPS + service worker (above). Until then, an open tab is the notification surface (§7.4). |
+| **Browser Web Push notifications for questions and approval gates** | Requires HTTPS + service worker (above). Until then, an open tab is remote's notification surface and orchestrator's ntfy channel is the out-of-band wake-up (§7.4). Web Push is the successor precisely because it needs no third party. |
 | **Tailscale identity headers / `whois` authorization** | §9.3. Needs `tailscale serve` or the admin-scoped LocalAPI; authenticates the same single owner twice. The peer-name audit enrichment captures most of the practical value now. |
 | **Tailscale ACL / tag-based authorization** | Single-owner tailnet (foundation §7). Meaningful only once more than one person or a service node exists. |
 | **IPv6 binding** | IPv4 tailnet addressing is universal in practice; the ULA prefix is in the validator so an IPv6-only tailnet fails loudly rather than binding something unexpected. |

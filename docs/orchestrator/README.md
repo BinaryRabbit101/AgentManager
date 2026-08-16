@@ -29,9 +29,11 @@ Foundation and roster have shipped designs that name orchestrator concepts. Thes
 - **The in-process MCP server is orchestrator's to build** (`createSdkMcpServer` / `tool`), exposing
   `mcp__agentmanager__*` tools named `list_roster`, `create_assignment`, `send_to_agent`,
   `report_status`, `request_user_decision`, `read_mailbox`. Roster compiles the matching allow rules
-  and grants the full set only to `capabilities.overseer` agents.
+  and grants the full set only to `capabilities.overseer` agents. A worker gets a four-tool subset —
+  `send_to_agent`, `read_mailbox`, `report_status`, `request_user_decision` (roster §11) — never
+  `list_roster` or `create_assignment`.
 - **Worker scoping is enforced in the MCP server, not by permission rules.** Restricting a worker's
-  `send_to_agent` / `read_mailbox` to its own assignment is a check inside the tool implementation,
+  four tools to its own assignment is a check inside the tool implementation,
   using the assignment id the session was launched under. Permission rules match on tool *names* and
   cannot express "only your own assignment", so an allow-rule-based attempt at this would look like
   a control and be none.

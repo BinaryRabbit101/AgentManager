@@ -6,7 +6,9 @@ in a working state; each assumes foundation milestones 1–9 are done (module sy
 end-to-end milestone.
 
 Scope discipline: build only what [DESIGN.md](DESIGN.md) specifies, and nothing from its §14 deferred
-list. In particular: no TLS, no push, no identity headers, no token scopes.
+list. In particular: no TLS, no browser Web Push, no identity headers, no token scopes. (The v1 push
+channel is orchestrator's ntfy notifier, out-of-band and built there — remote implements no part of
+it; DESIGN §7.4.)
 
 The final milestone (M10) is the edition boundary suite and is the gate for merging any change to
 binding, listeners, or module wiring.

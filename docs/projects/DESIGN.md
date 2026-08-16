@@ -246,6 +246,22 @@ assignment linking to it starts and back to `open` if every linked assignment en
 human marking it `done`. There is no workflow engine, no assignee (the assignment carries
 the agents), no dependencies, no labels.
 
+**Who writes `work_item_assignments`.** Projects owns the table and derives status from it,
+but it never populates it on its own: the writer is **orchestrator's assignment-creation
+path** — both the pattern engine and the solo-launch endpoint — whenever work items are
+attached to the assignment being created (orchestrator §17, R4). Projects exposes the two
+calls it uses, on the internal service surface of §5:
+
+```ts
+linkWorkItems(assignmentId: string, workItemIds: string[]): Promise<void>;   // at assignment create
+unlinkWorkItems(assignmentId: string): Promise<void>;                        // at assignment close
+```
+
+Both are idempotent, validate that every item belongs to the assignment's project, and are
+the only sanctioned writers — nothing else composes SQL against the table (foundation §1.3).
+Linking is optional end to end: an assignment created with no work items writes no rows, and
+a work item never linked to anything simply stays `open`.
+
 ### 1.6 Workspace lease
 
 ```ts
@@ -301,6 +317,21 @@ quick-add possible — the user types or picks one thing and confirms a filled f
 browser (and remote) path uses `GET /api/fs/browse?path=` — a directory-only listing rooted
 in the configured browse roots, with `..` traversal outside a root rejected. Typing a full
 path is always accepted.
+
+**Containment is checked against the *real* path, not the requested one.** Before the
+`browseRoots` prefix check runs, the requested path — and every entry about to be listed —
+is resolved to its real path on disk (`fs.realpath`, which on Windows follows directory
+junctions, symlinks, and mount points alike). The prefix check then runs on the resolved
+result, and the response reports the resolved path. A lexical check on the requested string
+is not a control on Windows: a junction anywhere under `%USERPROFILE%` (a default browse
+root) points wherever it likes while its path still starts with the root, so `C:\Users\me\x`
+can be `C:\` and the check passes. Resolve first, compare second. Also rejected outright:
+UNC and network paths (`\\server\share`, mapped drives that resolve to one) — a browse root
+is a local tree, and reaching a file server through this endpoint is not something the
+feature is for. A path that resolves outside every root returns 403 and lists nothing, and
+an entry whose resolved target escapes is omitted from the listing rather than shown and
+refused on click. Remote raised this (remote §13, R7): the route is deliberately allowed
+over the tailnet (remote §3.3), and containment is the whole of its access control.
 
 No filesystem-wide auto-scan for repos in v1: it is slow on Windows, noisy, and the manual
 path takes seconds. Deferred as a possible "scan a folder for repos" bulk import.
@@ -537,6 +568,8 @@ GET    /api/projects/:id/work-items        ?status=
 POST   /api/projects/:id/work-items
 PATCH  /api/work-items/:id                 title, body, kind, status, rank, scopePaths
 GET    /api/fs/browse?path=                directory listing within configured roots
+                                           (containment checked on the realpath-resolved
+                                           path, §2.1; UNC/network paths rejected)
 ```
 
 `GET /api/projects/:id` returns the full record including `defaults.permissionElevation` (its
@@ -559,8 +592,9 @@ The name is now the only misleading thing about it, and it is kept for continuit
 returns **raw inputs, not an effective anything**. There is no `permissions` key, because
 projects does not compute one — roster's `compilePermissions` is the sole composer (roster
 §6.2), and roster's `compileSession` performs the single env merge and the single secret
-resolution. Everything here is material handed to that function. The lease API of §4.3
-completes the internal surface.
+resolution. Everything here is material handed to that function. The lease API of §4.3 and
+`linkWorkItems` / `unlinkWorkItems` (§1.5, called by orchestrator's assignment-creation and
+close paths) complete the internal surface.
 
 Events on the core bus: `project.created|updated|archived|removed`,
 `project.clone.progress|completed|failed`, `workspace.acquired|released|orphaned`,

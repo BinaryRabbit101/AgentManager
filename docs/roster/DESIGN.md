@@ -582,7 +582,7 @@ agents; agents do not spawn their own hidden sub-hierarchies. So the overseer fl
 
 | Overseer gets | Because |
 |---|---|
-| The `agentmanager` in-process MCP toolset — `list_roster`, `create_assignment`, `send_to_agent`, `read_mailbox`, `report_status`, `request_user_decision` | This is the D4 orchestration surface. Worker agents get, at most, `send_to_agent` and `read_mailbox` scoped to their own assignment. |
+| The `agentmanager` in-process MCP toolset — all six of `list_roster`, `create_assignment`, `send_to_agent`, `read_mailbox`, `report_status`, `request_user_decision` | This is the D4 orchestration surface. A worker agent gets a subset: four of the six (below). |
 | Read access to the roster (names, specialties, tags, capabilities — never permissions or integrations) | It cannot delegate to people it cannot see. It has no business knowing their credentials. |
 | A higher default `maxTurns` and `maxBudgetUsd` | Coordination is turn-expensive and produces little output per turn. |
 | A model floor (validator warns below `sonnet`) | Decomposition and convergence judgement are the tasks least tolerant of a weak model. |
@@ -593,6 +593,23 @@ What it explicitly does **not** get: the `Agent`/subagent tool, write access to 
 definitions, the ability to raise its own or anyone else's permission ceiling, or the ability to
 approve its own budget overrun. An overseer is a coordinator, not an admin. Any escalation it wants
 goes through the orchestrator's approval gate to the human.
+
+**The worker grant is four tools, not two** (orchestrator §17, R1b):
+
+| Tool | Overseer | Worker | Why the worker needs it |
+|---|---|---|---|
+| `list_roster` | ✔ | — | Delegation needs visibility; a worker delegates nothing. |
+| `create_assignment` | ✔ | — | Creating work is the coordinator's act (D4). |
+| `send_to_agent` | ✔ | ✔ | Reply to the agent it is paired with. |
+| `read_mailbox` | ✔ | ✔ | Receive what was sent to it. |
+| `report_status` | ✔ | ✔ | The structured completion channel orchestrator's convergence rule reads. Without it a worker can only report in prose, and there is no machine-readable "done". |
+| `request_user_decision` | ✔ | ✔ | Without it a worker's recommendation cannot reach a question card, which disables the per-agent aggregation the product requires. |
+
+None of the four creates work, reveals the roster, or reaches outside the assignment. **All four remain
+assignment-scoped inside the MCP server**, not by permission rule: rules match tool *names* and cannot
+express "only your own assignment", so the scoping is a check in the tool implementation against the
+assignment id the session was launched under (orchestrator §4.2). Roster's contribution is the allow
+rules for the tool names and nothing more.
 
 The in-process MCP server itself (`createSdkMcpServer` / `tool`) is built by the orchestrator
 element; roster only declares *who is allowed to be handed it*, and compiles the corresponding
@@ -732,11 +749,22 @@ Roughly:
 | `permissions` composed (§6) | `allowedTools`, `disallowedTools`, `permissionMode`, `settings.permissions` for `ask`, default-deny `canUseTool` policy (callback installed by runner) |
 | `skills` | `plugins: [{ type: "local", path: agentDir }]` + `skills` |
 | `settingSources` | `settingSources` |
-| `integrations` (+ resolved secrets) | `mcpServers` |
+| `integrations` (+ resolved secrets) | `mcpServers` (per-agent servers) |
+| the orchestration toolset (§11) | `mcpServers.agentmanager` — the per-launch server instance obtained from `ctx.require('orchestrator')?.getSessionToolset({ assignmentId, agentId, role, isOverseer })` |
 | `model` | `model`, `fallbackModel` |
 | `defaults` | `maxTurns`, `maxBudgetUsd` |
 | project | `cwd`, `additionalDirectories` |
 | foundation + project + assignment env | `env` — the **final** merge happens here and only here |
+
+**Mounting the orchestration toolset is `compileSession`'s job** (orchestrator §17, R1). Roster calls
+`ctx.require('orchestrator')?.getSessionToolset({ assignmentId, agentId, role, isOverseer })` and
+places the returned per-launch MCP server instance at `options.mcpServers.agentmanager`, alongside the
+agent's own integration servers. The instance is per launch because it closes over the assignment id
+that scopes every tool call (§11); orchestrator decides which of the six tools that instance actually
+exposes, and roster compiles the matching `mcp__agentmanager__*` allow rules for the same set. When
+`require('orchestrator')` returns `undefined` the key is simply omitted, together with §11's existing
+diagnostic and the dropping of every `mcp__agentmanager__*` rule — unchanged. This keeps SDK option
+shaping in exactly one element: runner's option whitelist (runner §3.3) does not gain `mcpServers`.
 
 The env merge is roster's, in one place, in this order (later wins): base process env (spread, never
 replaced — see §10) → foundation's `agentEnv` (`CLAUDE_CODE_DISABLE_AUTO_MEMORY`,

@@ -107,7 +107,7 @@ Foundation ships these tables in `0001_init.sql` because more than one element t
 | `schema_meta` | foundation | `key`, `value` — schema version, install id, created_at. |
 | `agents` | roster (index only) | Mirror of `library/agents/*`: `id` (PK, = folder name), `name`, `specialty`, `model` (flattened string — the resolved `model.primary` alias or id, not the roster object), `is_overseer`, `archived_at`, `source_path`, `content_hash`, `indexed_at`. **Files are truth**; this table is a rebuildable index so other tables can join and filter. Foundation never reads library files to build it: roster owns the registry and pushes it through the service registry (`roster.changed`), and foundation writes what it is given. `archived_at` is carried so an archived-but-still-displayable agent does not vanish from a UI join. |
 | `projects` | projects | `id`, `slug` (UNIQUE), `name`, `local_path`, `local_path_key` (UNIQUE — the canonical lowercased identity key), `repo_url`, `default_branch`, `vcs`, `notes`, `status`, `workspace_policy`, `defaults_json`, `retention_json`, `created_at`, `updated_at`, `last_activity_at`, `archived_at`. Machine-bound (local paths), hence a row not a file. **Columns specified by the projects element**; foundation ships the table because sessions, assignments, and events all key on it. |
-| `assignments` | orchestrator | `id`, `project_id`, `pattern` (`solo`\|`pair`\|`review`\|`overseer`), `scope_json`, `goal`, `status`, `token_budget`, `tokens_used`, `round_cap`, `rounds_used`, `created_at`, `closed_at`, `close_reason`. Every session has one (orchestrator's uniform-schema rule). |
+| `assignments` | orchestrator | `id`, `project_id`, `pattern` (`solo`\|`pair`\|`review`\|`overseer`), `scope_json`, `goal`, `status` (`open`\|`closed`), `token_budget`, `tokens_used`, `round_cap`, `rounds_used`, `created_at`, `closed_at`, `close_reason`. Every session has one (orchestrator's uniform-schema rule). The `status` vocabulary is exactly those two values (orchestrator §2.2, §17 R7) — the richer lifecycle state machine lives in an orchestrator-owned `phase` column added by orchestrator's own migration, so foundation's column stays the two-state fact every element joins on. |
 | `assignment_members` | orchestrator | `assignment_id`, `agent_id`, `role` (`implementer`\|`architect`\|`skeptic`\|`reviewer`\|`overseer`), PK on the pair. These five strings are the v1 role vocabulary everywhere — roster's `capabilities.roles`, its `roles/<role>.md` addendum files, and orchestrator's patterns all key on exactly them. |
 | `sessions` | runner | `id`, `assignment_id` (NOT NULL), `agent_id`, `project_id`, `status` (`queued`\|`running`\|`paused`\|`done`\|`failed`\|`interrupted`\|`orphaned`), `sdk_session_id`, `model`, `permission_mode`, `origin` (`local`\|`remote`), `transcript_path`, `transcript_bytes` (running byte count maintained by the transcript writer, §1.5), `summary` (one-line denormalized digest so a timeline renders without opening a transcript), `pinned` (exempts the session from transcript pruning), `started_at`, `ended_at`, `exit_reason`. There is **no** `transcript_available` column: it is derived as `transcript_path IS NOT NULL`, and the pruner that deletes a transcript file NULLs the path in the same transaction. Token totals are **not** duplicated here — the input/output split lives in `session_usage`, and read models (projects' activity timeline, the UI's cost views) join it. Indexed on `agent_id` (roster's purge guard, below), `project_id`, and `assignment_id`. |
 | `usage_events` | runner | `id`, `session_id`, `ts`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `model`. Append-only per-turn deltas — the raw material for per-session metering and UI charts. |
@@ -122,6 +122,14 @@ Foundation ships these tables in `0001_init.sql` because more than one element t
 Foreign keys are declared with `ON DELETE RESTRICT` for `projects`/`assignments` (deleting a project with history is refused; archive instead) and `ON DELETE CASCADE` for child rows (`assignment_members`, `question_recommendations`, `usage_events`). `sessions.agent_id` deliberately has **no** FK to `agents` — deleting an agent from the library must not destroy its session history; the UI renders unknown agent ids as "deleted agent".
 
 Because there is no FK, roster's hard-purge guard ("purge only when no session references the agent", roster §9.3) cannot lean on the database to refuse the delete. Foundation therefore ships `sessions.countByAgent(agentId): number` on the sessions repository, backed by the index on `sessions(agent_id)`, as the sanctioned way for roster to ask. A purge attempted while that count is non-zero is refused.
+
+**Repository methods foundation ships beyond plain CRUD**, because more than one element needs them and §1.3 forbids hand-written joins against a foreign table:
+
+| Repository | Method | For |
+|---|---|---|
+| `sessions` | `countByAgent(agentId): number` | roster's purge guard (above). |
+| `settings` | `listByPrefix(prefix): Array<{ key, value, updatedAt }>` | a prefix scan over the key space. Remote stores one row per agent under `remote.agentAccess.<id>` (remote §6.1) so that granting and revoking are independent writes rather than a read-modify-write over one JSON blob; the expiry sweep and the list endpoint both need the scan (remote §13, R2). |
+| `settings` | `deleteByKey(key): void` | absence *is* the disabled state for those rows, so revocation deletes rather than rewrites. |
 
 ### 1.5 Transcripts
 
@@ -199,6 +207,8 @@ Ports 7477/7478 are unassigned by IANA and configurable; the actual bound port i
 
 Two of these are edition levers rather than preferences. `edition.work.json` sets `policy.allowPermissionElevation: false` — a work machine does not get a per-project escape hatch past an agent's permission ceiling, and roster's compiler refuses the elevation (with a diagnostic) rather than silently applying it. `policy.globalDeny` is the matching positive lever: rules listed there are unioned into every compiled deny set and no layer can remove them, which is how a work edition pins "never `Bash(git push*)` from this machine" regardless of what any agent, project, or assignment says. Both are read by roster's `compilePermissions`, which is the only composer (roster §6.2).
 
+A third edition lever lives in orchestrator's contributed sub-schema rather than the block above: `edition.work.json` sets **`orchestrator.notify.enabled: false`**, so away-notifications are **off by default in the work edition**. Outbound push from a work machine is a policy decision, not a preference — the home edition defaults it on (orchestrator §10, §17 R5). The channel's credential is a secret, not config (§3.3, `notify.ntfy.topicUrl`).
+
 ### 2.4 Reading config
 
 Modules receive a frozen, typed `AppConfig` on their context. Config is **immutable for the process lifetime** — changing it requires a restart. Anything that must change at runtime (remote enabled, per-agent remote allowance, log level) is `settings` (§1.4) or an explicit runtime API, not config. This removes an entire class of "half-reloaded state" bugs.
@@ -236,13 +246,14 @@ export type SecretResolver = Pick<SecretStore, 'get'>;
 
 `SecretResolver` is the type every other element codes against — roster's `compileSession` takes one, projects' env resolution takes one — so no feature module holds a handle that can `set` or `delete`.
 
-Secret values are wrapped in a `Secret` type whose `toString`, `toJSON`, and `util.inspect` all return `[redacted]`, so an accidental log or API serialization leaks nothing. Only `.reveal()` yields the plaintext, and it is called in exactly three authorized places:
+Secret values are wrapped in a `Secret` type whose `toString`, `toJSON`, and `util.inspect` all return `[redacted]`, so an accidental log or API serialization leaks nothing. Only `.reveal()` yields the plaintext, and it is called in exactly two authorized places:
 
 1. **Roster's option compiler** (roster §13), building the agent child process's environment and MCP server configs — the one place `secretRef` values become real strings.
-2. **The remote module's bearer-token check**, comparing a hash.
-3. **Runner's `attachAuthEnv()`** (runner §3.4), injecting `claude.oauthToken` into the SDK child environment — one key, one function, consistent with §3.3's key assignment.
+2. **Runner's `attachAuthEnv()`** (runner §3.4), injecting `claude.oauthToken` into the SDK child environment — one key, one function, consistent with §3.3's key assignment.
 
-Any fourth call site is a review failure, not a judgement call.
+The remote module is deliberately **not** on this list: bearer verification never reads a stored secret. It hashes the token the client presented and constant-time-compares it against `remote_tokens.token_hash` (§3.4), so there is nothing to reveal (remote §13, R5).
+
+Any third call site is a review failure, not a judgement call.
 
 ### 3.3 Key namespace (v1)
 
@@ -252,6 +263,7 @@ Any fourth call site is a review failure, not a judgement call.
 | `anthropic.apiKey` | env only, work edition | runner |
 | `mcp.<serverId>.<field>` | roster UI | runner, when composing per-agent MCP server configs (answers roster's open question: MCP credentials live here, referenced from `agent.json` by key name, never inlined in the agent file — so the library stays git-safe) |
 | `project.<projectId>.<name>` | projects UI | roster's option compiler, resolving a project's env entries at session start (projects §1.4). Keyed by project id, not slug, so a rename cannot orphan a secret. |
+| `notify.<channel>.<field>` | notification settings UI | orchestrator's notifier (orchestrator §10). v1 uses `notify.ntfy.topicUrl` — an ntfy topic URL is a capability URL, so possession of it is the credential and it belongs here rather than in config. Remote's away-notification path reads the same key (remote §7.4). |
 
 Roster's `agent.json` may contain `{"secretRef": "mcp.gmail.token"}` but never a credential value; the `secretRef` schema is roster's (roster §10) and this document does not restate it. A library or project record containing something that looks like a live credential is rejected at load with a clear error — and "looks like a live credential" is **exactly** roster §10's rule, not a second heuristic: any `env` or `headers` key matching `*TOKEN*` / `*KEY*` / `*SECRET*` / `*PASSWORD*` / `AUTH*` must carry `{ secretRef }` rather than a literal string.
 
@@ -333,8 +345,10 @@ Three streams, deliberately separated:
 | File | Contents |
 |---|---|
 | `state/logs/core.log` | Service logs: boot, module lifecycle, storage, runner decisions, errors. |
-| `state/logs/access.log` | One line per HTTP/WS request: method, path, status, duration, origin (`local`\|`remote`), token prefix, remote peer. Auth failures at `warn`. Separate because remote access needs an auditable trail that is not drowned in debug chatter (D5). |
+| `state/logs/access.log` | One line per HTTP/WS request: method, path, status, duration, origin (`local`\|`remote`), `tokenId`, token prefix, remote peer. Auth failures at `warn`. Separate because remote access needs an auditable trail that is not drowned in debug chatter (D5). |
 | `state/transcripts/*.jsonl` | **Not logs.** Agent conversation content lives in transcripts and is never duplicated into `core.log`. |
+
+`tokenId` is the `remote_tokens.id` of the credential that authenticated the request — **never the token itself**, and never a substitute for it. The 6-character `token_prefix` stays for human recognition, but prefixes can collide and are not a stable join key, so incident review joins on `tokenId` (remote §13, R3).
 
 When the core is started from a terminal (dev), a pretty-printed human stream is added on stderr. When started by the scheduled task there is no console, and the file streams are the only output.
 
@@ -357,6 +371,8 @@ All log endpoints require the same auth as the rest of the API; over the remote 
 ### 5.4 Redaction
 
 Redaction runs inside the pino formatter, before anything reaches disk or the ring buffer: key-path redaction for known secret fields plus the regex scrub of §3.5. Redacting at write time (rather than at read time) means there is no window where a secret sits in a buffer or a file waiting to be filtered.
+
+The redactor additionally scrubs credential-bearing **query-string parameters** from any logged URL or path — `ticket=` and `access_token=` in v1 — replacing the value with `[redacted]` while leaving the parameter name visible. This applies to `access.log` and `core.log` alike, since a request path reaches both. A short-lived ticket is still a credential, and a credential in a log line outlives the request that carried it (remote §13, R3).
 
 ---
 
@@ -381,7 +397,7 @@ interface ModuleHandle {
 }
 ```
 
-`ModuleContext` is the only thing a module may reach for. It provides: the frozen `AppConfig`; `store` (repositories, §1.3); a child `logger` pre-tagged with the module id; `secrets`; the typed event `bus`; `settings`; `clock` (injectable, so tests are not time-dependent); `registerRoutes(router)`; `registerBootTask(fn)`; `registerHealthCheck(fn)`; and the service registry `provide(name, api)` / `require<T>(name)`.
+`ModuleContext` is the only thing a module may reach for. It provides: the frozen `AppConfig`; `store` (repositories, §1.3); a child `logger` pre-tagged with the module id; `secrets`; the typed event `bus`; `settings`; `clock` (injectable, so tests are not time-dependent); `registerRoutes(router)` (with optional per-route remote policy metadata, §6.4); `registerBootTask(fn)`; `registerHealthCheck(fn)`; and the service registry `provide(name, api)` / `require<T>(name)`.
 
 Feature modules **never import each other directly**. They communicate through the event bus (fire-and-forget, typed) and through service interfaces published on the registry (request/response). This is what makes the remote module removable without a compile error anywhere else.
 
@@ -406,13 +422,21 @@ Modules are topologically sorted by `dependsOn`, started in order with a per-mod
 After all modules have started, foundation enumerates every listening socket the process owns and asserts:
 
 - `edition === 'work'` → **every** listener is bound to a loopback address, else the process logs a fatal error and exits.
-- `edition === 'home'` → any non-loopback listener must belong to the remote module and be bound to an address the remote module identified as the Tailscale interface.
+- `edition === 'home'` → any non-loopback listener must match the address and port the remote module **publishes** as its own via `ctx.require('remote').boundAddress()` (remote §11, R4), which returns `{ address, port, source } | null`. The assertion does not re-derive or infer which listener belongs to remote, and does not itself go looking for the Tailscale interface.
+
+Reading remote's published claim rather than re-deriving the address is the point: the assertion then compares **two independently produced claims about the same socket** — what the OS says is listening, and what the module says it bound — instead of trusting one heuristic twice. A non-loopback listener that no module claims, or one whose claimed address does not match the socket, is fatal. Remote separately re-validates the same address against its Tailscale check immediately before `listen()`.
 
 This turns D5/D6 from a convention into a testable startup assertion that fails loudly, which is exactly what a security boundary needs.
 
 ### 6.4 HTTP surface
 
 Foundation owns one route table and one HTTP/WS framework instance. The local listener binds `http.bind` (127.0.0.1). The remote module, when present, mounts **the same route table** on a second server bound to the Tailscale address with bearer-token middleware in front and an `origin: 'remote'` marker on the request context. One API, two listeners — remote's open question about a reduced surface is then a matter of which routes the remote middleware refuses, not a second implementation to keep in sync. Foundation-owned routes in v1: `/healthz`, `/api/health`, `/api/config/effective`, `/api/logs*`, `/api/service/shutdown`, `/api/events` (replay + live stream).
+
+**Per-route remote policy metadata.** `registerRoutes` accepts optional metadata per route, `{ remote: 'allow' | 'deny' }`, **defaulting to `allow`**. A module that adds a route which must never be reachable from the tailnet declares `remote: 'deny'` at the point of registration — next to the code that makes it dangerous — rather than in a list somewhere else that someone has to remember to update. Foundation only records the flag and exposes it on the route table; it enforces nothing itself, because the local listener has no notion of remote (remote §13, R1).
+
+Remote is the consumer. Its policy is **default-allow-authenticated** (remote §3.1): the remote middleware serves every registered route to a valid bearer token *except* those the register marks `remote: 'deny'`, plus remote's own hardcoded pattern list, which stays as a backstop for routes whose author did not think about it. Foundation's own `POST /api/service/shutdown` is registered `remote: 'deny'` — a remote action that can brick the transport it arrived on needs someone at the machine. Defaulting to `allow` is deliberate: an allowlist would make every newly added route silently broken remotely until someone remembered it, which is the drift §6.4 exists to prevent.
+
+**The local listener has no authentication, and that is intended.** `http.bind` is loopback; anything that can reach it is already a process running as the owning Windows user, and such a process can already read the DPAPI-protected secret envelope (§3.1), the SQLite file, and the transcripts directly. Adding a credential to the loopback listener would guard nothing it does not already own, while adding a login step to the Electron shell and a second failure mode to local start-up. **The local OS user is the owner**; Electron and a local browser at `127.0.0.1` are its clients, and they authenticate by being on the machine. Authentication is precisely what the *remote* listener adds on top of this baseline (remote §4), which is why the baseline is stated here rather than assumed (remote §13, R6). The corollary is that the loopback binding is a security control, not a convenience — §6.3's bind-time assertion is what keeps it one.
 
 ### 6.5 Event bus
 

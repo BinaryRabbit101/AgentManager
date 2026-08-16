@@ -247,7 +247,7 @@ actually corrupt each other's diff, where a human sees it first.
 `getAssignmentContext(id)` returns exactly runner §15.1-3's shape:
 
 ```ts
-{ id, pattern, status, role?, write, scopeRules: string[],
+{ id, pattern, status, role?, write, scopeRules: { allow?: string[], deny?: string[], ask?: string[] },
   tokenBudget: number | null, tokensUsed: number, roundCap: number | null, roundsUsed: number }
 ```
 

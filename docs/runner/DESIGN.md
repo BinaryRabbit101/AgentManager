@@ -249,9 +249,9 @@ Two guards, both cheap and both worth having:
   it as a project env name), runner deletes it from the child environment and logs a `WARN` naming
   the session. Foundation's boot warning tells the user; this makes sure the session still runs on
   the subscription. D2 calls the silent override out specifically; this is the enforcement.
-- **Third reveal site.** Foundation §3.2 lists two authorized `.reveal()` call sites and this is a
-  third, so it is raised rather than assumed — see §15.4. It is one key, one function, and no other
-  runner code path holds a `Secret`.
+- **An authorized reveal site.** Raised rather than assumed (§15.4 #19) and now settled: foundation
+  §3.2's list is exactly two entries — roster's option compiler and this function. It is one key, one
+  function, and no other runner code path holds a `Secret`.
 
 ### 3.5 Runner's schema additions
 
@@ -910,11 +910,20 @@ interface RunnerService {
   continueFrom(sessionId: string, prompt: string): Promise<StartSessionResult>;
   stop(sessionId: string, reason: string): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
+  getTranscriptTail(sessionId: string, opts?: { maxBytes?: number }):
+    Promise<{ lines: TranscriptLine[]; from: number; next: number; pruned: boolean }>;
   listActive(): SessionRecord[];
   queueState(): { running: number; queued: number; blocked: number; capacity: number; cooling: boolean };
   usageWindows(): UsageWindows;
 }
 ```
+
+`getTranscriptTail` is the **in-process equivalent of `GET /api/sessions/:id/transcript`** (§11.1),
+serving the same whole-JSONL-lines-plus-next-offset contract from the last `maxBytes` (default 64 KB)
+of the file. It exists because orchestrator needs a turn's output after a core restart has lost the
+live `session.message` capture, and it must not make an HTTP call to its own process to get it
+(orchestrator §17, R3). Same rules as the HTTP route: whole lines only, and a pruned transcript
+returns `pruned: true` rather than throwing. Read-only — nothing here writes.
 
 ### 11.3 What runner requires from the registry
 
@@ -1084,9 +1093,24 @@ These are runner's binding outputs. Orchestrator, remote, and UI design against 
    (§14, D9).
 3. **`AssignmentContext`** — orchestrator must provide
    `getAssignmentContext(assignmentId): Promise<{ id, pattern, status, role?, write: boolean,
-   scopeRules: string[], tokenBudget: number | null, tokensUsed: number, roundCap, roundsUsed }>`.
+   scopeRules: { allow?: string[]; deny?: string[]; ask?: string[] }, tokenBudget: number | null,
+   tokensUsed: number, roundCap, roundsUsed }>`.
    `write` is an **assignment** property (projects §4.1 leases on write-capability, and a plan/review
    assignment must not take the write hold). `scopeRules` are raw rule strings for roster to compose.
+
+   `scopeRules` was a flat `string[]` (an allow-list only), which cannot express a genuinely read-only
+   assignment — orchestrator raised this (orchestrator §17, R2). It is now the same three buckets
+   roster's permission vocabulary already uses, so nothing new is introduced anywhere: **orchestrator
+   supplies** the rule strings per bucket, **roster's `compilePermissions` composes** them as the
+   assignment layer (roster §6.2, still the sole composer), and **runner passes them through
+   untouched** — runner does not read, merge, or interpret rules. All three buckets are optional; an
+   assignment with no scope restriction sends `{}`.
+
+   Independently of what orchestrator declares, roster's compiler adds a mutating-tool **deny** when
+   `write === false`, so a read-only assignment is safe by the one flag rather than by orchestrator
+   remembering to enumerate every mutating tool. Declared `deny` and `ask` entries are additive on top
+   of that floor. A per-seat model override, if it ever arrives, is a sibling field here and not part
+   of v1.
 4. **`QuestionBridge`** (§5.2) — orchestrator must provide `ask()` and `cancel()` with the given
    shapes. `ask()` may take hours to resolve; runner will not call it more than once per pending tool
    call, and cancels it if the session dies first.
@@ -1097,7 +1121,10 @@ These are runner's binding outputs. Orchestrator, remote, and UI design against 
    question, and emits `assignment.budget.exceeded`. Orchestrator owns the card and the resolution;
    an answer that raises the budget resumes the parked session automatically.
 7. **Parked sessions auto-resume when their question is answered.** Orchestrator must not separately
-   relaunch a session it parked, or the work runs twice.
+   relaunch a session it parked, or the work runs twice. The boundary in full: orchestrator **may**
+   call `RunnerService.stop()` on any session — closing an assignment, tripping a circuit breaker —
+   but it **never resumes a session runner parked**; auto-resume applies only to sessions runner
+   itself parked with `exit_reason: awaiting_answer`, and it is runner's alone (orchestrator §17, R6).
 8. **Question kinds runner raises**: `question` (tool gate and `AskUserQuestion`) and `budget_halt`.
    `approval_gate` is orchestrator's to raise.
 9. **A `dontAsk` session cannot ask anything** (§5.6). An orchestrator pattern that depends on
@@ -1144,6 +1171,9 @@ Per CLAUDE.md's ground rule, these are raised rather than silently diverged from
     compiler and remote's token check. Runner needs a third: `attachAuthEnv()`, one key, one function
     (§3.4). Either §3.2's list gains the entry, or foundation injects the auth environment on runner's
     behalf. Runner has no preference; it must not be ambiguous.
+    **Resolved:** §3.2's list gained the entry, and remote's entry came off it in the same pass
+    (remote does not call `.reveal()` — it hashes the presented token). The list is now exactly two:
+    roster's compiler and runner's `attachAuthEnv()`.
 20. **Roster §6.2's `dontAsk` flag is resolved.** Verified: in `dontAsk`, `canUseTool` is skipped and
     the call denied. Roster's reading — *never prompt, auto-reject* — is correct, and its mode ladder
     `plan < dontAsk < default < acceptEdits` stands as written. Roster's M0 no longer needs to

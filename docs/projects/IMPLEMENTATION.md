@@ -192,6 +192,12 @@ configured roots.
   project id, its activity timeline, and its work items.
 - `browse` lists directories only, rejects `..` escapes outside every configured root, and
   returns 401/403 through the same auth as the rest of the API (D5).
+- `browse` resolves the requested path **and every listed entry** to its real path before the
+  browse-root containment check: a directory junction or symlink created inside a browse root
+  and pointing outside it (e.g. `mklink /J %USERPROFILE%\escape C:\`) is not listed and is
+  refused with 403 when requested directly, even though its literal path is root-prefixed.
+  UNC and network paths are rejected. Test on NTFS with a real junction, not a mock — a
+  lexical prefix check passes this case and is exactly the bug (DESIGN §2.1).
 
 ## M10 — End-to-end acceptance
 
