@@ -15,10 +15,14 @@ kanban, no command palette, no theme editor.
 M3 assumes roster, projects, orchestrator (solo assignments) and runner can complete a launch end to
 end. M5 assumes orchestrator's question bridge. M10 assumes remote.
 
-**Blocked on reconciliations** (DESIGN §19): **R1** (static route + SPA fallback) blocks M1's
-production build path; **R2** (board-order write endpoint) blocks M3's reorder acceptance; **R3**
-(grant gate on the assignment launch path) blocks an M10 acceptance test. Each milestone names its
-fallback so nothing stalls.
+**Reconciliations**: all seven of DESIGN §19 are **resolved** in their target docs, so nothing here is
+blocked and no milestone carries a fallback. The three that shaped this plan are now capabilities to
+build against: foundation §6.4 serves the bundle and the SPA history fallback (M1), roster §9.5's
+`PUT /api/roster/board-order` persists the board order (M3), and remote §6.2's initiate tier covers
+`POST /api/assignments/solo` (M10).
+
+**Cross-element sequencing that does bite**: `GET /api/orchestrator/status` is orchestrator M9, which
+lands after ui M2 — M2 says how it degrades until then.
 
 ---
 
@@ -27,14 +31,14 @@ fallback so nothing stalls.
 Vite + React 18 + TypeScript. Wire the whole spine before any feature: the API client, the event
 stream, the theme tokens, routing, and the boot sequence.
 
-- Build to `dist/` and hand it to the core's static route (R1); dev runs Vite with a proxy to the
-  core's `run/core.port`. **Fallback if R1 has not landed**: dev proxy only, and the production build
-  is verified by serving `dist/` from a static server on the same origin shape.
+- Build to `dist/` and hand it to the core's static route — foundation §6.4 serves the bundle plus the
+  SPA history fallback on both listeners; dev runs Vite with a proxy to the core's `run/core.port`.
 - API client per DESIGN §3.1: relative `/api`, optional bearer, the five typed status-code outcomes,
   server messages surfaced verbatim, `fetch`-to-object-URL helpers for avatars and downloads.
-- `EventStream` singleton per §3.3: connect, ticket dance when a token is held, watermark in
-  `localStorage`, `?since=` replay on reconnect, exponential backoff, heartbeat handling, and the
-  event→cache invalidation map of §3.4.
+- `EventStream` singleton per §3.3: connect with the `types=` subscription filter (foundation §6.5) so
+  the global feed never carries another session's `session.delta`/`.message`/`.tool.*`/`.usage`, ticket
+  dance when a token is held, watermark in `localStorage`, `?since=` replay on reconnect (same filter,
+  same subset), exponential backoff, heartbeat handling, and the event→cache invalidation map of §3.4.
 - Boot sequence: `GET /api/config/effective` + `GET /api/health` → edition, module list, policy flags,
   health warnings → then render. A failed boot renders a diagnostic screen with the core URL and the
   log path, never a blank page.
@@ -61,7 +65,12 @@ The home screen, read-first, plus the smallest path to having something to launc
 
 - `GET /api/roster/agents` → card grid; card anatomy per DESIGN §5.2 including avatar kinds, specialty
   chip, tagline, badges (needs-credential, diagnostic, overseer, pinned) and the archive filter.
-- `GET /api/orchestrator/status` → status pill and headline per agent, live from session events.
+- Status pill and headline per agent. The source is `GET /api/orchestrator/status` (DESIGN §5.2), but
+  that endpoint is **orchestrator M9**, which lands after this milestone: until it does, the board
+  derives the same six-word vocabulary (`idle | queued | working | awaiting_user | paused | halted`)
+  from `session.*` events and the session record, and swaps to the endpoint behind one accessor when it
+  ships. The rendering, the words and the tests do not change — only where the value is read. This is a
+  deliberate degrade, not a fallback for an unresolved contract.
 - Projects rail from `GET /api/projects` with status and health chips.
 - **Minimal quick-add** (the register-an-existing-folder half of DESIGN §8.1): path field +
   `GET /api/fs/browse` navigator, `POST /api/projects/inspect` → prefilled form with warnings →
@@ -91,8 +100,8 @@ The north star's central gesture, and the first milestone that starts work.
   droppables for project cards and the board's sortable context. Drag preview, target highlighting,
   the floating "Launch X on Y" label, `Esc` cancel, rail auto-scroll, invalid targets dimmed with a
   reason.
-- Reorder persistence via roster's board-order endpoint (**R2**). **Fallback if R2 has not landed**:
-  reorder is local-only and clearly marked as not persisting; the milestone is not considered complete.
+- Reorder persistence via `PUT /api/roster/board-order { order: string[] }` (roster §9.5): the whole
+  ordered id list in one request, applied optimistically, rolled back with a toast on failure.
 - Every non-drag equivalent of DESIGN §5.4: card `⋯` → Launch on… / project page → Launch an agent…,
   and the explicit **Reorder mode** with ▲▼ controls.
 - Launch flow per DESIGN §6: agent × project × prompt; collapsed Details (role, write, work items);
@@ -109,7 +118,8 @@ The north star's central gesture, and the first milestone that starts work.
   project, with each target change announced in a live region.
 - Touch-only on a 390px viewport: the launch flow is reachable **without any drag**, and every control
   in it has a ≥44px target.
-- Reorder persists across a reload and across a second client (R2); an optimistic reorder that fails
+- Reorder persists across a reload and across a second client; replaying the same order is a no-op and
+  an unknown agent id is a 400 that leaves the previous order intact; an optimistic reorder that fails
   rolls back with a toast.
 - A `provisioning`, `archived`, or `missing` project is not a valid drop target, dims during the drag,
   and explains why.
@@ -125,7 +135,8 @@ Watch, steer, and stop — the second half of the core loop.
 
 - Header, blocks, controls, and the usage rail per DESIGN §9. Structured rendering only; the ~2KB
   ANSI-SGR formatter scoped to `Bash` results.
-- Transcript load (`?from=`, paged, whole lines, next offset retained), live stream on
+- Transcript load: `?tail=<bytes>` on open (runner §11.1), `?from=<offset>&limit=` to page and to
+  re-tail after a disconnect, whole lines, offsets retained; live stream on
   `/api/sessions/:id/stream`, merge on `seq`, 500-block cap with **Load earlier**.
 - Controls mapped to runner §11.1: Steer (with interrupt toggle), Pause, Resume, Stop, Continue,
   Relaunch, Pin — inapplicable ones disabled **with the reason**.
@@ -161,7 +172,9 @@ Watch, steer, and stop — the second half of the core loop.
 - Badge in the rail/tab bar from `GET /api/orchestrator/status`, live from
   `assignment.question.raised` / `.answered`.
 - `/questions/:id` deep link (the ntfy target).
-- Client-side join for asking agents / project / assignment until **R5** lands.
+- **No client-side join**: orchestrator §11.1's pinned list projection carries the recommendations
+  inline and the assignment / project / session ids denormalised, so the inbox is one request cold.
+  A cold `/questions` load issuing a second request is a milestone failure, asserted by request count.
 
 **Acceptance**
 - All three kinds (`question`, `approval_gate`, `budget_halt`) render from the same component with the
@@ -317,9 +330,9 @@ Thin wrapper, seven responsibilities, nothing else.
 - Per-agent grants show `expiresAt` on both the settings screen and the board card, and update live on
   `remote.agent.access.*`.
 - A remote launch of an ungranted agent shows the grant prompt and retries automatically — tested
-  against `POST /api/assignments/solo` (this is the acceptance that **R3** unblocks; until it lands,
-  the test is recorded as failing rather than skipped, because a passing grant gate on
-  `POST /api/sessions` alone does not protect the path the UI uses).
+  against **`POST /api/assignments/solo`**, the path the UI actually uses, which remote §6.2's
+  initiate tier now covers; a pattern launch with two ungranted agents prompts **once** from the
+  `409` body's list, not twice.
 - Work edition: the Remote section is absent, Health & about carries the one-line explanation, and
   `orchestrator.notify` renders disabled with the layer that set it.
 - Health warnings from `/api/health` (degraded keyfile secret provider, `ANTHROPIC_API_KEY` present)

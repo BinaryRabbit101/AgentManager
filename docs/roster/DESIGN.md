@@ -343,6 +343,18 @@ Path-scoped rules from an assignment (`Edit(./services/billing/**)`) are interse
 and the complement is added to `deny`, so an assignment's scope becomes *enforced*, not advisory —
 answering one of orchestrator's open questions from the roster side.
 
+**`write === false` is enforced here, by the compiler, and nowhere else.** When
+`AssignmentContext.write` (§13, runner §15.1-3) is `false`, the compiler unions a **mutating-tool
+deny** into the assignment layer before anything else in that layer is applied: bare-name denies for
+`Edit`, `Write` and `NotebookEdit` (which remove the tool definitions outright, §6.1) plus the
+scoped mutating `Bash` rules from the same catalogue the baseline uses (`Bash(rm *)`, `Bash(mv *)`,
+`Bash(cp *)`, `Bash(git commit*)`, `Bash(git push*)`, and the shell-redirection forms). Because
+`deny` is a union no later layer can remove, this holds **regardless of what the baseline, the
+project, or an elevation allowed** — a read-only assignment is read-only in the tools, not only in
+the workspace lease projects took. Orchestrator therefore states one flag and enumerates nothing
+(orchestrator §2.5, §17 R2); a declared `scopeRules.deny` / `.ask` is additive on top of this floor,
+never a substitute for it.
+
 **One escape hatch, deliberately loud.** A project may declare
 `permissionElevation: { allow: [...], reason: "..." }`. This is the only way to widen past the
 roster baseline. It requires the reason string, it is surfaced on the launch flow and in the
@@ -742,8 +754,8 @@ The contract runner consumes. One exported function, the only place SDK option s
 compileSession(input: {
   agent: ResolvedAgent;
   project?: ProjectContext;          // cwd, permissionOverride, elevation, env, instructions, workspace
-  assignment: AssignmentContext;     // id, role, scope rules, budget — always present (D4: every
-                                     // session belongs to an assignment, solo included)
+  assignment: AssignmentContext;     // id, role, write, scope rules, budget — always present
+                                     // (D4: every session belongs to an assignment, solo included)
   secrets: SecretResolver;
 }): Promise<{
   options: ClaudeAgentSdkOptions;    // the object handed to query()
@@ -763,6 +775,21 @@ interface ProjectContext {
   env: EnvEntry[];                   // literal values and secretRefs, already ordered by projects
   instructions?: string;             // resolved project brief text → the §4 fourth slot
   workspace: { kind: 'primary' | 'worktree'; path: string; branch: string | null };
+}
+```
+
+`AssignmentContext` is orchestrator's, in runner §15.1-3's shape, and is likewise raw input. The
+fields the compiler consumes:
+
+```ts
+interface AssignmentContext {
+  id: string;
+  role?: Role;                       // the seat's role → the §4 roles/<role>.md addendum
+  write: boolean;                    // false ⇒ the compiler adds a mutating-tool deny (§6.2)
+  scopeRules: { allow?: string[]; deny?: string[]; ask?: string[] };   // raw rules, composed as
+                                                                      // the assignment layer (§6.2)
+  tokenBudget: number | null; tokensUsed: number;
+  roundCap: number | null; roundsUsed: number;
 }
 ```
 

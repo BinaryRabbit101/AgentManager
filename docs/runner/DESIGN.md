@@ -479,10 +479,15 @@ The agent regains the full conversation, knows the answer, and re-issues the too
 honest cost of stage 2 versus stage 1 is **one re-decided tool call and one extra turn**, not lost
 work — and it is bounded, visible in the transcript, and reported in `session.resumed`.
 
-**Expiry.** A question unanswered after `runner.question.expireHours` (default **24**) is marked
-`expired` by the orchestrator; runner moves the parked session to `interrupted` with
-`exit_reason: question_expired`. `interrupted` rather than `failed` because nothing errored — the
-system deliberately stopped waiting — and the expired card stays in the inbox as the record.
+**Expiry — two halves, one owner each.** The `questions.status → expired` transition is
+**orchestrator's**: its sweep runs against `runner.question.expireHours` (default **24**, runner's
+config, read not copied — orchestrator §12), flips the row, applies its own per-kind consequences
+(orchestrator §6.5), and emits **`question.expired`**. Runner owns only the session half: it
+**reacts** to that event by moving the parked session to `interrupted` with
+`exit_reason: question_expired`, and never expires a row itself. `interrupted` rather than `failed`
+because nothing errored — the system deliberately stopped waiting — and the expired card stays in the
+inbox as the record. Boot picks up whatever was missed while the core was down (§9.2 item 3), from the
+row rather than a replayed event.
 
 **A deferred improvement, named because it is the right long-term answer.** A `PreToolUse` hook can
 return `permissionDecision: "defer"`, which ends the query **with the tool call still pending** so it
@@ -779,6 +784,16 @@ listener binds. In order:
 3. **`paused` stays `paused`.** Nothing is auto-resumed on boot: the user may not be there, and a
    parked-on-question session already has a resume trigger (the answer). Parked sessions whose
    question has since expired are moved to `interrupted` / `question_expired`.
+
+   **Every session paused with `exit_reason: awaiting_answer` re-subscribes to `question.answered`
+   for its question id here**, on boot, before any listener binds. This is what makes stage 3
+   (§5.4) survive a restart: the trigger is the **persisted `questions` row**, never an in-memory
+   promise — the promise `QuestionBridge.ask()` returned died with the previous process, and nothing
+   in the resume path may depend on it. The boot task reads each parked session's open question, and
+   from then on the answer arriving hours later resumes the session exactly as it would have without
+   the restart. A parked session whose question is already `answered` (the answer landed while the
+   core was down) is re-queued immediately from the row, without waiting for an event that will never
+   be emitted again.
 4. **Leases** for assignments that are no longer `open` are released. Runner starts after projects
    (it `dependsOn` it), so projects' own sweep has already marked truly abandoned leases `orphaned`;
    since projects' uniqueness index only covers `state = 'active'`, a fresh session for the same
@@ -1200,8 +1215,10 @@ Per CLAUDE.md's ground rule, these are raised rather than silently diverged from
     `plan < dontAsk < default < acceptEdits` stands as written. Roster's M0 no longer needs to
     re-derive this, though it should still confirm it against the pinned SDK version.
 21. **Projects §4.3 — refusal retryability.** Runner needs to distinguish "wait, this will free up"
-    from "this can never work here". Requested: a `retryable: boolean` on `WorkspaceRefusal`. Until
-    then runner treats only "another write-capable assignment holds the tree" as retryable.
+    from "this can never work here". Requested: a `retryable: boolean` on `WorkspaceRefusal`.
+    **Resolved:** projects §4.4 carries `retryable: boolean` on `WorkspaceRefusal`, so runner reads
+    the flag rather than pattern-matching the reason. §3.1 step 4 and §6.2's blocked entries are
+    written against it.
 
 ---
 

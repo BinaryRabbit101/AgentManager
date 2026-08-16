@@ -112,7 +112,7 @@ store whether any session references the id; if that store does not exist yet, p
 
 ## M4 — Permission composition and the option compiler
 
-The heart of the element. `compilePermissions(baseline, projectOverride, assignmentScope)` per
+The heart of the element. `compilePermissions(baseline, projectOverride, assignmentScope, policy)` per
 DESIGN §6.2, and `compileSession(...)` per §13 producing the SDK options object. Includes:
 persona composition (preset append vs replace, role addendum, runtime block), the default-deny
 `canUseTool` wiring point, `ask` rules via the inline settings object, the `env` spread, `cwd` and
@@ -126,6 +126,10 @@ persona composition (preset append vs replace, role addendum, runtime block), th
   minimum in both directions, `policy.globalDeny` beating a project allow, `permissionElevation`
   present (widens, and is flagged in the result), and the same elevation under
   `policy.allowPermissionElevation: false` (dropped, with a diagnostic).
+- A `write: false` assignment yields the mutating-tool deny (`Edit`, `Write`, `NotebookEdit` and the
+  scoped mutating `Bash` rules) **regardless of baseline allows** — asserted against an agent whose
+  baseline and project override both allow all three, and against an assignment that declares no
+  `scopeRules` at all, since the flag alone must carry it (DESIGN §6.2).
 - Restriction is expressed as `deny`, never by omission: a test asserts that for every agent, a
   tool absent from `allow` and absent from `deny` still cannot execute — via the compiled
   `canUseTool` default-deny — and that a bare-name deny removes the tool definition.
@@ -180,8 +184,9 @@ matching `mcp__<server>__*` allow rule, and mapping MCP server statuses (`pendin
 ## M7 — Capabilities, roles, and the overseer surface
 
 `capabilities.overseer` and `capabilities.roles`. Compiler grants the `mcp__agentmanager__*` allow
-rules to overseers and the scoped subset (`send_to_agent`, `read_mailbox`) to workers when an
-assignment is present. Enforce: the SDK subagent tool is never granted; overseer requires `overseer`
+rules to overseers (all six tools) and the scoped subset — `send_to_agent`, `read_mailbox`,
+`report_status`, `request_user_decision`, the four of DESIGN §11 — to workers when an assignment is
+present. Enforce: the SDK subagent tool is never granted; overseer requires `overseer`
 in `roles`; model-floor warning; higher default turn/budget when unset. Role addendum lookup from
 `roles/<role>.md`. Read-only roster projection for overseers (names, specialties, tags,
 capabilities — no permissions, no integrations).
@@ -189,7 +194,9 @@ capabilities — no permissions, no integrations).
 **Acceptance**
 - An overseer's compiled options include the orchestrator tool allow rules and exclude the
   `Agent`/subagent tool (asserted on both the current and legacy tool names).
-- A non-overseer with an assignment gets only the scoped messaging rules.
+- A non-overseer with an assignment gets exactly the four scoped rules — `send_to_agent`,
+  `read_mailbox`, `report_status`, `request_user_decision` — and neither `list_roster` nor
+  `create_assignment` (asserted on the compiled rule set, both directions).
 - Setting `overseer: true` without `roles` containing `overseer` is a validation error.
 - The roster projection handed to an overseer contains no `permissions` or `integrations` key for
   any agent (asserted by deep key scan).

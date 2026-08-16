@@ -1,6 +1,6 @@
 # Foundation — Implementation
 
-Ordered milestones for the v1 foundation. Each is independently verifiable and leaves the tree in a working state. Milestones 1–6 are prerequisites for any other element's implementation; 7–10 can overlap with roster/projects work.
+Ordered milestones for the v1 foundation. Each is independently verifiable and leaves the tree in a working state. **M1–M8 are prerequisites** for any other element's implementation; **M9–M11 can overlap with element work**.
 
 Scope discipline: build only what [DESIGN.md](DESIGN.md) specifies, and nothing from its §7 deferred list.
 

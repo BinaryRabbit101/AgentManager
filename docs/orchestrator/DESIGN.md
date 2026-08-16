@@ -134,6 +134,13 @@ questions (`QuestionBridge.cancel`), stops any of its sessions still `running`/`
 `RunnerService.stop`, and emits **`assignment.closed`** — which runner requires (runner §15.1-5) to
 release the workspace lease.
 
+**One exception, and it is the only one:** a close whose `close_reason` is `converged` sets
+`phase: converged`, not `phase: closed` (§3.3). Everything else about the close is identical —
+`status: closed`, `closed_at`, the cancellations, the stop calls, the event. The exception exists
+because `converged` is the outcome the UI renders differently (ui §10.2 shows a completion summary and
+the artifact rather than a generic closed header), and a phase value no code path can set is a lie in
+the state machine. `status` remains the only thing runner reads, and it is `closed` either way.
+
 ### 2.3 Creation paths
 
 Three, all through one internal function so the invariants hold once.
@@ -141,7 +148,8 @@ Three, all through one internal function so the invariants hold once.
 ```ts
 interface AssignmentService {                       // ctx.provide('orchestrator', …)
   createAssignment(req: CreateAssignmentRequest): Promise<CreateAssignmentResult>;
-  createSolo(req: { projectId; agentId; role?; write?; prompt; priority? }): Promise<{ assignmentId; sessionId }>;
+  createSolo(req: { projectId; agentId; role?; write?; prompt; priority?;
+                    workItemIds?: string[] }): Promise<{ assignmentId; sessionId }>;
   closeAssignment(id: string, reason: CloseReason): Promise<void>;
   getAssignmentContext(id: string): Promise<AssignmentContext>;   // runner §15.1-3
   questionBridge: QuestionBridge;                                  // runner §5.2
@@ -173,6 +181,16 @@ the first turn immediately; otherwise the assignment sits at `phase: planned` un
 behind the same validation, plus the extra rules of §9 that only apply to a machine caller
 (nesting depth, budget debited from the parent, mandatory non-null budget, approval gate when
 `write: true`).
+
+**Work-item linking, on all three paths.** `workItemIds?: string[]` is accepted by
+`createSolo`, by `CreateAssignmentRequest`, and by `create_assignment` (§4.3). The engine is the
+**sole writer** of `work_item_assignments` (projects §1.5, §17 R4): on create it calls
+`projects.linkWorkItems(assignmentId, workItemIds)` inside the same creation path as the assignment
+row, and on close `projects.unlinkWorkItems(assignmentId)`. Projects derives the item's status from
+those rows — `open` → `in_progress` when a linking assignment starts, back to `open` when every
+linked assignment ends unmarked — so orchestrator never writes a work-item status itself. Both calls
+are idempotent and validate that each item belongs to the assignment's project; an unknown or
+cross-project id is a named refusal at create, not a silent drop. Passing no ids writes no rows.
 
 ### 2.4 Membership, roles, seats
 
@@ -218,10 +236,12 @@ security boundary anyway (the same argument roster §7.2 makes about skills). Pr
 paths onto the leased workspace root (projects §1.3) before roster composes them; orchestrator states
 them repo-relative and never computes an absolute path.
 
-A `write: false` assignment supplies **no** scope rules and relies on the lease's `write: false` — which
-today restricts the workspace hold but not the tools. That gap is raised as R2 (§17); until it is
-closed, a read-only assignment that must genuinely not write declares a scope with an empty writable
-path set, which composes to a full mutating-tool deny.
+A `write: false` assignment supplies **no** scope rules and needs none: **roster's compiler enforces
+the flag**, unioning a mutating-tool deny into the assignment layer whenever
+`AssignmentContext.write === false` (roster §6.2, runner §15.1-3). So a read-only assignment is
+read-only in the tools as well as in the workspace hold projects took, by the one flag rather than by
+orchestrator remembering to enumerate every mutating tool (§17, R2). Orchestrator states `write` and
+the scope paths; it never composes a rule set.
 
 ### 2.6 Conflict awareness between concurrent assignments
 
@@ -334,9 +354,11 @@ which under D2's shared rate-limit windows is real money.
 2. **Last assistant message**, captured live from `session.message` and persisted at
    `session.ended`. Used when the agent finished without reporting: the turn is marked
    `unstructured`, which is a breaker input (§8).
-3. **Transcript tail**, if the core restarted mid-turn and (2) was lost. This needs an in-process
-   transcript read that runner does not currently expose — raised as R3 (§17). Until it lands, a turn
-   whose output was lost to a restart is marked `unstructured` and re-run once.
+3. **Transcript tail**, if the core restarted mid-turn and (2) was lost. The engine calls runner's
+   in-process `getTranscriptTail(sessionId, { maxBytes })` (runner §11.2) — whole JSONL lines from the
+   end of the file, no HTTP call to our own process — and recovers the last assistant message from it.
+   A pruned transcript returns `pruned: true`, and only *then* is the turn marked `unstructured` and
+   re-run once (§17, R3).
 
 The engine never parses prose for a verdict. A turn either reported structurally or it did not.
 
@@ -388,7 +410,9 @@ things are blocking" report is treated as `revise` — the words lose to the str
 answer to "two LLMs critiquing each other could loop politely forever": politeness cannot terminate
 the loop early, and the round cap terminates it late. Neither agent can extend the cap.
 
-**Termination in all cases produces a card.** On `converged` the user gets an informational
+**Termination in all cases produces a card.** On `converged` the engine closes the assignment with
+`close_reason: converged` and sets **`phase: converged`** — §2.2's one exception to "closing sets
+`phase: closed`", and the only path that reaches that phase value. The user gets an informational
 completion card (not a question) with the artifact path, rounds used, tokens used, and the critic's
 final verdict. On `round_cap` the user gets a **question** card: *Accept as-is* / *Run N more rounds*
 (bounded by `maxRoundCap`) / *Close unfinished*, with each seat's last stance attached (§6). The user
@@ -513,7 +537,9 @@ knowing their credentials").
   "members": [ { "agentId": "ada-architect", "role": "architect" },
                { "agentId": "sam-skeptic",  "role": "skeptic" } ],
   "scope": { "paths": ["docs/billing/"], "description": "…", "artifactPath": "docs/billing/plan.md" },
-  "write": false,
+  "write": true,                                       // the drafter must write the artifact; the
+                                                       // scope paths confine every mutating tool to
+                                                       // `docs/billing/` (§2.5)
   "tokenBudget": 150000,                               // required for a machine-created assignment
   "roundCap": 2,
   "workItemIds": ["01J…"],
@@ -724,8 +750,12 @@ with one recommendation and says so. Configurable off with
 
 ### 6.5 Expiry
 
-Runner expires a question at `runner.question.expireHours` (24) and moves its parked session to
-`interrupted`. Orchestrator's own rules on top:
+**Orchestrator owns the transition; runner owns the session.** The `questions.status → expired` flip
+is this element's, performed by its sweep (and the boot sweep of IMPLEMENTATION M2) against
+`runner.question.expireHours` (24, read from runner's config, §12) — orchestrator is the only writer
+of the `questions` table, so it is the only thing that may expire a row. It emits `question.expired`;
+runner **reacts** by moving the parked session to `interrupted` / `question_expired` (runner §5.4) and
+expires nothing itself. Orchestrator's own rules on top of the flip:
 
 - An expired `approval_gate` is a **denial**, not a pass: the assignment closes with
   `gate_expired`. Fail closed is the only defensible default for something whose whole purpose is a
@@ -825,9 +855,10 @@ carrying whatever recommendations exist. It never auto-approves; expiry is denia
 What requires one in v1 — a deliberately short list, because a gate that fires constantly gets
 clicked through:
 
-1. An overseer calling `create_assignment` with `write: true`. (v1's slice is docs/planning with
-   `write: false`, so this gate does not fire in the v1 slice at all — it is the thing that makes v2's
-   code-editing patterns safe to switch on.)
+1. An overseer calling `create_assignment` with `write: true`. (v1's headline slice is a *user*-created
+   pair — it is `write: true`, but scoped to a docs path — and v1 ships no overseer pattern, so this
+   gate does not fire in the v1 slice at all. It is the thing that makes v2's code-editing patterns
+   safe to switch on.)
 2. Any circuit-breaker halt that offers a "continue" option (§8.1).
 3. A budget raise beyond `budgets.raiseMaxFactor` × the original.
 4. Starting a **write-capable** assignment whose scope overlaps another **write-capable** open
@@ -911,7 +942,7 @@ once `tailscale serve` gives the UI real TLS — it needs no third party at all)
 
 ```
 POST   /api/assignments                    create from a pattern → { id, warnings, gate? }
-POST   /api/assignments/solo               { projectId, agentId, prompt, role?, write? } → { assignmentId, sessionId }
+POST   /api/assignments/solo               { projectId, agentId, prompt, role?, write?, workItemIds? } → { assignmentId, sessionId }
 GET    /api/assignments                    ?projectId=&status=&phase=&agentId=&limit=&before=
 GET    /api/assignments/:id                record + members + turns + budget + open questions
 PATCH  /api/assignments/:id                tokenBudget, roundCap, goal   (never members or pattern)
@@ -933,7 +964,7 @@ screen a phone loads cold and it must cost exactly one request. Each item carrie
   "prompt": "…", "options": [ { "id": "disk", "label": "…" } ],
   "createdAt": "…", "expiresAt": "…",
   "assignmentId": "01J…", "projectId": "…", "sessionId": "01J…",
-  "recommendations": [ { "agentId": "sam-skeptic", "role": "critic",
+  "recommendations": [ { "agentId": "sam-skeptic", "role": "skeptic",
                          "stance": "disk", "strength": "strong", "rationale": "…" } ],
   "disagreement": true, "contested": false, "answeredVia": null }
 ```
@@ -1056,10 +1087,13 @@ The v1 slice, in order (milestones in [IMPLEMENTATION.md](IMPLEMENTATION.md)):
 6. Guardrails, notifications, aggregation and the status/conversation APIs.
 
 Why the pair on docs/planning is still the right headline: it exercises messaging, turn-taking,
-convergence, question aggregation and budgets end to end, while `write: false`-adjacent doc scope
-means the worst outcome of a bad round is a bad paragraph — not two agents interleaving edits in one
-source tree. It also runs in the shared primary tree (projects §4.1), so it needs no worktree
-machinery to work at all.
+convergence, question aggregation and budgets end to end, while a **doc-only write scope** means the
+worst outcome of a bad round is a bad paragraph — not two agents interleaving edits in one source
+tree. The slice is `write: true`, because the drafter's whole job is writing the artifact file; what
+makes it safe is the *scope*, not the absence of write. `scope.paths` is the artifact's directory, so
+§2.5's `scopeRules` confine `Edit`/`Write`/`NotebookEdit` to it and roster denies the complement. It
+also runs in the shared primary tree (projects §4.1), so it needs no worktree machinery to work at
+all.
 
 ---
 
@@ -1204,7 +1238,8 @@ consumers being lied to.
 
 ## 17. Reconciliations raised
 
-Per CLAUDE.md's ground rule, these are raised rather than silently diverged from.
+Per CLAUDE.md's ground rule, these are raised rather than silently diverged from. **All eight are now
+resolved** — each target doc was amended, and the resolution names it under the item.
 
 **R1 — roster §13: mount the orchestrator toolset.** `compileSession` must place the per-launch MCP
 server instance at `options.mcpServers.agentmanager`, obtained via
@@ -1212,6 +1247,9 @@ server instance at `options.mcpServers.agentmanager`, obtained via
 omit it (with the existing rule-dropping diagnostic) when the module is absent. Roster §13's mapping
 table gains one row. The alternative — adding `mcpServers` to runner's option whitelist (runner §3.3)
 — is worse: it would put SDK option shaping in two elements. Roster is asked to take it.
+**Resolved — see roster §13**, whose mapping table now carries the row and states that
+`compileSession` mounts the per-launch instance, omitting the key when `require('orchestrator')`
+returns undefined. Runner's whitelist (runner §3.3) is unchanged.
 
 **R1b — roster §11: the worker tool grant.** Roster currently grants a worker "at most
 `send_to_agent` and `read_mailbox`". Workers also need **`report_status`** (the structured completion
@@ -1220,6 +1258,8 @@ channel the convergence rule reads; without it there is no non-prose way for a w
 disables the aggregation feature the README requires). Neither creates work, reveals the roster, nor
 reaches outside the assignment — all four remain assignment-scoped in the server (§4.2). Requested
 grant: overseer = all six; worker = those four.
+**Resolved — see roster §11**, which now states the four-tool worker grant in its own table and
+names the assignment-scoping as the server's job; roster IMPLEMENTATION M7 compiles and tests it.
 
 **R2 — runner §15.1-3 / roster §6.2: `AssignmentContext.scopeRules` cannot express `deny` or `ask`.**
 A flat allow-list works for a write scope (roster derives the complement) but cannot express a
@@ -1228,6 +1268,11 @@ genuinely read-only assignment. Requested: either type the field as
 deny when `AssignmentContext.write === false`. Preference: the latter — one flag, enforced in the sole
 composer. Orchestrator has a workaround (§2.5) and is not blocked. The same field is where a declared
 per-seat model override would eventually live (§18); that is not requested for v1.
+**Resolved — see roster §6.2** (and roster §13's `AssignmentContext` shape): **both** halves landed.
+`scopeRules` is now the three-bucket `{ allow?, deny?, ask? }` shape in runner §15.1-3, *and* roster's
+compiler unions a mutating-tool deny into the assignment layer on `write === false`, which no later
+layer can remove. §2.5 no longer carries a workaround; roster IMPLEMENTATION M4's acceptance covers
+the flag against permissive baselines.
 
 **R3 — runner §11.2: an in-process transcript read.** Requested:
 `RunnerService.getTranscriptTail(sessionId, { maxBytes })` (or a foundation transcripts repository
@@ -1235,12 +1280,18 @@ method). Needed to recover a turn's output when the core restarts mid-turn and t
 `session.message` capture is lost. Runner already serves this over HTTP; the ask is the in-process
 equivalent, so orchestrator does not make an HTTP call to its own process. Without it, such a turn is
 marked `unstructured` and re-run — correct but wasteful.
+**Resolved — see runner §11.2**: `getTranscriptTail(sessionId, { maxBytes })` is on `RunnerService`,
+serving whole JSONL lines plus the next offset and reporting `pruned: true` rather than throwing.
+§3.2's third output channel now reads it directly.
 
 **R4 — projects §1.5: nobody writes `work_item_assignments`.** Projects owns the table and derives
 work-item status from it ("an item flips to `in_progress` when an assignment linking to it starts"),
 but no element declares the writer. Requested: `projects.linkWorkItems(assignmentId, workItemIds[])`
 and `unlinkWorkItems(assignmentId)` on the projects service, called by orchestrator at assignment
 create and close.
+**Resolved — see projects §1.5**, which names orchestrator's assignment-creation path (both the
+pattern engine and the solo endpoint) as the sole writer and exposes both calls, idempotent and
+project-validating, on its §5 service surface. Orchestrator's side is wired in §2.3.
 
 **R5 — foundation §3.3 and the edition files: the notification channel.** Requested: (a) the secret
 key namespace gains `notify.<channel>.<field>` (v1 uses `notify.ntfy.topicUrl`, which is a
@@ -1248,6 +1299,10 @@ capability URL and therefore a secret); (b) `edition.work.json` sets
 `orchestrator.notify.enabled: false`, since outbound push from a work machine is a policy decision
 rather than a preference. If foundation would rather own a general `Notifier`, orchestrator will
 consume it instead — the trigger logic stays here either way.
+**Resolved — see foundation §3.3** (the key namespace gains `notify.<channel>.<field>`, with
+`notify.ntfy.topicUrl` named as a capability URL) **and foundation §2.3** (`edition.work.json` sets
+`orchestrator.notify.enabled: false`). Foundation declined to own a `Notifier`; the trigger and the
+channel stay here as §10 describes.
 
 **R6 — runner §15.1-7: who resumes what.** Runner's contract says orchestrator must not separately
 relaunch a session runner parked. Confirmed and honoured: orchestrator never pauses or resumes a
@@ -1256,10 +1311,15 @@ orchestrator **may** call `RunnerService.stop()` on sessions of an assignment it
 session that tripped `tool_flood`, and that runner's auto-resume applies **only** to sessions runner
 itself parked with `exit_reason: awaiting_answer`. Stated so the boundary is written down rather than
 inferred.
+**Resolved — see runner §15.1-7**, which now states the boundary in full in exactly those terms:
+orchestrator **may** call `RunnerService.stop()` on any session, and auto-resume is runner's alone and
+applies only to sessions runner parked with `exit_reason: awaiting_answer`.
 
 **R7 — foundation §1.4: `assignments.status` vocabulary.** Foundation ships the column without a
 vocabulary. Orchestrator pins it to `open | closed` (§2.2), with the richer state machine in an
 orchestrator-owned `phase` column. Recorded here so foundation's table description can name it.
+**Resolved — see foundation §1.4**, whose `assignments` row now states that the `status` vocabulary is
+exactly `open | closed` and that the richer lifecycle lives in orchestrator's own `phase` column.
 
 ---
 

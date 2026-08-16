@@ -71,8 +71,10 @@ origin per delivery mode:
 - These paths are unauthenticated on the remote listener by remote §3.1's static-shell bypass — the
   phone must be able to load the app before it can authenticate.
 
-Foundation's v1 route inventory (§6.4) does not currently name a static route; that gap is raised as
-**R1** (§19). Nothing else in this design depends on how it is implemented.
+Foundation §6.4 ships exactly this: the static route for the bundle plus the SPA history fallback, on
+**both** listeners, registered `remote: 'allow'`, with `/api/**` never falling through to the fallback
+so a typo'd endpoint stays a JSON 404 (§19, R1). Nothing else in this design depends on how it is
+implemented.
 
 **All API calls are same-origin and relative** (`/api/...`). There is no base URL to configure, no
 CORS (remote §9.2 #9 forbids CORS headers outright), and no build-time distinction between the
@@ -204,7 +206,7 @@ One thin `fetch` wrapper. Its entire responsibility:
 |---|---|---|
 | `401` | absent/invalid/expired/revoked token | clear the stored token, show the pairing screen, **never retry** |
 | `403 route_denied_remotely` | remote deny list | render as "not available remotely", **never retry**, never as a network error |
-| `409 remote_access_required` | no per-agent grant | show the grant prompt, then **retry the original request** (§5.5) |
+| `409 remote_access_required` | no per-agent grant | show the grant prompt, then **retry the original request** (§6) |
 | `429` | auth lockout or route bucket | honour `Retry-After`, show a countdown |
 | `503 remote_unavailable` | listener in `waiting` | only reachable locally; show the Tailscale state from `/api/remote/status` |
 
@@ -247,9 +249,12 @@ The pairing screen is reached only by a `401`. It is never shown in Electron or 
 
 The global feed exists so the board, the badge, and the inbox stay live everywhere. The per-session
 feed exists so a phone watching one session does not receive token deltas for every other running
-session. Foundation's `/api/events` fans out **all** events (§6.5) with no subscription filter, so in
-v1 the client discards high-volume types it did not ask for; a server-side filter is requested as
-**R4** (§19) because discarding them on a phone still costs the radio.
+session. Foundation's `/api/events` takes an optional **`types=`** filter (§6.5, closing §19's R4) — exact
+event types or `prefix.*` patterns, applied identically to the live fan-out and to the `since=`
+replay — so the global feed subscribes to lifecycle, question, assignment, project, roster and remote
+types and is never sent another session's `session.delta`/`session.message`/`session.tool.*`/
+`session.usage` at all. Per-session detail rides its own socket. Nothing is discarded client-side, and
+the reconnect replay returns the same subset the socket was streaming.
 
 **Authentication of the stream** is remote §3.4's ticket dance, and it is entirely inside the
 `EventStream` singleton: `POST /api/remote/stream-ticket` → open `?ticket=…` → discard the ticket.
@@ -350,8 +355,8 @@ the board answers "who do I have" and "what are they pointed at" on one screen.
 |---|---|
 | Avatar | `agent.avatar` — `emoji` (rendered at 28px in the system emoji font), `initials` + `color`, or `file` via the object-URL fetch of §3.1. Roster guarantees one of the three is always present, so there is no missing-image case. |
 | Name, specialty, tagline, tags | `agent.json` fields (roster §3) |
-| Status pill | `GET /api/orchestrator/status` → `idle \| queued \| working \| awaiting_user \| paused \| halted` (orchestrator §16.6), **verbatim vocabulary**, rendered as a coloured dot **plus the word** |
-| Headline + since | fleet status `headline` / `since` |
+| Status pill | `GET /api/orchestrator/status` → `idle \| queued \| working \| awaiting_user \| paused \| halted` (orchestrator §16.6), **verbatim vocabulary**, rendered as a coloured dot **plus the word**. That endpoint is orchestrator M9, later than ui M2, so the board's first cut derives the same vocabulary from `session.*` events and swaps to the endpoint when it lands — the pill's rendering and its words never change, only where the value comes from (IMPLEMENTATION M2). |
+| Headline + since | fleet status `headline` / `since`; before orchestrator M9, the session's `summary` and `started_at` stand in |
 | Live indicator | the `working` dot pulses gently (2s, `prefers-reduced-motion` disables it); a thin progress line animates while `session.delta` is arriving for that agent |
 | Overseer mark | `capabilities.overseer` — a small chevron beside the name |
 | "needs credential" | any integration whose API projection reports `resolved: false` (roster §10) |
@@ -384,10 +389,11 @@ on it.
 | **Another agent card** | `{ type: 'agent', agentId }` | Opens the **pair create dialog** (§10.4) with the dragged agent in the drafting seat and the target in the critic seat. Lands with the assignment view (M9); until then the target is inert. |
 | **The board grid itself** | sortable context | **Reorder.** Optimistic local reorder, then persist. |
 
-**Reorder persistence** uses roster's `agent_ui_state.board_order` (roster §2.2) — which currently has
-**no write endpoint**; that is raised as **R2** (§19) and is the one reconciliation this element
-genuinely cannot ship the north star without. The client sends the whole ordered id list, applies
-optimistically, and rolls back with a toast on failure.
+**Reorder persistence** uses roster's `agent_ui_state.board_order` (roster §2.2), written through
+**`PUT /api/roster/board-order { order: string[] }`** (roster §9.5, closing §19's R2) — a whole-list,
+idempotent, single-transaction rewrite, which is why the client sends the entire ordered id list
+rather than a per-card patch. It applies optimistically and rolls back with a toast on failure; an id
+the roster does not know is a 400 and the previous order stands.
 
 **During a drag**: the source card lifts (shadow + 2° tilt, ≤150ms), valid targets outline in the
 accent colour, invalid ones dim, the rail auto-scrolls near its edges, and a floating label reads
@@ -540,9 +546,12 @@ expiry, and Archive/Export. Archive is a confirm dialog naming what is retained 
 transcripts are kept; the id is never reused"); hard purge is offered only when roster reports it is
 possible (no sessions reference the agent) and is a typed confirmation.
 
-**Avatar upload is not in v1** — roster exposes no write endpoint for `avatar.kind: 'file'` (§19, R7).
-The wizard produces an emoji, the editor offers emoji or initials+colour, and a PNG dropped into the
-agent folder by hand is honoured on the next `roster.changed`.
+**Avatar upload is not in v1 — by choice, not for want of an API.** Roster ships
+`PUT /api/roster/agents/:id/avatar` (roster §9.5, closing §19's R7): multipart, size- and type-capped,
+written into the agent folder as `avatar.png` with `agent.json` flipped to `kind: 'file'` in the same
+operation, and `DELETE` reverting it. The *UI* for it stays deferred (§20) — the wizard produces an
+emoji, the editor offers emoji or initials+colour, and a PNG dropped into the agent folder by hand is
+honoured on the next `roster.changed`. When the upload UI is wanted, the endpoint is already there.
 
 ---
 
@@ -674,8 +683,9 @@ auto-resumes on the answer and a second resumer is the bug runner §15.1 #7 warn
 Opening a session view:
 
 1. `GET /api/sessions/:id` → record, status, `transcript_bytes`, resume affordances.
-2. `GET /api/sessions/:id/transcript?from=0&limit=…` → whole JSONL lines plus the **next offset**,
-   paged forward until the cap; the last offset is retained.
+2. `GET /api/sessions/:id/transcript?tail=<bytes>` → the last whole JSONL lines plus `from` / `next`
+   offsets; **Load earlier** then walks backwards, and `?from=<offset>&limit=…` pages forward from any
+   retained offset. Both forms return whole lines only and the offsets to resume from.
 3. If `running`, open `/api/sessions/:id/stream`.
 
 **`seq` is the join key.** Transcript lines carry `{seq, ts, type, …}` (runner §8.1) and every session
@@ -688,10 +698,12 @@ On disconnect the client keeps the last `seq` and the last byte offset. On recon
 a full refetch (remote §12.10). A pruned transcript returns the defined pruned result and renders as
 "transcript pruned" (runner §15.2 #11).
 
-Opening a **long, finished** session pages forward from byte 0, which is wasteful; a `tail=<bytes>`
-parameter mirroring runner's in-process `getTranscriptTail` is requested as **R6** (§19). Until then
-the view loads the first page, then jumps to the end via the paged offsets, and the cap keeps
-rendering bounded.
+Opening a **long, finished** session uses `GET /api/sessions/:id/transcript?tail=<bytes>` (runner
+§11.1, closing §19's R6) — the last N bytes snapped forward to a line boundary, one request regardless
+of transcript size, which is what step 2 actually issues on open before the view scrolls back with
+`from=`. `tail` and `from` are mutually exclusive. The companion rule matters just as much: a `from`
+computed from `sessions.transcript_bytes` that lands **mid-line advances to the next newline**, so an
+offset taken mid-flush can never split a record. The 500-block cap keeps rendering bounded either way.
 
 ---
 
@@ -777,10 +789,13 @@ question is an inbox that goes unanswered.
 The badge count comes from `GET /api/orchestrator/status`, is updated live by
 `assignment.question.raised` / `.answered`, and is mirrored to the Electron tray and taskbar.
 
-Rendering a card needs the asking agents, the project and the assignment; the shape of
-`GET /api/questions`'s list projection is unspecified in orchestrator §11.1, so **R5** (§19) requests
-the fields. Until then the client joins client-side against its cached roster/projects/assignments —
-correct, but N requests on a cold phone load, which is exactly what the ask fixes.
+Rendering a card needs the asking agents, the project and the assignment, and **orchestrator §11.1
+pins the list projection** that carries them (§19, R5): each item returns `id, kind, status, prompt,
+options, createdAt, expiresAt, assignmentId, projectId, sessionId, recommendations[]` (each with
+`agentId, role, stance, strength, rationale`), `disagreement`, `contested`, `answeredVia` — the same
+shape `GET /api/questions/:id` returns plus its answer record. So a cold phone load is **one request**
+and the client joins nothing: no roster, project or assignment fetch stands between arriving at
+`/questions` and drawing the first card.
 
 ### 11.2 Card anatomy
 
@@ -1027,8 +1042,9 @@ Non-negotiable for v1:
 - `session.delta` is coalesced per animation frame; the transcript renders at most 500 blocks with
   **Load earlier**.
 - Avatar object URLs are memoised and revoked on eviction.
-- The global event feed is filtered client-side until **R4** lands; per-session detail rides its own
-  socket so a phone never receives another session's deltas.
+- The global event feed is filtered **server-side** via `/api/events?types=` (foundation §6.5); per-
+  session detail rides its own socket, so a phone never receives another session's deltas and never
+  pays radio for bytes it would discard.
 - Query `staleTime` is generous (30s+) because invalidation is event-driven; the app polls nothing.
 
 ---
@@ -1101,8 +1117,10 @@ scope-overlap warning before submit, which is the real risk of two agents on one
 
 **6. Where does board order live and how is it written?**
 **`agent_ui_state.board_order` (roster §2.2), written as a whole ordered list, applied optimistically.**
-Roster put it in SQLite precisely so a drag does not produce a git diff. The write endpoint does not
-exist yet and is raised as R2 — it is the single hardest blocker on the north star's central gesture.
+Roster put it in SQLite precisely so a drag does not produce a git diff. The write path is
+`PUT /api/roster/board-order` (roster §9.5) — whole-list, idempotent, one transaction, so a dropped
+connection cannot leave a torn order with duplicate or missing positions. This was R2, the one
+reconciliation the north star's central gesture could not ship without; it is closed.
 
 **7. How does the UI authenticate streams, and does any screen know?**
 **Stream tickets, entirely inside the `EventStream` singleton** (remote §3.4). Screens subscribe to
@@ -1232,7 +1250,7 @@ Aggressively, and named so a later wave does not "discover" them as gaps.
 
 | Deferred | Why / what unblocks it |
 |---|---|
-| **Avatar upload UI** | Needs R7. Emoji + initials cover the character requirement at zero API surface. |
+| **Avatar upload UI** | The API exists (`PUT /api/roster/agents/:id/avatar`, roster §9.5) — this is a choice, not a gap. Emoji + initials cover the character requirement; the upload screen, cropping and preview are a milestone's work for a cosmetic gain. |
 | **`.agentpack` import UI** | Roster's import is a two-phase preview-then-commit flow with collision and missing-secret reporting — a real screen. Export ships as a download; import waits for a real second machine to exist. |
 | **Rich agent-permission editor** (rule builder, tool catalogue browser, pattern autocomplete) | v1 edits rule strings as text with validation from the server. A builder needs a tool catalogue the API does not expose. |
 | **Work-item board (kanban), priorities, labels, filters** | Projects §7.2 deliberately ships a thin list; a richer UI would imply a tracker the backend is not. |

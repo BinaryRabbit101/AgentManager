@@ -12,9 +12,9 @@ DB file or config format.
 **Already pinned by wave 1, not open coordination points**: roster's permission rule shape and
 the fact that roster alone composes it (M4); foundation's `sessions` / `assignments` columns,
 session status vocabulary, and `session_usage` token split (M5); the transcript layout and
-`sessions.transcript_path` / `transcript_bytes` (M5). Still to confirm with the elements that
-own them: runner's launch-context call and lease usage (M6), and orchestrator's scope-rule
-shape (M7).
+`sessions.transcript_path` / `transcript_bytes` (M5); runner's launch-context call and lease usage
+(M6, runner §3.1); and orchestrator's scope-rule shape (M7, orchestrator §2.5 / §2.7). Nothing in
+this list is an open coordination point.
 
 ---
 

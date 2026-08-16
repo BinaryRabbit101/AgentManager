@@ -124,9 +124,10 @@ the single persisted `remote.auth.failed` event per window, and the per-token `f
 ## 6. Route policy middleware
 
 The §3.1 four-rule pipeline: static shell bypass → deny list → bearer auth → grant gate (stubbed
-until M8). Both deny sources: foundation's per-route `{ remote: 'deny' }` metadata (blocked on
-reconciliation R1; until it lands, the hardcoded list carries it alone) and remote's hardcoded pattern
-list. Deny evaluated **before** auth. Expose the effective deny list in `GET /api/remote/status`.
+until M8). Both deny sources: foundation's per-route `{ remote: 'deny' }` metadata — shipped by
+foundation §6.4, defaulting to `allow`, recorded on the route table and enforced by nothing but this
+middleware — and remote's hardcoded pattern list, which stays as the backstop for routes whose author
+did not think about it. Deny evaluated **before** auth. Expose the effective deny list in `GET /api/remote/status`.
 
 **Acceptance**
 - `GET /` and `/assets/*` are served over the remote listener **without** a token; `GET /api/health`

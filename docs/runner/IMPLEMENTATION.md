@@ -82,8 +82,20 @@ a `SessionRepository` over foundation's `sessions` repository covering the added
 
 The append-only JSONL writer (§8): one stream per session, the line-type vocabulary, `seq`
 monotonicity, flush policy, `transcript_bytes` maintenance per flush, foundation's redaction on every
-line, the `maxMb` cap, `fs.stat` reconciliation, and `sessions.summary` composition. Plus
-`GET /api/sessions/:id/transcript?from=<byte>`.
+line, the `maxMb` cap, `fs.stat` reconciliation, and `sessions.summary` composition.
+
+Plus **both transcript read contracts of §11.1/§11.2, built together because they are one reader**:
+
+- `GET /api/sessions/:id/transcript` with `from=<byteOffset>&limit=` (reads forward, whole JSONL
+  lines plus the `next` offset; a `from` landing **mid-line advances to the following newline**
+  rather than erroring or truncating) **and** `tail=<bytes>` (reads backward from the end, snapped
+  forward to the next line boundary, capped by `runner.transcript.maxTailBytes` — default 1 MB, 64 KB
+  when unspecified). `from` and `tail` are **mutually exclusive**: both given is a 400. Both forms
+  return the same `{ lines, from, next, pruned }` shape, and `next` always advances so a poll loop
+  terminates.
+- The in-process `RunnerService.getTranscriptTail(sessionId, { maxBytes })` (§11.2) over the same
+  reader — orchestrator's recovery path for a turn whose live capture was lost to a restart
+  (orchestrator §3.2), which must not make an HTTP call into its own process. Read-only.
 
 Built before the SDK is wired so the first real session is observable from the first minute.
 
@@ -98,7 +110,16 @@ Built before the SDK is wired so the first real session is observable from the f
 - `summary` after a completed session matches the §8.3 formula, is ≤ 240 characters, and is present
   (prompt + `running`) while the session is still live.
 - Tailing from a byte offset returns whole JSONL lines and the next offset; a NULLed
-  `transcript_path` returns the defined "pruned" result, not a 500.
+  `transcript_path` returns the defined "pruned" result, not a 500 — asserted on the HTTP route, on
+  `tail=`, and on `getTranscriptTail`.
+- A `from` deliberately set **mid-line** returns the *next* whole line, never a partial one, and its
+  `next` matches what a from-the-start read would have produced at that point.
+- `tail=<bytes>` on a file larger than the cap returns the last N bytes snapped to a line boundary,
+  parses as JSONL with no partial first line, and costs one read regardless of file size (asserted
+  against a multi-hundred-MB fixture by comparing request work, not wall clock).
+- `from` and `tail` supplied together is a 400 naming both parameters.
+- `getTranscriptTail(sessionId, { maxBytes })` returns byte-identical `lines` to
+  `GET …/transcript?tail=<maxBytes>` for the same session — one reader, two faces.
 
 ## M3 — The launch chain and the first real session
 

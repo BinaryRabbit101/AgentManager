@@ -51,6 +51,10 @@ recorded before M5 begins.
 4. `getAssignmentContext()` in runner §15.1-3's exact shape, including `scopeRules` emission
    (DESIGN §2.5) and `write`.
 5. `closeAssignment()`: cancel open questions, stop live sessions, emit **`assignment.closed`**.
+5b. Work-item linking (DESIGN §2.3): `workItemIds?` on `createSolo` and `CreateAssignmentRequest`,
+   calling `projects.linkWorkItems(assignmentId, ids)` on create and `projects.unlinkWorkItems(id)`
+   on close. Orchestrator is the only writer of `work_item_assignments` (projects §1.5) and never
+   writes a work-item status itself.
 6. Boot task: close assignments whose project is archived; reconcile `phase` for assignments whose
    sessions all reached a terminal status while the core was down.
 7. Routes: `POST /api/assignments`, `POST /api/assignments/solo`, `GET /api/assignments`,
@@ -64,6 +68,9 @@ recorded before M5 begins.
   refused before a row is created.
 - Runner releases the workspace lease on `assignment.closed` (observed via
   `workspace.released`).
+- A solo launch carrying `workItemIds` produces an assignment whose `work_item_assignments` rows
+  resolve, and the linked item flips to `in_progress`; closing the assignment unlinks it and the item
+  returns to `open`. An id from another project is refused by name and creates nothing.
 - Every §9 rule has a test that refuses with its own named code; no rule is enforced in two places.
 - Restarting the core mid-session leaves the assignment consistent (no orphan `phase: running` with
   no live session).
@@ -91,8 +98,11 @@ recorded before M5 begins.
   result follows the answer with no intervening turn).
 - Answering after the hold resumes the parked session automatically, driven entirely by runner — with
   orchestrator issuing no relaunch of its own (runner §15.1-7).
-- A restart with an open question leaves it answerable; the pending `ask()` promise resolves after the
-  restart via the persisted row (a session that died in the meantime gets `cancel()`).
+- A restart with an open question leaves it answerable. The `ask()` promise itself does **not** survive
+  the restart — the process that held it is gone — so the acceptance is stated in terms of the row: the
+  `questions` row is the trigger, answering it emits `question.answered`, and the session parked
+  `awaiting_answer` resumes from that event via runner's boot re-subscription (runner §9.2). A session
+  that died in the meantime gets `cancel()` and the row is closed, not left dangling.
 - Two asks with identical normalised prompts inside the window produce **one** card with two
   recommendation rows and one answer that resolves both.
 - With `modules.orchestrator.enabled: false`, runner's degraded fallback still writes a question row
@@ -133,11 +143,11 @@ recorded before M5 begins.
    `LaunchIdentity` (DESIGN §4.1).
 3. All six tools with zod schemas exactly as DESIGN §4.3 specifies, the `scopeOf()` check on every
    scoped tool, structured named refusals, and the per-session call caps.
-4. Wire R1: roster's `compileSession` mounts the instance at `options.mcpServers.agentmanager`.
-   Until R1 lands, a temporary local branch in roster is acceptable **only** behind the registry call
-   — never a runner-side mutation of `mcpServers`, which would violate runner §3.3.
-5. Wire R1b: roster grants workers `report_status` and `request_user_decision` in addition to
-   `send_to_agent` / `read_mailbox`.
+4. Wire R1 (resolved, roster §13): roster's `compileSession` mounts the instance at
+   `options.mcpServers.agentmanager` via `ctx.require('orchestrator')?.getSessionToolset(...)`. Never a
+   runner-side mutation of `mcpServers`, which would violate runner §3.3.
+5. Wire R1b (resolved, roster §11): roster grants workers the four scoped tools —
+   `send_to_agent`, `read_mailbox`, `report_status`, `request_user_decision` — and overseers all six.
 6. `request_user_decision`'s hold-then-instruct behaviour (DESIGN §4.4), sharing runner's
    `question.holdMs` rather than a duplicate config key.
 7. Prompt-time mail inlining helper (bounded by `mailbox.inlineMax` / `inlineMaxBytes`), used by M5.

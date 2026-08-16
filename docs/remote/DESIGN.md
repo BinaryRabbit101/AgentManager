@@ -419,6 +419,18 @@ does not.
 is initiation wearing a continuation's clothes. `POST /api/assignments/:id/advance` is in it for the
 same reason: it plans and starts the next turn, which is new work for whichever seats that turn fills.
 
+**The gate binds to *client-initiated* launch routes, and deliberately not to engine-driven ones.**
+Sessions the system starts on its own — runner's auto-resume of a session it parked on a question
+(runner §5.4), and the pattern engine planning the next turn after `session.ended` or an answered
+question (orchestrator §3.1) — pass through no HTTP route, carry no bearer token, and have no remote
+request context to evaluate a grant against. They are out of the gate's scope by design, not by
+oversight: the grant was already checked when the human started the assignment, and re-checking it
+mid-pattern would strand a half-finished collaboration whenever a 72-hour grant lapsed between rounds.
+The gate's question is *"may this remote client put this agent to work?"*, asked once at the point a
+client asks; it is not a per-session execution permit. Revoking a grant therefore stops **new** remote
+launches immediately and leaves work already in flight to finish — and the Restrain tier, ungated in
+both directions, is how that work is stopped if the user wants it stopped.
+
 **Assignments have members, so the gate is evaluated per agent and reported as a set.** A pattern
 launch puts ≥2 agents to work; the request is refused unless **every** agent it would start holds a
 live grant, and the `409 remote_access_required` body carries the full list of ungranted agents
@@ -484,8 +496,9 @@ keep the UI honest.
 ### 7.1 A remote start is a local start with a different origin
 
 Per runner §15.3 #15, there is **no remote-specific launch path**. A remote client calls the same
-`POST /api/sessions` with the same required `assignmentId`; orchestrator mints the trivial solo
-assignment behind a drag-and-drop launch exactly as it does locally (runner D9); runner reads
+route the local one does — **`POST /api/assignments/solo`** for a drag-and-drop launch (§6.2, §6.3;
+orchestrator §16.7 pins it), or `POST /api/assignments` for a pattern — and orchestrator creates the
+assignment and starts the first session in that one call, exactly as it does locally; runner reads
 `origin: 'remote'` from foundation's request context and stores it on `sessions.origin`. Remote's
 entire contribution to a launch is: authenticate, mark the origin, check the grant.
 
