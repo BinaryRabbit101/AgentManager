@@ -132,10 +132,12 @@ describe('the element migration, through boot', () => {
     expect(booted.storage.setVersions['projects']).toBe(1);
     expect(booted.storage.applied.map((entry) => entry.setId)).toEqual([
       // Foundation's numbered set first, then each element's in module
-      // topological order (§1.3) — `roster` sits before `projects` in the list.
+      // topological order (§1.3) — `roster` sits before `projects`, which sits
+      // before `runner`.
       'foundation',
       'roster',
       'projects',
+      'runner',
     ]);
 
     const rows = booted.storage.db
@@ -146,6 +148,7 @@ describe('the element migration, through boot', () => {
     expect(rows).toEqual([
       { module: 'projects', version: 1 },
       { module: 'roster', version: 1 },
+      { module: 'runner', version: 1 },
     ]);
   });
 

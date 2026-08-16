@@ -173,6 +173,7 @@ describe('api/health', () => {
       'http',
       'roster',
       'projects',
+      'runner',
       'orchestrator',
     ]);
 

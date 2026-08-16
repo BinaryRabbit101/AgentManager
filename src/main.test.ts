@@ -187,7 +187,14 @@ describe('boot', () => {
     expect(service.paths.dataRoot).toBe(resolve(dataRoot));
     // §6.2's list order: `[storage, secrets, http, roster, projects, runner]`,
     // as far as the elements that exist.
-    expect(service.runtime.order).toEqual(['storage', 'secrets', 'http', 'roster', 'projects']);
+    expect(service.runtime.order).toEqual([
+      'storage',
+      'secrets',
+      'http',
+      'roster',
+      'projects',
+      'runner',
+    ]);
     expect(service.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(service.storage.schemaVersion).toBeGreaterThanOrEqual(1);
     expect(existsSync(join(dataRoot, 'state', 'agentmanager.db'))).toBe(true);
@@ -213,6 +220,7 @@ describe('boot', () => {
       'http',
       'roster',
       'projects',
+      'runner',
     ]);
     // §6.2 names exactly these as critical; a feature module that fails must
     // leave the service reachable rather than end the process.
@@ -402,9 +410,8 @@ describe('boot', () => {
     // order storage applies `migrations/<moduleId>/` in.
     const service = await bootTest({
       additionalModules: [
-        // `roster` is a real module in the list now, so the fixtures are the two
-        // elements that have not landed yet.
-        { id: 'runner', dependsOn: ['roster'], init: () => ({}) },
+        // `roster`, `projects` and `runner` are real modules in the list now, so
+        // the fixture is the one element that has not landed yet.
         { id: 'orchestrator', dependsOn: ['runner'], init: () => ({}) },
       ],
     });
@@ -419,9 +426,14 @@ describe('boot', () => {
       'orchestrator',
     ]);
     // Foundation's set first, then every module that actually ships one — which
-    // in this build is `roster` and `projects` (the two fixtures have no
+    // in this build is `roster`, `projects` and `runner` (the fixture has no
     // directory).
-    expect(Object.keys(service.storage.setVersions)).toEqual(['foundation', 'roster', 'projects']);
+    expect(Object.keys(service.storage.setVersions)).toEqual([
+      'foundation',
+      'roster',
+      'projects',
+      'runner',
+    ]);
   });
 });
 

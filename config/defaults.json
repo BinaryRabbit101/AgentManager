@@ -25,7 +25,27 @@
   "runner": {
     "maxConcurrent": 2,
     "queueLimit": 50,
-    "defaultModel": "sonnet"
+    "defaultModel": "sonnet",
+    "startTimeoutMs": 90000,
+    "idleTimeoutMs": 1200000,
+    "wallClockMaxMinutes": 120,
+    "gracefulInterruptMs": 10000,
+    "workspaceWaitMinutes": 60,
+    "queueStaleHours": 24,
+    "question": {
+      "holdMs": 900000,
+      "expireHours": 24
+    },
+    "transcript": {
+      "flushLines": 50,
+      "flushMs": 2000,
+      "maxMb": 512,
+      "maxTailBytes": 1048576
+    },
+    "rateLimit": {
+      "cooldownMs": 300000,
+      "maxCooldownMs": 1800000
+    }
   },
   "projects": {
     "root": null,

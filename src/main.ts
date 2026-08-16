@@ -64,6 +64,7 @@ import {
 import { createLogging, type Logging } from './logging/index.js';
 import { createProjectsModule } from './modules/projects/index.js';
 import { createRosterModule } from './modules/roster/index.js';
+import { createRunnerModule } from './modules/runner/index.js';
 import {
   createSecretStore,
   warnOnAnthropicApiKeyOverride,
@@ -352,6 +353,7 @@ async function buildModuleList(options: {
     createHttpModule(options.http),
     createRosterModule(options.storage),
     createProjectsModule(options.storage),
+    createRunnerModule(options.storage),
   ];
 
   if (config.edition === 'home' && config.modules.remote.enabled) {

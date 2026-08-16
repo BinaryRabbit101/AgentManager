@@ -14,6 +14,8 @@
  */
 import { z } from 'zod';
 
+import { RUNNER_CONFIG_DEFAULTS, runnerConfigSchema } from '../modules/runner/config.js';
+
 import { ConfigSchemaRegistry } from './registry.js';
 import type { ConfigInvariant } from './registry.js';
 
@@ -56,11 +58,14 @@ export const foundationConfigShape = {
     remote: z.strictObject({ enabled: z.boolean() }),
     orchestrator: z.strictObject({ enabled: z.boolean() }),
   }),
-  runner: z.strictObject({
-    maxConcurrent: z.number().int().min(1),
-    queueLimit: z.number().int().min(0),
-    defaultModel: nonEmpty,
-  }),
+  /**
+   * Contributed by the runner element (runner DESIGN §12). Foundation §2.3's
+   * three keys are the first three entries of that schema; the shape itself
+   * lives in `src/modules/runner/config.ts` so the element owns it, and is
+   * registered from here for the same reason `orchestrator` is — one namespace,
+   * one contribution.
+   */
+  runner: runnerConfigSchema,
   projects: z.strictObject({
     /** `null` = `%USERPROFILE%\Documents\AgentManager\projects`. */
     root: nonEmpty.nullable(),
@@ -124,7 +129,7 @@ const foundationDefaults: { readonly [K in keyof typeof foundationConfigShape]: 
   http: { bind: '127.0.0.1', port: 7477 },
   remote: { bind: 'tailscale', port: 7478, hostnameHint: null },
   modules: { remote: { enabled: false }, orchestrator: { enabled: true } },
-  runner: { maxConcurrent: 2, queueLimit: 50, defaultModel: 'sonnet' },
+  runner: RUNNER_CONFIG_DEFAULTS,
   projects: { root: null, worktreesRoot: null, browseRoots: null },
   agentEnv: {
     // Auto-memory is read regardless of settingSources, so it is disabled explicitly.
@@ -178,7 +183,7 @@ export function createFoundationRegistry(): ConfigSchemaRegistry {
       namespace,
       schema: foundationConfigShape[namespace],
       defaults: foundationDefaults[namespace],
-      owner: namespace === 'orchestrator' ? 'orchestrator' : 'foundation',
+      owner: namespace === 'orchestrator' || namespace === 'runner' ? namespace : 'foundation',
     });
   }
   registry.registerInvariant(workEditionRemoteInvariant);
