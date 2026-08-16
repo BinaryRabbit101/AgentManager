@@ -187,7 +187,7 @@ describe('boot', () => {
     expect(service.paths.dataRoot).toBe(resolve(dataRoot));
     // §6.2's list order: `[storage, secrets, http, roster, projects, runner]`,
     // as far as the elements that exist.
-    expect(service.runtime.order).toEqual(['storage', 'secrets', 'http', 'projects']);
+    expect(service.runtime.order).toEqual(['storage', 'secrets', 'http', 'roster', 'projects']);
     expect(service.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(service.storage.schemaVersion).toBeGreaterThanOrEqual(1);
     expect(existsSync(join(dataRoot, 'state', 'agentmanager.db'))).toBe(true);
@@ -211,6 +211,7 @@ describe('boot', () => {
       'storage',
       'secrets',
       'http',
+      'roster',
       'projects',
     ]);
     // §6.2 names exactly these as critical; a feature module that fails must
@@ -401,8 +402,10 @@ describe('boot', () => {
     // order storage applies `migrations/<moduleId>/` in.
     const service = await bootTest({
       additionalModules: [
-        { id: 'roster', dependsOn: ['storage'], init: () => ({}) },
+        // `roster` is a real module in the list now, so the fixtures are the two
+        // elements that have not landed yet.
         { id: 'runner', dependsOn: ['roster'], init: () => ({}) },
+        { id: 'orchestrator', dependsOn: ['runner'], init: () => ({}) },
       ],
     });
 
@@ -410,13 +413,15 @@ describe('boot', () => {
       'storage',
       'secrets',
       'http',
-      'projects',
       'roster',
+      'projects',
       'runner',
+      'orchestrator',
     ]);
     // Foundation's set first, then every module that actually ships one — which
-    // in this build is `projects` alone (the two fixtures have no directory).
-    expect(Object.keys(service.storage.setVersions)).toEqual(['foundation', 'projects']);
+    // in this build is `roster` and `projects` (the two fixtures have no
+    // directory).
+    expect(Object.keys(service.storage.setVersions)).toEqual(['foundation', 'roster', 'projects']);
   });
 });
 

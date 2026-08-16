@@ -171,6 +171,7 @@ describe('api/health', () => {
       'storage',
       'secrets',
       'http',
+      'roster',
       'projects',
       'orchestrator',
     ]);

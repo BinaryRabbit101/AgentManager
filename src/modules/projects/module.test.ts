@@ -121,8 +121,10 @@ describe('the element migration, through boot', () => {
 
     expect(booted.storage.setVersions['projects']).toBe(1);
     expect(booted.storage.applied.map((entry) => entry.setId)).toEqual([
-      // Foundation's numbered set first, then this element's (§1.3).
+      // Foundation's numbered set first, then each element's in module
+      // topological order (§1.3) — `roster` sits before `projects` in the list.
       'foundation',
+      'roster',
       'projects',
     ]);
 
@@ -131,7 +133,10 @@ describe('the element migration, through boot', () => {
         'SELECT module, version FROM schema_migrations ORDER BY module',
       )
       .all();
-    expect(rows).toEqual([{ module: 'projects', version: 1 }]);
+    expect(rows).toEqual([
+      { module: 'projects', version: 1 },
+      { module: 'roster', version: 1 },
+    ]);
   });
 
   it('applies nothing on a second boot against the same data root', async () => {

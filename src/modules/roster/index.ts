@@ -176,3 +176,115 @@ export type {
   CompiledSession,
   ProjectContext,
 } from './sessionOptions.js';
+// M2+M3 — the file store, the registry, the CRUD service and its routes.
+
+export {
+  AGENTS_DIRNAME,
+  AGENT_JSON_FILENAME,
+  ARCHIVE_DIRNAME,
+  AVATAR_FILENAME,
+  GITIGNORE_FILENAME,
+  PLUGIN_MANIFEST_DIRNAME,
+  PLUGIN_MANIFEST_FILENAME,
+  ROLES_DIRNAME,
+  ROSTER_JSON_FILENAME,
+  SKILLS_DIRNAME,
+  TEMP_PREFIX,
+  archiveStamp,
+  createRosterStore,
+  ensurePluginManifest,
+  libraryPaths,
+  parseArchiveFolder,
+  parseArchiveStamp,
+  pluginManifest,
+  writeFileAtomic,
+} from './store.js';
+export type {
+  ArchiveEntry,
+  LibraryPaths,
+  LoadOutcome,
+  ResolvedAgent,
+  RosterStore,
+  RosterStoreOptions,
+  StoreHooks,
+} from './store.js';
+
+export {
+  DEFAULT_GIT_TIMEOUT_MS,
+  LIBRARY_GITIGNORE,
+  bootstrapLibrary,
+  createGitCommand,
+  isEmptyDirectory,
+  libraryCommitCount,
+} from './bootstrap.js';
+export type {
+  BootstrapLibraryOptions,
+  BootstrapResult,
+  GitCommand,
+  GitCommandResult,
+  RosterMetadata,
+} from './bootstrap.js';
+
+export { createRosterRegistry } from './registry.js';
+export type { RegistryChange, RosterRegistry } from './registry.js';
+
+export { DEFAULT_DEBOUNCE_MS, createRosterWatcher, inertWatcher } from './watcher.js';
+export type { RosterWatcher, RosterWatcherOptions } from './watcher.js';
+
+export { createAgentUiStateRepository } from './uiState.js';
+export type { AgentUiState, AgentUiStatePatch, AgentUiStateRepository } from './uiState.js';
+
+export {
+  ACCEPTED_AVATAR_TYPES,
+  DEFAULT_AVATAR_MAX_BYTES,
+  firstFilePart,
+  initialsAvatarFor,
+  initialsFor,
+  multipartBoundary,
+  placeholderAvatar,
+  placeholderColour,
+  readAvatarUpload,
+  sniffImageType,
+} from './avatar.js';
+export type { AcceptedAvatarType, AvatarImage, AvatarUpload } from './avatar.js';
+
+export {
+  FALLBACK_AGENT_SLUG,
+  MAX_SLUG_ATTEMPTS,
+  mintAgentId,
+  slugifyAgentName,
+  suffixAgentId,
+} from './slug.js';
+
+export { duplicateAgentId, duplicateDefinition } from './duplicate.js';
+export type { DuplicateIdRequest } from './duplicate.js';
+
+export { createRosterService } from './service.js';
+export type {
+  AgentView,
+  DeleteResult,
+  RosterChangeReason,
+  RosterListView,
+  RosterService,
+  RosterServiceOptions,
+} from './service.js';
+
+export { ROSTER_API_PREFIX, createRosterRoutes } from './routes.js';
+export type { RosterRoutesDeps } from './routes.js';
+
+export { ROSTER_MODULE_ID, ROSTER_SERVICE, createRosterModule } from './module.js';
+export type { RosterModuleOptions } from './module.js';
+
+export {
+  AgentArchivedError,
+  AgentIdTakenError,
+  AgentNotFoundError,
+  AvatarNotAnImageError,
+  AvatarTooLargeError,
+  ImmutableFieldError,
+  InvalidRosterRequestError,
+  LibraryWriteError,
+  PurgeBlockedError,
+  RosterServiceError,
+  UnknownBoardOrderIdError,
+} from './serviceErrors.js';

@@ -35,6 +35,7 @@ import {
 } from './http/index.js';
 import { createLogging, type Logging } from './logging/index.js';
 import { createProjectsModule } from './modules/projects/index.js';
+import { createRosterModule } from './modules/roster/index.js';
 import {
   createSecretStore,
   warnOnAnthropicApiKeyOverride,
@@ -310,6 +311,7 @@ async function buildModuleList(options: {
     createStorageModule(options.storage),
     createSecretsModule({ get: options.secrets, conditions: options.secretConditions }),
     createHttpModule(options.http),
+    createRosterModule(options.storage),
     createProjectsModule(options.storage),
   ];
 
