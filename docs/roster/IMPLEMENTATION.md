@@ -18,15 +18,19 @@ tool names but not its implementation. Nothing here blocks on ui.
 Before any code, produce a short `SDK-NOTES.md` (in this folder, not in `src`) recording, against
 the exact `@anthropic-ai/claude-agent-sdk` version being pinned:
 
-- the `PermissionMode` union as declared in `sdk.d.ts`;
+- the `PermissionMode` union as declared in `sdk.d.ts`, **and what each member does when a tool call
+  matches no allow, deny, or ask rule** — prompt, auto-approve, or auto-reject;
 - the `systemPrompt` preset object's fields, including whether `excludeDynamicSections` exists;
 - the `McpServerConfig` and plugin-config type declarations;
 - the `skills`, `plugins`, `settingSources`, `fallbackModel`, `maxBudgetUsd` option names;
 - whether `effort` is available at top level or subagent-only.
 
 **Acceptance**: `package.json` pins an exact SDK version; `SDK-NOTES.md` lists each option with
-"confirmed / absent / differs" and a one-line note. Any DESIGN.md assumption contradicted here is
-raised as a design change, not silently coded around.
+"confirmed / absent / differs" and a one-line note. `SDK-NOTES.md` additionally records the
+no-rule-matched behaviour of every `PermissionMode` member and verifies DESIGN §6.2's permissiveness
+ordering (`plan < dontAsk < default < acceptEdits`) against it — in particular that `dontAsk` never
+prompts *and* auto-rejects what is not allowed. Any DESIGN.md assumption contradicted here is raised
+as a design change, not silently coded around.
 
 ---
 
@@ -51,14 +55,20 @@ ids. `settingSources` rejects `"user"` and `"local"`. Schema-version constant an
 
 ## M2 — File store and in-memory registry
 
-Folder layout per DESIGN §2.1. Atomic writes (temp file + rename) for `agent.json` and
-`persona.md`. Generation of `.claude-plugin/plugin.json`. Loader that walks `roster/agents/*`,
-validates, and populates `Map<AgentId, ResolvedAgent>`; a debounced filesystem watcher that reloads
-changed folders. Invalid definitions produce a `Diagnostic` and stay out of the registry without
-throwing. Roster directory bootstrap: create on first run, `git init` (no auto-commit), write
-`roster.json`.
+Folder layout per DESIGN §2.1, rooted at foundation's `library.root` (resolved from config — never
+from an environment variable roster reads itself). Atomic writes (temp file + rename) for
+`agent.json` and `persona.md`. Generation of `.claude-plugin/plugin.json`. Loader that walks
+`<libraryRoot>/agents/*`, validates, and populates `Map<AgentId, ResolvedAgent>`; a debounced
+filesystem watcher that reloads changed folders. Invalid definitions produce a `Diagnostic` and stay
+out of the registry without throwing. **Library bootstrap is roster's, not the installer's**: the
+installer only creates and ACLs the directory (foundation §4.4), so on first run roster runs
+`git init` (no auto-commit, ever), writes `<libraryRoot>/roster.json` and `.gitignore`, and creates
+`agents/`. Seeding of starter agents into the same tree is M10.
 
 **Acceptance**
+- Pointed at an empty, existing library directory (what the installer leaves behind), first run
+  produces `roster.json`, `.gitignore`, `agents/`, and an initialised git repo with **zero commits**;
+  a second run changes nothing.
 - Registry loads all fixtures from a temp directory; counts and ids match.
 - Corrupting one `agent.json` on disk removes exactly that agent from the registry, adds one
   diagnostic, and leaves the others loadable.
@@ -103,7 +113,9 @@ persona composition (preset append vs replace, role addendum, runtime block), th
 - Table-driven composition suite: for each of ≥15 (baseline, project, assignment) triples, the
   expected `EffectivePermissions` is asserted. Cases must include: project tries to widen `allow`
   (ignored), project adds `deny` (applied), assignment path scope narrows `Edit`, mode ladder
-  minimum in both directions, `permissionElevation` present (widens, and is flagged in the result).
+  minimum in both directions, `policy.globalDeny` beating a project allow, `permissionElevation`
+  present (widens, and is flagged in the result), and the same elevation under
+  `policy.allowPermissionElevation: false` (dropped, with a diagnostic).
 - Restriction is expressed as `deny`, never by omission: a test asserts that for every agent, a
   tool absent from `allow` and absent from `deny` still cannot execute — via the compiled
   `canUseTool` default-deny — and that a bare-name deny removes the tool definition.
@@ -220,10 +232,11 @@ permissions for an agent × project pair.
 
 ## M10 — Seed roster, docs, and hand-off
 
-Three or four seeded agents installed on first run (a bug-patcher, a feature implementer, an
-architect/skeptic pair suitable for orchestrator's v1 adversarial-pair slice, and an overseer),
-each with a real persona and a sane permission set. A short `README` inside the roster data
-directory explaining that it is a git repo and safe to hand-edit. Element hand-off notes for runner
+Three or four seeded agents written into `<libraryRoot>/agents/` by roster on first run (a
+bug-patcher, a feature implementer, an architect/skeptic pair suitable for orchestrator's v1
+adversarial-pair slice, and an overseer), each with a real persona and a sane permission set. **All
+seeding is roster's** — the installer never writes an example agent (foundation §4.4). A short
+`README` inside the library directory explaining that it is a git repo and safe to hand-edit. Element hand-off notes for runner
 (the `compileSession` contract), orchestrator (capability flags and role names), and ui (the API
 surface and diagnostics shapes).
 

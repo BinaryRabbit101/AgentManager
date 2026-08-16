@@ -29,9 +29,12 @@ what (orchestrator), and does not invent storage or secret handling (foundation)
 ## 1. Data model
 
 Structured state lives in foundation's SQLite database (foundation owns the connection,
-migration runner, and file layout — the tables below are this element's migration
-contribution). Free text that benefits from being diffable — project notes — is stored as a
-column but is plain Markdown, so an export writes it straight to a file.
+migration runner, and file layout). `projects` itself is shipped by foundation in
+`0001_init.sql` — more than one element joins on it — with the column set specified below;
+the remaining tables are this element's migration contribution, shipped as
+`migrations/projects/NNNN_*.sql` under foundation §1.3's element-migration mechanism. Free
+text that benefits from being diffable — project notes — is stored as a column but is plain
+Markdown, so an export writes it straight to a file.
 
 ### 1.1 Project
 
@@ -59,10 +62,10 @@ interface Project {
 }
 ```
 
-Table sketch:
+Table (**shipped by foundation**, columns specified here — foundation §1.4):
 
 ```sql
-CREATE TABLE project (
+CREATE TABLE projects (
   id               TEXT PRIMARY KEY,
   slug             TEXT NOT NULL UNIQUE,
   name             TEXT NOT NULL,
@@ -78,7 +81,8 @@ CREATE TABLE project (
   retention_json   TEXT,
   created_at       TEXT NOT NULL,
   updated_at       TEXT NOT NULL,
-  last_activity_at TEXT
+  last_activity_at TEXT,
+  archived_at      TEXT                    -- set on archive; foundation's FK/archival story uses it
 );
 ```
 
@@ -99,19 +103,40 @@ interface ProjectDefaults {
                                     // the UI pre-selects agentIds[0] on drag-and-drop launch
   overseerAgentId?: string;         // preferred overseer for orchestrated assignments
   permissions?: PermissionOverride; // roster's permission vocabulary, see §1.3
+  permissionElevation?: {           // the only widening path (roster §6.2); see below
+    allow: string[];
+    reason: string;                 // required, non-empty
+  };
   env?: EnvEntry[];                 // see §1.4
   setupCommand?: string;            // optional, run once in a freshly created worktree (§4.4)
-  instructionsPath?: string;        // relative path to a project brief appended to the
-                                    // system prompt (default: CLAUDE.md if present)
+  instructionsPath?: string;        // relative path to a project brief; its resolved text fills
+                                    // roster's fourth system-prompt slot (roster §4)
 }
 ```
+
+**`permissionElevation`.** Projects is the storage and the API surface for the escape hatch
+roster defines; it does not decide whether it applies. Three rules hold here:
+
+- `reason` is enforced non-empty at write time — a `PATCH` carrying an `allow` list with a
+  blank or absent reason is a 400 naming the field. An elevation nobody had to justify is the
+  failure mode the reason string exists to prevent.
+- The field is returned by `GET /api/projects/:id` and carried on the launch-context call
+  (§5), so the UI can show it before launch and the session header can show it during.
+- Whether it is honoured is roster's and foundation's: roster's compiler applies it only when
+  `policy.allowPermissionElevation` is true (foundation §2.3), and drops it with a diagnostic
+  when the work edition sets that key false.
+
+**`instructionsPath`** is for briefs the repository does not itself carry. An agent with
+`settingSources: ["project"]` — roster's default — already loads the repo's `CLAUDE.md` and
+`.claude/` rules through the SDK, so pointing `instructionsPath` at `CLAUDE.md` would load it
+twice. Leave it unset unless there is a separate brief to append.
 
 Default agents are stored relationally rather than in `defaults_json`, so that roster
 deletions can be resolved without scanning JSON:
 
 ```sql
-CREATE TABLE project_default_agent (
-  project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+CREATE TABLE project_default_agents (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   agent_id   TEXT NOT NULL,
   rank       INTEGER NOT NULL,
   PRIMARY KEY (project_id, agent_id)
@@ -122,28 +147,41 @@ A dangling `agent_id` (agent deleted from the roster) is dropped lazily on read 
 once in the project's health payload — projects does not subscribe to roster lifecycle
 events in v1.
 
-### 1.3 Permission composition
+### 1.3 Permission override (storage only)
 
-Projects does **not** define a permission vocabulary; it stores an override in whatever shape
-roster specifies (`allow` / `deny` rule lists plus a `permissionMode`). Coordination point
-for roster's design: this element assumes rules are string patterns and that a `deny` list
-exists. The composition rule projects implements when the runner asks for an effective
-permission set:
+Projects does **not** define a permission vocabulary and **does not compose one**. It stores a
+`PermissionOverride` in roster's shape and hands it over as raw input:
 
+```ts
+interface PermissionOverride {
+  allow?: string[];                 // rule patterns, roster's vocabulary
+  deny?:  string[];
+  ask?:   string[];                 // roster unions `ask` from every layer, so projects carries it
+  mode?:  PermissionMode;
+}
 ```
-allow = agent.allow ∪ project.allow ∪ assignment.allow
-deny  = global.deny ∪ agent.deny ∪ project.deny ∪ assignment.deny
-effective = allow − deny            // deny always wins, at every level
-permissionMode = most restrictive of (agent, project, assignment)
-```
 
-So a project can *widen* what an agent may do inside that repo (this repo may run `npm test`)
-and *narrow* it (never `git push` here), but can never escape a global deny. If an assignment
-carries path scopes and the orchestrator has chosen enforcement, projects contributes the
-scope paths as write-deny rules for everything outside the scope, rewritten to the
-workspace's actual root — the orchestrator states scopes relative to the repo, and a worktree
-has a different absolute prefix. Whether scopes are advisory or enforced is the
-orchestrator's decision; projects supplies the rewriting either way.
+Composition happens in exactly one place: roster's `compilePermissions` (roster §6.2), which
+is **monotonically narrowing** — `deny` and `ask` union, `allow` *intersects*, `mode` takes
+the ladder minimum. See roster §6.2's table for the authoritative rule; it is not restated
+here, because a second copy is a second thing to get wrong.
+
+The consequence worth stating plainly: **a project cannot widen an agent's permissions by
+listing a rule in `allow`.** A project `allow` entry that is not in the agent's baseline is
+dropped. This is not a policy preference but the SDK's semantics — `allowedTools` is an
+auto-approve list, not a restriction list, so "widening" an allow set would not restrict
+anything it omitted, and the narrowing model is the only one that means what it says. The one
+widening path is `defaults.permissionElevation` (§1.2), which requires a reason, is visible in
+the launch flow and the session header, and is gated by `policy.allowPermissionElevation`.
+Rules in foundation's `policy.globalDeny` (foundation §2.3) are unioned into every deny set
+and no layer — project, elevation, or assignment — can remove them.
+
+What projects *does* contribute is **scope-path rewriting**. If an assignment carries path
+scopes, the orchestrator states them relative to the repo root, and a worktree has a different
+absolute prefix; projects rewrites them onto the leased workspace's actual root and returns
+them as rule strings. Those are input rules for roster to compose, not an effective set.
+Whether scopes are advisory or enforced is the orchestrator's decision; projects supplies the
+rewriting either way.
 
 ### 1.4 Environment
 
@@ -154,11 +192,16 @@ type EnvEntry =
 ```
 
 Secrets are never stored in a project row. `secretRef` names an entry in foundation's secret
-store and is resolved at session start; an unresolvable ref is a launch-blocking error with a
-clear message, not a silent empty string. `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`
-are rejected as project env names (D2).
+store (`project.<projectId>.<name>`, foundation §3.3) and is resolved by roster's option
+compiler at session start — the authorized reveal site; an unresolvable ref is a
+launch-blocking error with a clear message, not a silent empty string. `ANTHROPIC_API_KEY` and
+`CLAUDE_CODE_OAUTH_TOKEN` are rejected as project env names (D2).
 
-Merge order at session start (later wins): core process env → project env → assignment env.
+Projects performs **no merge of its own**. It hands roster an ordered `EnvEntry[]` — its
+contribution to the single merge roster §13 performs, whose order is: core process env →
+foundation's `agentEnv` → **project env** → assignment env, later winning. Projects' place in
+that order is what "core → project → assignment" meant; the merge itself happens once, in the
+option compiler, alongside secret resolution.
 
 ### 1.5 Work items (the backlog)
 
@@ -180,19 +223,19 @@ interface WorkItem {
 ```
 
 ```sql
-CREATE TABLE work_item (
+CREATE TABLE work_items (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'open', rank REAL NOT NULL,
   scope_paths_json TEXT NOT NULL DEFAULT '[]',
   source TEXT NOT NULL DEFAULT 'user', created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL, closed_at TEXT
 );
-CREATE INDEX work_item_board ON work_item (project_id, status, rank);
+CREATE INDEX work_items_board ON work_items (project_id, status, rank);
 
-CREATE TABLE work_item_assignment (
-  work_item_id  TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+CREATE TABLE work_item_assignments (
+  work_item_id  TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
   assignment_id TEXT NOT NULL,
   PRIMARY KEY (work_item_id, assignment_id)
 );
@@ -221,16 +264,16 @@ interface WorkspaceLease {
 ```
 
 ```sql
-CREATE TABLE workspace_lease (
+CREATE TABLE workspace_leases (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   assignment_id TEXT NOT NULL,
   kind TEXT NOT NULL, path TEXT NOT NULL, branch TEXT, base_commit TEXT,
   write INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'active',
   acquired_at TEXT NOT NULL, released_at TEXT
 );
-CREATE UNIQUE INDEX workspace_lease_active_assignment
-  ON workspace_lease (project_id, assignment_id) WHERE state = 'active';
+CREATE UNIQUE INDEX workspace_leases_active_assignment
+  ON workspace_leases (project_id, assignment_id) WHERE state = 'active';
 ```
 
 ## 2. Registration and discovery
@@ -299,10 +342,24 @@ Clone runs as a core-service job, never as an agent action.
 ### 3.1 What is retained
 
 Projects owns the *question* "what has happened on this project", not the storage of session
-records. Runner owns `session`, orchestrator owns `assignment`; the contract this element
-requires from them is that both rows carry `project_id`, that a session carries
-`assignment_id` and `transcript_path`, and that token totals land on the session. Projects
-provides the read model:
+records. Runner owns `sessions`, orchestrator owns `assignments`, and both tables are
+foundation's (foundation §1.4); projects reads them through foundation's repositories, which
+are the sanctioned cross-element read path. The columns this element consumes are already
+pinned there: `sessions.project_id`, `assignment_id`, `status`, `summary`, `pinned`,
+`transcript_path`, `transcript_bytes`, and the per-session token split in `session_usage`,
+which the read model joins.
+
+`sessions.status` is foundation's vocabulary —
+`queued | running | paused | done | failed | interrupted | orphaned` — and projects consumes it
+rather than defining its own. The timeline's assignment-level `outcome` is a **derived
+projection** of the statuses of an assignment's sessions, defined here:
+
+| Assignment outcome | When |
+|---|---|
+| `running` | any session is `queued`, `running`, or `paused` |
+| `completed` | every session is `done` |
+| `stopped` | no session `running`, at least one `interrupted`, none `failed` |
+| `failed` | any session is `failed` or `orphaned` |
 
 ```ts
 interface ProjectActivityEntry {
@@ -313,11 +370,13 @@ interface ProjectActivityEntry {
   scopeSummary: string | null;
   workspace: { kind: 'primary' | 'worktree'; path: string; branch: string | null };
   startedAt: string; endedAt: string | null;
-  outcome: 'running' | 'completed' | 'stopped' | 'failed';
-  tokens: { input: number; output: number };
-  sessions: { id: string; agentId: string; transcriptAvailable: boolean;
-              summary: string | null }[];
-  pinned: boolean;
+  outcome: 'running' | 'completed' | 'stopped' | 'failed';   // derived, per the table above
+  tokens: { input: number; output: number };                 // joined from session_usage
+  sessions: { id: string; agentId: string;
+              status: SessionStatus;                         // foundation's vocabulary, verbatim
+              transcriptAvailable: boolean;                  // = transcript_path IS NOT NULL
+              summary: string | null;                        // sessions.summary
+              pinned: boolean }[];
 }
 ```
 
@@ -326,18 +385,19 @@ project page's timeline and the source of "which agents are/have been active her
 
 ### 3.2 Where transcripts live
 
-Per foundation's leaning, full transcripts are plain files, not database rows: they are large,
-append-only, and never queried relationally. Projects requires only that the layout be
-project-addressable, and proposes (foundation to confirm):
+Full transcripts are plain files, not database rows: they are large, append-only, and never
+queried relationally. **The layout is foundation's and is settled** (foundation §1.5):
 
 ```
-<dataRoot>\transcripts\<project-slug>\<yyyy-mm>\<session-id>.jsonl
+<dataRoot>\state\transcripts\<YYYY>\<MM>\<session-id>.jsonl
 ```
 
-Slug-based directories keep the tree browsable; the DB path column is authoritative, so a
-project rename does not require moving files. A short **summary** (first user prompt, last
-assistant message, outcome) is denormalized onto the session row so the timeline renders
-without opening any transcript.
+Projects does not address transcripts by path at all. `sessions.transcript_path` is
+authoritative, and every read, prune, and availability check goes through it — which is what
+makes a project rename free, since no path encodes a slug. A short **summary** (first user
+prompt, last assistant message, outcome) is written to `sessions.summary` by the runner so the
+timeline renders without opening any transcript, and `sessions.transcript_bytes` carries the
+file's size so size accounting never walks the tree.
 
 ### 3.3 Retention
 
@@ -352,9 +412,15 @@ interface RetentionSettings {
 - **Metadata (assignments, sessions, tokens, summaries) is kept indefinitely.** It is tiny
   and it is what the timeline and the "who worked here" view read.
 - **Transcript files** are pruned by a daily job: older than `transcriptDays`, or oldest-first
-  once the project's transcript directory exceeds `transcriptCapMb`. Pinned sessions are
-  exempt. Pruning sets `transcriptAvailable: false`; the entry stays in the timeline.
-- Defaults are global (foundation config); a project may override either number.
+  once the project exceeds `transcriptCapMb`. The size measure is
+  `SUM(sessions.transcript_bytes)` over the project's sessions — a single indexed query, not a
+  directory walk, because foundation's transcript tree is grouped by month rather than by
+  project and has no per-project directory to measure.
+- Pruning deletes the file, NULLs `sessions.transcript_path` in the same transaction (so
+  `transcriptAvailable` becomes false by derivation), and zeroes `transcript_bytes`. The entry
+  stays in the timeline. Sessions with `pinned` set are exempt from both paths.
+- Defaults are global (`retention.transcriptDays` / `retention.transcriptCapMb` in foundation
+  config); a project may override either number.
 - Archiving does not prune. Removing a project prunes only if the user opts in.
 
 ## 4. Concurrency: multiple agents on one project
@@ -470,9 +536,28 @@ PATCH  /api/work-items/:id                 title, body, kind, status, rank, scop
 GET    /api/fs/browse?path=                directory listing within configured roots
 ```
 
-Internal (in-process, for runner/orchestrator): `getEffectiveLaunchContext(projectId,
-assignmentId)` returning `{ cwd, env, permissions, instructions, workspace }`, plus the
-lease API of §4.3.
+`GET /api/projects/:id` returns the full record including `defaults.permissionElevation` (its
+`allow` list and `reason`), so the UI can warn before a launch rather than after.
+
+Internal (in-process, for runner/orchestrator):
+
+```ts
+getEffectiveLaunchContext(projectId, assignmentId): Promise<{
+  cwd: string;                        // the leased workspace root
+  env: EnvEntry[];                    // ordered, unresolved — refs stay refs
+  permissionOverride?: PermissionOverride;   // stored, uncomposed (§1.3)
+  elevation?: { allow: string[]; reason: string };
+  instructions?: string;              // resolved instructionsPath text (roster §4's fourth slot)
+  workspace: WorkspaceLease;
+}>
+```
+
+The name is now the only misleading thing about it, and it is kept for continuity: this call
+returns **raw inputs, not an effective anything**. There is no `permissions` key, because
+projects does not compute one — roster's `compilePermissions` is the sole composer (roster
+§6.2), and roster's `compileSession` performs the single env merge and the single secret
+resolution. Everything here is material handed to that function. The lease API of §4.3
+completes the internal surface.
 
 Events on the core bus: `project.created|updated|archived|removed`,
 `project.clone.progress|completed|failed`, `workspace.acquired|released|orphaned`,
@@ -490,12 +575,14 @@ items; project templates and grouping/tags; per-worktree dependency caching (har
 
 **7.1 Session history: how much is retained per project, and where?**
 Metadata forever in SQLite (assignments, sessions, agents, tokens, outcome, one-line
-summaries); full transcripts as plain `.jsonl` files under
-`<dataRoot>\transcripts\<project-slug>\`, pruned after 90 days or 500 MB per project,
-whichever comes first, with pinning as the escape hatch. *Rationale*: the timeline the UI
-actually reads is tiny and worth keeping permanently; transcripts are large, rarely reread,
-and are the only thing that grows without bound — separating them lets history stay complete
-while disk stays bounded.
+summaries); full transcripts as plain `.jsonl` files in **foundation's layout**, addressed
+solely through `sessions.transcript_path` (§3.2), pruned after 90 days or 500 MB per project
+— the latter measured as `SUM(sessions.transcript_bytes)` — whichever comes first, with
+pinning as the escape hatch. *Rationale*: the timeline the UI actually reads is tiny and worth
+keeping permanently; transcripts are large, rarely reread, and are the only thing that grows
+without bound — separating them lets history stay complete while disk stays bounded. Projects
+sets the *policy* and owns none of the *layout*: one owner of the path scheme is what keeps a
+pruner and a writer from disagreeing about where a file is.
 
 **7.2 Do projects carry work-item lists, or is assignment purely prompt-driven?**
 Yes, a deliberately thin list — title, body, kind, status, manual rank, optional scope paths
@@ -526,9 +613,19 @@ nesting makes workspace leasing, scope overlap detection, and transcript attribu
 ambiguous for no real gain; a monorepo is one project with path-scoped assignments.
 
 **7.6 How do project permissions compose with roster permissions?**
-Union of allows, union of denies, deny wins at every level, most restrictive permission mode.
-*Rationale*: predictable and explainable in one sentence, lets a project both widen (this repo
-may run its test suite) and narrow (never push from here), and keeps a global deny absolute.
+They don't — not here. Projects stores a `PermissionOverride` (`allow` / `deny` / `ask` /
+`mode`) and hands it over uncomposed; roster's `compilePermissions` is the sole composer, and
+its rule is monotonic narrowing: `deny` and `ask` union, `allow` **intersects**, `mode` takes
+the ladder minimum (roster §6.2). A project therefore narrows — never `git push` here — and
+cannot widen; a project `allow` absent from the agent's baseline is dropped. The single
+widening path is `defaults.permissionElevation`, which carries a mandatory reason, is visible
+in the launch flow and the session header, and is gated by `policy.allowPermissionElevation`.
+Foundation's `policy.globalDeny` stays absolute above all of it. *Rationale*: the union model
+this document previously specified reads well but does not survive the SDK's semantics —
+`allowedTools` is an auto-approve list, not a restriction list, so a set built by union
+restricts nothing it omits. Narrowing plus one loud, justified escape hatch is the only shape
+where "the agent's permissions are its ceiling" is a statement that holds. And a composer
+implemented in two elements is two answers to one question, so there is one.
 
 **7.7 Where do per-project secrets live?**
 Not in the project row — env entries hold either a literal value or a `secretRef` into

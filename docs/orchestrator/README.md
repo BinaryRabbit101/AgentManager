@@ -18,6 +18,27 @@ App-level coordination between roster agents (architecture D4) — AgentManager'
 
 roster, projects, runner. Consumed heavily by ui.
 
+## Contracts already pinned by wave 1
+
+Foundation and roster have shipped designs that name orchestrator concepts. These are settled:
+
+- **The v1 role vocabulary is exactly** `implementer | architect | skeptic | reviewer | overseer`
+  (foundation §1.4 `assignment_members.role`). Roster's `capabilities.roles` and its per-role persona
+  addenda (`roles/<role>.md`) are keyed by exactly these strings, so a role orchestrator invents
+  without adding it here has no addendum file and no agent declaring it.
+- **The in-process MCP server is orchestrator's to build** (`createSdkMcpServer` / `tool`), exposing
+  `mcp__agentmanager__*` tools named `list_roster`, `create_assignment`, `send_to_agent`,
+  `report_status`, `request_user_decision`, `read_mailbox`. Roster compiles the matching allow rules
+  and grants the full set only to `capabilities.overseer` agents.
+- **Worker scoping is enforced in the MCP server, not by permission rules.** Restricting a worker's
+  `send_to_agent` / `read_mailbox` to its own assignment is a check inside the tool implementation,
+  using the assignment id the session was launched under. Permission rules match on tool *names* and
+  cannot express "only your own assignment", so an allow-rule-based attempt at this would look like
+  a control and be none.
+- When the orchestrator module is disabled, roster's compiler drops every `mcp__agentmanager__*` rule
+  with a diagnostic — so a disabled orchestrator degrades to agents without coordination tools, never
+  to agents holding rules for a server that was never mounted.
+
 ## Open questions for design
 
 - Is routing decided by an LLM overseer agent, deterministic rules, or both (overseer proposes, rules enforce)?

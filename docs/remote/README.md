@@ -19,3 +19,6 @@ runner (session control), roster, projects. The browser UI over the tailnet is a
 - Token lifecycle: generation, rotation, per-device tokens?
 - Should remote sessions carry restricted permission modes by default (e.g. no unattended destructive commands when started remotely)?
 - Detecting the Tailscale interface robustly on Windows at startup.
+- `GET /api/fs/browse` (projects' quick-add directory listing) reaches the tailnet through the shared
+  route table — decide whether remote middleware refuses or allows it (authenticated +
+  root-restricted, returns no file contents).

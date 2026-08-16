@@ -9,23 +9,29 @@ resolution, logger, core event bus, module registration, secret-store read API. 
 is not yet landed, M1 may proceed against a thin local adapter, but must not define its own
 DB file or config format.
 
-**Coordination points to confirm before the milestone that needs them**: roster's permission
-rule shape (M4), runner/orchestrator's `session` and `assignment` tables carrying `project_id`
-/ `assignment_id` / `transcript_path` / token totals (M5), transcript file layout (M5),
-runner's launch-context call and lease usage (M6).
+**Already pinned by wave 1, not open coordination points**: roster's permission rule shape and
+the fact that roster alone composes it (M4); foundation's `sessions` / `assignments` columns,
+session status vocabulary, and `session_usage` token split (M5); the transcript layout and
+`sessions.transcript_path` / `transcript_bytes` (M5). Still to confirm with the elements that
+own them: runner's launch-context call and lease usage (M6), and orchestrator's scope-rule
+shape (M7).
 
 ---
 
 ## M1 — Schema, storage, and the project repository module
 
-Create the migration adding `project`, `project_default_agent`, `work_item`,
-`work_item_assignment`, `workspace_lease`. Implement path canonicalization
+Create the element migration (`migrations/projects/0001_*.sql`, per foundation DESIGN §1.3)
+adding `project_default_agents`, `work_items`, `work_item_assignments`, `workspace_leases`.
+`projects` itself is **not** here — foundation ships it in `0001_init.sql` with the column set
+DESIGN §1.1 specifies, so this element codes against foundation's `projects` repository rather
+than creating the table. Implement path canonicalization
 (realpath → drive-letter upcase → strip trailing separators → lowercased key), slug
 generation with dedup, and a `ProjectRepository` with typed CRUD. Register the module with
 the core.
 
 **Acceptance**
-- Migration applies to an empty DB and is idempotent on re-run.
+- The element migration applies after foundation's core set, is idempotent on re-run, and
+  registers in `schema_migrations` under module `projects`.
 - `C:\Code\App`, `c:\code\app\`, and a junction pointing at it all resolve to the same
   `local_path_key`; a second registration of any of them is rejected with a typed conflict.
 - Slug collisions produce `app`, `app-2`, `app-3`; slugs never exceed 24 chars and match
@@ -69,36 +75,52 @@ only if the clone created it).
 ## M4 — Defaults, permissions, environment, and launch context
 
 Default-agent list management (ordered, with lazy drop of ids missing from the roster),
-permission override storage in roster's shape, env entries with `secretRef` resolution, and
-`getEffectiveLaunchContext(projectId, assignmentId)` returning `{ cwd, env, permissions,
-instructions, workspace }`. Implement the composition rule: union allows, union denies, deny
-wins, most restrictive mode; env merge core → project → assignment.
+`PermissionOverride` storage in roster's shape (`allow` / `deny` / `ask` / `mode`),
+`permissionElevation` storage with its mandatory reason, env entries carried as an ordered
+list, and `getEffectiveLaunchContext(projectId, assignmentId)` returning
+`{ cwd, env, permissionOverride, elevation, instructions, workspace }`. **No composition and
+no merging is implemented here** — roster's `compilePermissions` composes and roster's
+`compileSession` performs the single env merge and secret resolution; this milestone produces
+their inputs.
 
 **Acceptance**
-- A rule denied at the global level stays denied when a project allows it.
-- A project allow that the agent lacks appears in the effective set; a project deny removes
-  an agent allow.
+- The launch context is raw input: it carries no `permissions` key, resolves no `secretRef`,
+  and merges no environment — asserted by a test that plants a ref and finds it still a ref.
+- A project `allow` rule not present in the agent's baseline is dropped, unless it is declared
+  under `permissionElevation` (verified end-to-end against roster's compiler, not restated
+  locally).
+- `permissionElevation` with an empty or missing `reason` is rejected at write time with a 400
+  naming the field; elevation is refused with a diagnostic when
+  `policy.allowPermissionElevation` is false.
+- `defaults.permissionElevation` is present in the `GET /api/projects/:id` payload and on the
+  launch-context result.
 - `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` as a project env name is rejected at write
   time with a message citing D2.
-- A `secretRef` resolves from foundation's store; an unresolvable ref fails the launch call
-  with a named error rather than yielding an empty value.
+- Env entries come back in projects' declared order, positioned after foundation's `agentEnv`
+  and before the assignment's in roster's merge; an unresolvable `secretRef` fails the launch
+  in roster's compiler with a named error rather than yielding an empty value.
 - Deleting a roster agent leaves the project readable, with the dangling id absent from
   defaults and reported in health.
 
 ## M5 — Project activity timeline and retention
 
-Implement `GET /api/projects/:id/activity` over runner/orchestrator rows, grouped by
-assignment and paged, plus session pinning and the daily retention job (age then size cap,
-pinned exempt, `transcriptAvailable` flipped to false). Per-project retention overrides in
+Implement `GET /api/projects/:id/activity` over foundation's `sessions` / `assignments` /
+`session_usage` repositories, grouped by assignment and paged, with the assignment `outcome`
+derived from foundation's session status vocabulary per DESIGN §3.1, plus session pinning and
+the daily retention job (age then size cap, pinned exempt). Per-project retention overrides in
 `PATCH`.
 
 **Acceptance**
 - A finished assignment with two agents renders as one entry listing both agents, its
-  workspace, token totals, outcome, and per-session summaries.
+  workspace, token totals joined from `session_usage`, the derived outcome, and per-session
+  summaries read from `sessions.summary`.
+- Every value of `sessions.status` maps to exactly one assignment `outcome` per the DESIGN
+  §3.1 table, including `orphaned` and `interrupted`; no status is silently unhandled.
 - The prune job removes transcripts older than the configured days and, separately, trims
-  oldest-first once a project exceeds its MB cap — in both cases leaving every timeline entry
-  present with `transcriptAvailable: false`.
-- A pinned session survives both prune paths.
+  oldest-first once `SUM(sessions.transcript_bytes)` for the project exceeds its MB cap — in
+  both cases NULLing `transcript_path` so the timeline entry stays present with
+  `transcriptAvailable: false`, and never walking the transcript directory tree.
+- A session with `pinned` set survives both prune paths.
 - `lastActivityAt` updates when a session starts on the project.
 
 ## M6 — Workspace leases: primary tree and git worktrees
@@ -128,13 +150,14 @@ retention of worktrees with commits or dirty state, startup orphan reconciliatio
 
 ## M7 — Scope handling and conflict warnings
 
-Rewrite orchestrator-supplied repo-relative scope paths onto the leased workspace root when
-building permission rules, and emit `project.scope.overlap` when active assignments sharing a
-workspace have overlapping path prefixes.
+Rewrite orchestrator-supplied repo-relative scope paths onto the leased workspace root,
+producing **input rules** for roster's compiler (never an effective set — DESIGN §1.3), and
+emit `project.scope.overlap` when active assignments sharing a workspace have overlapping path
+prefixes.
 
 **Acceptance**
 - A scope of `src/api` in a worktree produces rules rooted at the worktree path, not
-  `localPath`.
+  `localPath`, and those rules reach roster's `compilePermissions` as assignment-scope input.
 - Two shared-workspace assignments scoped to `src/api` and `src/api/routes` emit one overlap
   event naming both assignments and the overlapping prefix; disjoint scopes emit nothing.
 - The overlap event never blocks acquisition or session start.

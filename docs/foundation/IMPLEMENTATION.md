@@ -50,13 +50,16 @@ better-sqlite3 with the specified pragmas, the data-root/library-root directory 
 
 ## 5. Core schema and repositories
 
-`0001_init.sql` creating every table in DESIGN §1.4 with the stated keys, indexes, and FK behaviours, plus repository modules (`agents`, `projects`, `assignments`, `sessions`, `usage`, `messages`, `questions`, `events`, `settings`, `remoteTokens`) exposing typed CRUD. Include the transcript path helper and the append-only JSONL transcript writer with its fsync policy. This milestone is the handoff point other elements code against.
+`0001_init.sql` creating every table in DESIGN §1.4 with the stated keys, indexes, and FK behaviours, plus repository modules (`agents`, `projects`, `assignments`, `sessions`, `usage`, `messages`, `questions`, `events`, `settings`, `remoteTokens`) exposing typed CRUD. Include the transcript path helper and the append-only JSONL transcript writer with its fsync policy and its maintenance of `sessions.transcript_bytes`. Also the element-owned migration runner of DESIGN §1.3: `migrations/<moduleId>/NNNN_*.sql` applied after the core set in module topological order, tracked in `schema_migrations(module, version, applied_at)`. This milestone is the handoff point other elements code against.
 
 **Acceptance**
-- Every table, index, and FK from §1.4 exists; a schema snapshot test guards against accidental drift.
+- Every table, index, and FK from §1.4 exists; a schema snapshot test guards against accidental drift. **The snapshot covers foundation-owned tables only** — element migrations vary by which modules are enabled, so including them would make the snapshot a flapping test of module configuration.
+- A fixture module shipping `migrations/<moduleId>/0001_*.sql` has its table created after the core set, in topological order relative to its `dependsOn`; re-running the boot applies nothing further; and `schema_migrations` carries one row naming the module and version.
 - Repository tests cover: creating an assignment with members and a session under it; recording usage deltas and reading the rollup in one query; a mailbox query returning only undelivered messages in order; opening, answering, and re-reading a question across a simulated restart.
+- `sessions.countByAgent(agentId)` returns the right count and uses the `sessions(agent_id)` index (asserted via `EXPLAIN QUERY PLAN`, not a timing test); it is the call roster's purge guard makes.
 - Deleting a project with sessions is refused; deleting an assignment cascades its members and recommendations; deleting an agent row leaves its sessions intact.
 - A transcript can be appended to and tailed from a byte offset; a missing transcript file yields a defined "pruned" result rather than an exception.
+- Appending to a transcript advances `sessions.transcript_bytes` to match the file's actual size, including across a writer restart; `SUM(transcript_bytes)` over a project's sessions is what projects' size cap reads.
 - `events` pruning by age and row cap runs on boot and is covered by a test.
 
 ## 6. Secrets
@@ -111,7 +114,7 @@ Exclusive-handle single-instance lock, `run/core.port` publication and stale-fil
 
 **Acceptance**
 - A clean non-admin install on a fresh Windows 11 user account completes end to end: data root created and ACL'd, config written with the chosen edition, schema migrated, autostart registered (home) or skipped (work), core reachable at the printed URL.
-- Re-running `Install-AgentManager.ps1` is idempotent — no duplicate task, no config clobber of user edits, no second library seed.
+- Re-running `Install-AgentManager.ps1` is idempotent — no duplicate task, no config clobber of user edits, and no write inside `library/` beyond creating and ACLing the directory itself (its contents are roster's, DESIGN §4.4).
 - Log off and back on: the scheduled task starts the core with **no visible console window**, and `/healthz` answers before the desktop app is opened.
 - `Setup-Auth.ps1` stores a working token with the value never appearing in the console, the PowerShell history, the process command line, or any log file.
 - `Test-AgentManagerHealth.ps1` produces a single readable report covering edition, ports, task state, DB check, secret provider, `ANTHROPIC_API_KEY` presence, and a log tail.
