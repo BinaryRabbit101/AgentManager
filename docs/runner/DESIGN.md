@@ -16,6 +16,21 @@ treated as settled inputs throughout and are not re-litigated.
 
 ## 0. SDK surface note
 
+> **M0 completed against pinned SDK 0.3.233 — [SDK-NOTES.md](SDK-NOTES.md) is now the authority
+> wherever it and this document disagree.** Three contradictions were found (SDK-NOTES
+> "Design contradictions"): **C1** — `modelUsage`/`total_cost_usd` are cumulative per `query()`
+> call and reset on resume, so §7.1's delta-vs-session-row reconciliation goes negative across
+> §9.4 pause/resume; meter per *run* (run id on `usage_events`, non-negative delta assertion) and
+> read per-turn figures from `result.usage`. **C2** — a bare `allowedTools` entry auto-approves
+> the whole tool before `canUseTool` is consulted, `AskUserQuestion` included, contradicting §5.1;
+> `AskUserQuestion` must live in the `ask` bucket (roster compiler change), and §5.6's launch
+> diagnostic gains `questionBridge: 'degraded'`. **C3** — plan-window utilization, reset
+> timestamps, and subscription tier *are* programmatically exposed (experimental `Query.usage_…()`
+> API, `rate_limit_event`); §7.4/D7/D3's "not available" premises are false though D7's
+> conclusions survive on stability grounds. Sixteen live-verification items (L1–L16) are encoded
+> as token-gated tests in `src/modules/runner/__spike__/sdk.spike.test.ts` and must pass before
+> their listed milestones are considered done.
+
 Everything below is pinned to the TypeScript Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`)
 and the `claude` CLI it bundles. The facts marked **[V]** were verified against current SDK
 documentation while writing this design; the ones marked **[A]** are assumptions the
