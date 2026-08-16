@@ -1,0 +1,21 @@
+{
+  "modules": {
+    "remote": {
+      "enabled": true
+    }
+  },
+  "remote": {
+    "bind": "tailscale"
+  },
+  "auth": {
+    "mode": "subscription"
+  },
+  "service": {
+    "autostart": true
+  },
+  "orchestrator": {
+    "notify": {
+      "enabled": true
+    }
+  }
+}
