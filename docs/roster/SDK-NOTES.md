@@ -242,6 +242,21 @@ more directly than an enumerated deny catalogue. **M4 should not adopt it withou
 because a `tools` allowlist and the §6.2 deny-union have different composition algebras. Flagged, not
 acted on. (DESIGN §12.2's inert drafting call is a concrete casualty — see D5.)
 
+**M4 decision — not adopted as the restriction mechanism; emitted as the explicit preset.**
+`tools` stays out of §6.2's algebra for three reasons. It composes differently: `deny` unions and
+`allow` intersects across three layers, while a `tools` allowlist has no defined composition and
+would need one invented. It is unrepresentable in the audit record: `EffectivePermissions`
+(contracts.ts, M1) has `allow` / `deny` / `ask` / `mode` and no fourth field, so a tool absent from
+`tools` but present in `allow` would be a state the UI and the session header could not show — and
+"permission composition that the user cannot see is permission composition they will not trust"
+(§9.1). And it is weaker where it matters: a scoped `deny` holds in every mode, survives
+`bypassPermissions`, and blocks harness-internal direct calls, whereas `tools` only shapes the base
+set the model is offered. So §6.1's "restriction is expressed with `deny`, never by omission" is
+unchanged, and the compiler emits `tools: { type: 'preset', preset: 'claude_code' }` — a no-op
+against 0.3.233 that *states* the base set instead of inheriting whatever a later SDK defaults to,
+the same discipline `skills` and `settingSources` already need. D5's `tools: []` for M8's inert
+drafting call is a different question and remains the right answer there.
+
 ### D3 — `managedSettings` is the natural home for the compiled deny set
 
 `Options.managedSettings?: Settings` (`:1956-1969`) is a policy tier supplied by the spawning parent
@@ -259,6 +274,15 @@ described as filtered.) Putting the compiled `deny` — and at minimum `policy.g
 `write: false` mutating-tool floor — into `managedSettings` closes that gap in the tier the engine
 treats as policy. **This is a §6/§7.3 design question, not an M1 change.**
 
+**M4 decision — adopted.** The compiler emits the whole compiled `deny` in `managedSettings`
+*as well as* in `disallowedTools`, on every launch. It cannot widen anything (the tier drops
+permissive arrays), both copies derive from the one `effective.deny` so they cannot drift, and the
+gap it closes is real: `settingSources: ["project"]` is deliberately on, so a repo-committed
+`permissions.allow` enters the session outside roster's composition. `defaultMode` deliberately does
+**not** go there — an escalating mode from that tier is filtered by the engine (`:656-659`) and a
+silently dropped mode would be worse than one stated on `Options.permissionMode`, which is where the
+composed mode stays.
+
 ### D4 — `Settings.permissions.disableBypassPermissionsMode: 'disable'` exists
 
 A cheap belt-and-braces for §6.1's "`bypassPermissions` is unreachable": the schema cannot express it
@@ -266,6 +290,10 @@ and, with this flag set on every launch, neither can a resumed session, a loaded
 `setPermissionMode()` call (`ExitReason` even carries a `'bypass_permissions_disabled'` member).
 Recommended for M4's compiler; it makes an invariant currently held by roster's schema hold in the
 engine too.
+
+**M4 decision — adopted**, set in both the `settings` and the `managedSettings` tiers on every
+launch, so a resumed session, a loaded settings file and a `setPermissionMode()` call all fail
+against the engine rather than against roster's schema alone.
 
 ### D5 — DESIGN §12.2's inert drafting call does not do what it says
 

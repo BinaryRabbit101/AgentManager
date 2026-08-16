@@ -6,9 +6,12 @@
  * (M2), the CRUD service and routes (M3) and the option compiler (M4) land
  * behind this same barrel, so consumers never learn a second import path.
  *
- * Nothing here imports `@anthropic-ai/claude-agent-sdk`. The dependency is
- * pinned (M0, `docs/roster/SDK-NOTES.md`) for M4's option compiler, which is
- * the only file in the system allowed to see SDK option shapes (§13).
+ * The SDK (`@anthropic-ai/claude-agent-sdk`, pinned by M0 —
+ * `docs/roster/SDK-NOTES.md`) is reached from exactly two modules behind this
+ * barrel: `sessionOptions.ts`, for the `Options` type, and `compileSession.ts`,
+ * which constructs it. That pair is "the only place SDK option shapes appear"
+ * (§13); every other module here, the schema included, still has no import of
+ * it.
  */
 
 export {
@@ -116,3 +119,60 @@ export type { ParseResult } from './parse.js';
 
 export { RosterValidationError, formatIssuePath, issuesFromZod } from './errors.js';
 export type { RosterIssue } from './errors.js';
+
+// M4 — permission composition and the option compiler (DESIGN §6.2, §5, §13).
+// `compileSession` is the only function in the system that constructs SDK
+// option shapes; `compilePermissions` is the only composer of permission rules.
+
+export {
+  DEFAULT_DENY_MESSAGE,
+  DEFAULT_PERMISSION_MODE,
+  MUTATING_TOOL_DENY_RULES,
+  MUTATING_TOOL_NAMES,
+  compilePermissions,
+  isScopedRule,
+  outcomeForTool,
+  removesToolDefinition,
+  ruleTool,
+} from './permissions.js';
+
+export type {
+  AssignmentPermissionLayer,
+  CanUseToolPolicy,
+  CompiledPermissions,
+  PermissionPolicy,
+  ProjectPermissionLayer,
+  RawPermissionElevation,
+  RawPermissionSet,
+  ToolCallOutcome,
+} from './permissions.js';
+
+export { composePersona, renderRuntimeBlock } from './persona.js';
+export type {
+  PersonaComposition,
+  PersonaInput,
+  PersonaSection,
+  RuntimeBlockInput,
+} from './persona.js';
+
+export { lookupEnv, mergeAgentEnv } from './envMerge.js';
+export type {
+  EnvEntry,
+  EnvLayer,
+  LiteralEnvEntry,
+  MergeEnvInput,
+  MergedEnv,
+  SecretEnvEntry,
+} from './envMerge.js';
+
+export { DEFAULT_MAX_BUDGET_USD, DEFAULT_MAX_TURNS, compileSession } from './compileSession.js';
+
+export { SessionCompileError } from './sessionOptions.js';
+export type {
+  AssignmentContext,
+  ClaudeAgentSdkOptions,
+  CompilableAgent,
+  CompileSessionInput,
+  CompiledSession,
+  ProjectContext,
+} from './sessionOptions.js';

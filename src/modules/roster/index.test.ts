@@ -3,7 +3,7 @@
  * rather than about any one function.
  */
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -21,13 +21,33 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
+/**
+ * The only roster modules allowed to see the SDK (DESIGN §13: `compileSession`
+ * is "the only place SDK option shapes appear"). M1 held this as "nowhere at
+ * all"; M4 landed the compiler, so it becomes an allowlist rather than a ban —
+ * which is the stronger statement, because a new file is an offender by default.
+ */
+const SDK_IMPORTERS: readonly string[] = [
+  'sessionOptions.ts', // the `Options` type, re-exported as ClaudeAgentSdkOptions
+  'compileSession.ts', // constructs it
+  'compileSession.test.ts', // type-level validation + the gated runtime smoke test
+];
+
 describe('SDK boundary', () => {
-  it('M1 imports no Claude Agent SDK — option shapes live only in the compiler (DESIGN §13)', () => {
-    const offenders = sourceFiles(ROSTER_DIR).filter((file) => {
-      const text = readFileSync(file, 'utf8');
-      return /from '@anthropic-ai\//.test(text) || /require\('@anthropic-ai\//.test(text);
-    });
+  it('only the option compiler imports the Claude Agent SDK (DESIGN §13)', () => {
+    const offenders = sourceFiles(ROSTER_DIR)
+      .filter((file) => {
+        const text = readFileSync(file, 'utf8');
+        return /from '@anthropic-ai\//.test(text) || /require\('@anthropic-ai\//.test(text);
+      })
+      .filter((file) => !SDK_IMPORTERS.includes(basename(file)));
     expect(offenders).toEqual([]);
+  });
+
+  it('the schema itself still has no SDK import (M1 acceptance)', () => {
+    for (const name of ['schema.ts', 'contracts.ts', 'parse.ts', 'migrate.ts']) {
+      expect(readFileSync(join(ROSTER_DIR, name), 'utf8')).not.toMatch(/@anthropic-ai\//);
+    }
   });
 
   it('package.json pins the SDK to an exact version (M0 acceptance)', () => {
