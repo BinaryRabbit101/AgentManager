@@ -1,0 +1,7 @@
+dist/
+node_modules/
+coverage/
+package-lock.json
+
+# Design docs are hand-formatted prose; Prettier is scoped to code and config.
+**/*.md

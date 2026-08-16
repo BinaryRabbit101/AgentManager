@@ -16,3 +16,35 @@ Successor to the ControlPanel web app, with deeper per-project agent management 
 ## Documentation
 
 Design docs live in [docs/](docs/) — one subfolder per element, each with a design spec and implementation steps. See [docs/architecture.md](docs/architecture.md) for the decision record.
+
+## Development
+
+Requires Node.js 22 LTS or newer (`engines: { "node": ">=22" }`); newer majors are fine.
+
+```
+npm ci          # install exactly what package-lock.json pins
+npm run build   # tsc -> dist/
+npm test        # vitest
+npm run lint    # eslint + prettier --check
+npm run format  # prettier --write
+npm start       # node dist/main.js
+```
+
+**`npm run ci` is the gate** — it runs `lint`, `typecheck`, `build` and `test` in that order, and is exactly what a CI job should execute. Anything that passes it locally passes CI.
+
+Source layout mirrors the foundation design ([docs/foundation/DESIGN.md](docs/foundation/DESIGN.md)):
+
+```
+src/
+  config/    # layered config loader + zod schema (M2)
+  logging/   # pino JSONL logger, rotation, redaction (M3)
+  storage/   # better-sqlite3, migrations, repositories (M4/M5)
+  secrets/   # SecretStore: dpapi -> keyfile -> env (M6)
+  modules/   # feature modules; the remote module is dynamically imported (M7)
+  http/      # route table, health, log API (M8)
+  main.ts    # composition root / CLI entry point
+```
+
+Current state is foundation milestone M1: skeleton and toolchain only. `main.ts` parses `--version`/`--help` and exits; no service is started.
+
+All runtime state lives under the data root (`%LOCALAPPDATA%\AgentManager` by default, overridable with `AGENTMANAGER_HOME`), never inside this repository. Secrets are never committed — see [docs/foundation/DESIGN.md](docs/foundation/DESIGN.md) §3.

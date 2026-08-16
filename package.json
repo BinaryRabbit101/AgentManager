@@ -1,0 +1,40 @@
+{
+  "name": "agentmanager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Manager for a roster of Claude agents pointed at projects, with remote start/stop.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "dist/main.js",
+  "bin": {
+    "agentmanager": "dist/main.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "rebuild": "npm run clean && npm run build",
+    "start": "node dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "ci": "npm run lint && npm run typecheck && npm run build && npm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^22.20.0",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.4",
+    "vitest": "^3.2.4"
+  }
+}

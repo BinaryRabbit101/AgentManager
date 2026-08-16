@@ -1,5 +1,17 @@
+# Dependencies and build output
 node_modules/
 dist/
 out/
+coverage/
+*.tsbuildinfo
+
+# Secrets and machine-local overrides (foundation DESIGN.md §3.5).
+# The data root lives outside this repository — nothing under it is ever written here.
 .env
+.env.*
 *.local.json
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.log
