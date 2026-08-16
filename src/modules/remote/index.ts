@@ -26,7 +26,11 @@
  *   `remote: 'deny'` (§6.4);
  * - `ctx.provide('remote', …)` an API exposing `boundAddress(): {address,
  *   port, source} | null`, which M9's bind-time invariant reads to match the
- *   OS's view of the socket against the module's own claim (§6.3);
+ *   OS's view of the socket against the module's own claim (§6.3). That
+ *   contract is now a type — `RemoteService` in `src/lifecycle/bind.ts`, published
+ *   under the service name `REMOTE_SERVICE`. Until it is implemented, a
+ *   non-loopback socket in the home edition is fatal at start-up, exactly as it
+ *   is in the work edition;
  * - keep `dependsOn` honest once it needs `http`.
  *
  * The load probe should stay: it is what M11's boundary suite asserts on.

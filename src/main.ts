@@ -11,22 +11,50 @@
  *
  * This file is the only place that knows how the subsystems fit together:
  * config (M2) → logging (M3) → storage (M4/M5) → secrets (M6) → the module
- * runtime (M7). Everything below it takes plain options and imports none of its
- * siblings, which is what lets each be built and tested on its own.
+ * runtime (M7) → the HTTP surface (M8). Everything below it takes plain options
+ * and imports none of its siblings, which is what lets each be built and tested
+ * on its own.
  *
- * The HTTP surface (M8) and the Windows process lifecycle — single-instance
- * lock, `run/core.port`, graceful shutdown budget, the bind-time invariant of
- * §6.3 — are M9. Until M8's listener exists, {@link serve} holds the process
- * open itself and shuts down on SIGINT/SIGTERM.
+ * The split between {@link boot} and {@link serve} is the split between a
+ * service and a process. `boot` assembles a running service and hands it back;
+ * it is what a test, an install script or an embedding host calls. `serve` adds
+ * everything that is true only of *the* core process (M9, §4.2): the exclusive
+ * single-instance lock on `run/core.lock`, the `run/core.port` publication that
+ * Electron discovers the port through, SIGINT/SIGTERM, and the
+ * `service.shutdownGraceSeconds` budget. The one lifecycle concern `boot` keeps
+ * is §6.3's bind-time invariant, because a service with a socket bound where the
+ * edition forbids it must not exist even for a test.
  */
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';
+import { join } from 'node:path';
 import { argv, exit, stderr, stdout } from 'node:process';
 
 import type { Logger } from 'pino';
 
 import { ConfigError, loadConfig, type AppConfig, type ConfigSourceMap } from './config/index.js';
+import {
+  BindInvariantError,
+  LOCK_FILENAME,
+  PORT_FILENAME,
+  REMOTE_SERVICE,
+  acquireInstanceLock,
+  alreadyRunningMessage,
+  assertBindInvariant,
+  createShutdownController,
+  installShutdownSignals,
+  observeListeners,
+  probeCore,
+  readPortFile,
+  removePortFile,
+  writePortFile,
+  type BindInvariantReport,
+  type InstanceLock,
+  type ListenerObservation,
+  type RemoteService,
+  type ShutdownController,
+} from './lifecycle/index.js';
 import {
   createHttpModule,
   HTTP_SERVICE,
@@ -250,10 +278,19 @@ export interface BootOptions {
   };
   /**
    * Handles `POST /api/service/shutdown`. Defaults to the service's own
-   * {@link BootedService.shutdown}; M9 replaces it with the full lifecycle
-   * (grace budget, `run/core.port` removal, lock release).
+   * {@link BootedService.shutdown}; {@link serve} replaces it with the full
+   * lifecycle (grace budget, `run/core.port` removal, lock release).
    */
   readonly onShutdownRequest?: (reason: string) => void;
+  /**
+   * Overrides §6.3's listener enumeration.
+   *
+   * The real one walks the process's own libuv handles, which is what makes the
+   * assertion a second, independent claim rather than a module's own word (see
+   * `lifecycle/bind.ts`). Tests inject a set so a fatal case can be proven
+   * without binding a socket to a real interface.
+   */
+  readonly listeners?: () => ListenerObservation;
   readonly startTimeoutMs?: number;
   readonly stopTimeoutMs?: number;
   /** Called before a fatal boot error is rethrown. Defaults to `process.exit`. */
@@ -276,6 +313,8 @@ export interface BootedService {
   /** The full store — only the composition root holds one (§3.2). */
   readonly secrets: SecretStoreHandle;
   readonly runtime: ModuleRuntime;
+  /** What §6.3's post-start assertion saw. Always satisfied — it throws otherwise. */
+  readonly bind: BindInvariantReport;
   /** The aggregate M8 serves as `/api/health` (§6.2). */
   health(): Promise<HealthAggregate>;
   /** Stops modules in reverse order, closes the database, flushes the logs. */
@@ -541,11 +580,22 @@ export async function boot(options: BootOptions = {}): Promise<BootedService> {
 
     await runtime.startAll();
 
+    // --- The bind-time invariant (§6.3), after every module has started and
+    // before the service is handed to anyone. A violation throws, and the catch
+    // below unwinds and exits — "a boundary that actually holds" (§8).
+    const bind = assertBindTimeInvariant({
+      edition: config.edition,
+      runtime,
+      log,
+      ...(options.listeners === undefined ? {} : { observe: options.listeners }),
+    });
+
     service = {
       config,
       sources: loaded.sources,
       paths,
       installRoot: loaded.paths.installRoot,
+      bind,
       url: () =>
         requireResource(runtime, 'runtime').registry.require<HttpService>(HTTP_SERVICE)?.url(),
       logging,
@@ -566,13 +616,20 @@ export async function boot(options: BootOptions = {}): Promise<BootedService> {
     log.info({ modules: runtime.order }, 'agentmanager core ready');
     return service;
   } catch (error) {
-    const code = error instanceof ConfigError ? error.exitCode : MODULE_FAILURE_EXIT_CODE;
+    const code =
+      error instanceof ConfigError || error instanceof BindInvariantError
+        ? error.exitCode
+        : MODULE_FAILURE_EXIT_CODE;
     const report = error instanceof ConfigError ? error.report() : describeError(error);
 
     if (logging === undefined) {
       io.err(`${PROGRAM_NAME}: ${report}`);
     } else {
       logging.child('core').fatal({ err: error }, `refusing to start: ${report}`);
+      // §6.3 is a security boundary, and the core normally runs with no console
+      // at all (§4.3's scheduled task). When it *does* have one — an owner
+      // debugging a bind — the reason must be on it, not only in a file.
+      if (error instanceof BindInvariantError) io.err(`${PROGRAM_NAME}: ${report}`);
     }
 
     // Unwind in the same order `shutdown()` would, tolerating everything: this
@@ -586,6 +643,65 @@ export async function boot(options: BootOptions = {}): Promise<BootedService> {
     exitWith(code);
     throw error;
   }
+}
+
+/**
+ * §6.3's assertion, wired to the running process.
+ *
+ * The two claims it compares come from deliberately different places: the
+ * listener set from the process's own handles, and the remote address from
+ * `ctx.require('remote').boundAddress()` — the module's published claim, never
+ * re-derived here. A remote module that is absent (work edition), a placeholder
+ * (no service on the registry), or present but bound to nothing all yield the
+ * same `null`, which is exactly why a home edition with remote disabled behaves
+ * like the work edition.
+ *
+ * @throws BindInvariantError — fatal, per §6.3.
+ */
+function assertBindTimeInvariant(input: {
+  readonly edition: AppConfig['edition'];
+  readonly runtime: ModuleRuntime;
+  readonly log: Logger;
+  readonly observe?: () => ListenerObservation;
+}): BindInvariantReport {
+  const { runtime, log } = input;
+
+  // The `http` module's own address, used only when the handle list cannot be
+  // read: something is better than nothing, and the report says which it was.
+  const local = runtime.registry.require<HttpService>(HTTP_SERVICE)?.address();
+  const fallback =
+    local === undefined ? [] : [{ address: local.address, port: local.port, family: local.family }];
+
+  const observation = input.observe?.() ?? observeListeners(fallback);
+  if (observation.source === 'fallback') {
+    log.warn(
+      { listeners: observation.listeners.length },
+      "could not enumerate this process's listening sockets; the bind-time invariant of §6.3 " +
+        'was checked against the listeners foundation knows about, which is weaker',
+    );
+  }
+
+  const remote = runtime.registry.require<RemoteService>(REMOTE_SERVICE)?.boundAddress() ?? null;
+  const report = assertBindInvariant({
+    edition: input.edition,
+    listeners: observation.listeners,
+    remote,
+  });
+
+  for (const warning of report.warnings) log.warn({ remote }, warning);
+  log.info(
+    {
+      edition: report.edition,
+      source: observation.source,
+      loopback: report.loopback.map((listener) => `${listener.address}:${String(listener.port)}`),
+      nonLoopback: report.nonLoopback.map(
+        (listener) => `${listener.address}:${String(listener.port)}`,
+      ),
+      remote,
+    },
+    'bind-time invariant satisfied',
+  );
+  return report;
 }
 
 /** Reads a resource the boot sequence has already built, or fails loudly. */
@@ -608,55 +724,198 @@ async function safely(operation: () => Promise<void> | void): Promise<void> {
 }
 
 /**
- * Boots the service and keeps the process alive.
+ * Loads configuration for the sole purpose of locating `run/`, tolerating
+ * failure.
  *
- * Nothing artificial holds the event loop open any more: the `http` module's
- * listener does it, which is the correct reason for a service process to stay
- * up — when the listener closes, the process ends. M9 replaces the signal
- * handling here with the real lifecycle (single-instance lock, `run/core.port`,
- * the `service.shutdownGraceSeconds` budget).
+ * A broken configuration is *not* reported here: {@link boot} below hits the
+ * same failure and owns the per-key report (§2.1, "fatal at boot with a per-key
+ * error report"). Duplicating that formatting is how the two copies drift, so
+ * this returns `undefined` and lets the single owner speak. The consequence is
+ * benign — a core that cannot read its own configuration takes no lock, and it
+ * is about to exit non-zero anyway.
+ */
+function tryLoadConfig(
+  args: readonly string[],
+  options: BootOptions,
+): ReturnType<typeof loadConfig> | undefined {
+  try {
+    return loadConfig({
+      argv: args,
+      env: options.env ?? process.env,
+      ...(options.installRoot === undefined ? {} : { installRoot: options.installRoot }),
+      ...(options.dataRoot === undefined ? {} : { dataRootOverride: options.dataRoot }),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * §4.2's stale-file rule: "A stale file whose `/healthz` does not answer is
+ * ignored and overwritten."
+ *
+ * Reaching this point means the single-instance lock is held by *this* process,
+ * so any `run/core.port` on disk was left by a core that died without deleting
+ * it — a hard kill, a power cut. The probe still runs, because the answer
+ * changes what the owner needs to be told: silence is the ordinary stale case,
+ * while an answer means some unrelated program now holds that port and the file
+ * would have sent Electron to it.
+ */
+async function reconcileStalePortFile(path: string, log: Logger): Promise<void> {
+  const stale = readPortFile(path);
+  if (stale === undefined) return;
+
+  const answered = await probeCore(stale.port);
+  log.warn(
+    { file: path, port: stale.port, pid: stale.pid, startedAt: stale.startedAt },
+    answered === undefined
+      ? `ignoring a stale ${PORT_FILENAME} from a previous core: nothing answers /healthz on port ` +
+          `${String(stale.port)}. It will be overwritten.`
+      : `overwriting ${PORT_FILENAME}: something answers /healthz on port ${String(stale.port)}, ` +
+          'but this process holds the single-instance lock, so it is not an agentmanager core.',
+  );
+}
+
+/**
+ * Runs the core as a process: the whole of DESIGN §4.2.
+ *
+ * 1. **Single instance.** `run/core.lock` is opened with an exclusive handle
+ *    before anything else — in particular before storage, so a second instance
+ *    never touches the database. Losing the race is not an error: it prints the
+ *    running port from `run/core.port` and exits 0.
+ * 2. **Boot**, which ends with §6.3's bind-time assertion.
+ * 3. **Discovery.** Any stale `run/core.port` is reported and overwritten with
+ *    `{port, pid, startedAt, edition}` for the port actually bound.
+ * 4. **Shutdown.** SIGINT, SIGTERM and `POST /api/service/shutdown` all reach
+ *    one controller with one budget; the port file and the lock go on every
+ *    path out.
+ *
+ * Nothing artificial holds the event loop open: the `http` module's listener
+ * does it, which is the correct reason for a service process to stay up.
  */
 export async function serve(args: readonly string[], options: BootOptions = {}): Promise<void> {
-  let stopping = false;
-  const stop = async (service: BootedService, reason: string): Promise<void> => {
-    if (stopping) return;
-    stopping = true;
-    service.logging.child('core').info({ reason }, 'shutdown requested');
-    try {
-      await service.shutdown();
-      exit(0);
-    } catch {
-      exit(MODULE_FAILURE_EXIT_CODE);
+  const io = options.io ?? defaultIo;
+  const clock = options.clock ?? ((): Date => new Date());
+  const exitWith =
+    options.exit ??
+    ((code: number): void => {
+      exit(code);
+    });
+
+  // --- 1. Single instance (§4.2), before storage exists.
+  const preflight = tryLoadConfig(args, options);
+  let lock: InstanceLock | undefined;
+  let portFile: string | undefined;
+
+  if (preflight !== undefined) {
+    // `run/` is "recreated on boot if missing" (§1.2), and the lock creates it:
+    // the very first thing this process does needs it to exist, which is well
+    // before the storage bootstrap that repairs the rest of the tree.
+    const run = dataRootPaths(preflight.paths.dataRoot).run;
+    const lockFile = join(run, LOCK_FILENAME);
+    portFile = join(run, PORT_FILENAME);
+
+    const attempt = acquireInstanceLock({ path: lockFile, now: clock });
+    if (!attempt.acquired) {
+      // Deliberately before any logger exists: a second instance writes nothing
+      // and reads nothing but `run/`. It is a query, not a start-up.
+      io.out(alreadyRunningMessage(readPortFile(portFile), lockFile));
+      exitWith(0);
+      return;
     }
-  };
+    lock = attempt.lock;
+  }
 
   // `POST /api/service/shutdown` and a signal take the same path, as §4.2 puts
-  // them on the same line: "SIGINT/SIGTERM/`POST /api/service/shutdown`".
-  //
-  // The listener binds during `startAll`, so a shutdown can be requested before
-  // `boot` has returned the service to stop; the reason is held and acted on the
-  // moment it exists, rather than dropped.
-  const state: { service?: BootedService; pending?: string } = {};
-  const service = await boot({
-    argv: args,
-    onShutdownRequest: (reason) => {
-      if (state.service === undefined) {
-        state.pending = reason;
-        return;
-      }
-      void stop(state.service, reason);
-    },
-    ...options,
-  });
-  state.service = service;
-  if (state.pending !== undefined) void stop(service, state.pending);
+  // them on the same line. The listener binds during `startAll`, so a shutdown
+  // can be requested before `boot` has returned the service to stop; the reason
+  // is held and acted on the moment there is something to act with.
+  const state: { controller?: ShutdownController; pending?: string } = {};
+  const requestShutdown = (reason: string): void => {
+    if (state.controller === undefined) {
+      state.pending ??= reason;
+      return;
+    }
+    state.controller.request(reason);
+  };
 
-  const onSignal = (signal: NodeJS.Signals): void => void stop(service, signal);
-  process.once('SIGINT', onSignal);
-  process.once('SIGTERM', onSignal);
+  // --- 2. Boot.
+  let service: BootedService;
+  try {
+    service = await boot({ argv: args, onShutdownRequest: requestShutdown, ...options });
+  } catch (error) {
+    // Boot has already reported and exited; releasing matters only for an
+    // injected `exit` that returns, and for leaving `run/` tidy.
+    lock?.release();
+    throw error;
+  }
+
+  const log = service.logging.child('core');
+
+  // --- 3. Discovery (§4.2): publish after binding, never before.
+  if (portFile !== undefined) {
+    await reconcileStalePortFile(portFile, log);
+    const address = service.runtime.registry.require<HttpService>(HTTP_SERVICE)?.address();
+    if (address === undefined) {
+      log.warn(
+        { file: portFile },
+        `no listener is bound, so ${PORT_FILENAME} was not published; clients cannot discover this core`,
+      );
+    } else {
+      const record = {
+        port: address.port,
+        pid: process.pid,
+        startedAt: clock().toISOString(),
+        edition: service.config.edition,
+      };
+      writePortFile(portFile, record);
+      log.info({ file: portFile, ...record }, `published ${PORT_FILENAME}`);
+    }
+  }
+
+  // --- 4. Shutdown, with §4.2's budget.
+  const controller = createShutdownController({
+    graceMs: service.config.service.shutdownGraceSeconds * 1000,
+    stop: async () => {
+      log.info({ graceSeconds: service.config.service.shutdownGraceSeconds }, 'shutdown requested');
+      await service.shutdown();
+    },
+    finalize: (outcome) => {
+      // On the graceful path storage's own `stop()` has already checkpointed
+      // the WAL and closed the handle (it is last in reverse order). On any
+      // other path it has not, and this synchronous call is the last moment
+      // there is to leave a self-contained database behind.
+      if (outcome.path !== 'graceful') {
+        try {
+          service.storage.close();
+        } catch {
+          // The WAL is recovered on next open; exiting matters more.
+        }
+      }
+      if (portFile !== undefined) removePortFile(portFile);
+      lock?.release();
+    },
+    exit: exitWith,
+    onEvent: (outcome) => {
+      // The graceful path has already logged its own end and closed the log
+      // streams; only the paths that went wrong still have something to say.
+      if (outcome.path === 'graceful') return;
+      log.warn(
+        { reason: outcome.reason, path: outcome.path, durationMs: outcome.durationMs },
+        outcome.path === 'forced'
+          ? `shutdown exceeded the ${String(service.config.service.shutdownGraceSeconds)} s grace ` +
+              'budget; exiting anyway with the port file removed and the lock released'
+          : `shutdown failed: ${outcome.error ?? 'unknown error'}`,
+      );
+    },
+    failureExitCode: MODULE_FAILURE_EXIT_CODE,
+  });
+  state.controller = controller;
+  installShutdownSignals(controller);
+  if (state.pending !== undefined) controller.request(state.pending);
 
   const url = service.url();
-  if (url !== undefined) service.logging.child('core').info({ url }, `agentmanager core at ${url}`);
+  if (url !== undefined) log.info({ url }, `agentmanager core at ${url}`);
 }
 
 /** True when this file is the process entry point rather than an import. */
