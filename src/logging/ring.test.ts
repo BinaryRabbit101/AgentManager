@@ -84,3 +84,35 @@ describe('LogRing', () => {
     expect(ring.toArray()).toEqual([]);
   });
 });
+
+describe('subscription', () => {
+  it('notifies subscribers on every push, and stops on unsubscribe', () => {
+    const ring = new LogRing(3);
+    const seen: string[] = [];
+    const cancel = ring.subscribe((entry) => void seen.push(entry.msg ?? ''));
+
+    ring.push(record(0));
+    ring.push(record(1));
+    expect(seen).toEqual(['record 0', 'record 1']);
+    expect(ring.subscriberCount).toBe(1);
+
+    cancel();
+    cancel();
+    ring.push(record(2));
+    expect(seen).toEqual(['record 0', 'record 1']);
+    expect(ring.subscriberCount).toBe(0);
+  });
+
+  it('does not let a throwing subscriber break the logger or the others', () => {
+    const ring = new LogRing(3);
+    const seen: string[] = [];
+    ring.subscribe(() => {
+      throw new Error('subscriber is broken');
+    });
+    ring.subscribe((entry) => void seen.push(entry.msg ?? ''));
+
+    expect(() => ring.push(record(0))).not.toThrow();
+    expect(seen).toEqual(['record 0']);
+    expect(ring.size).toBe(1);
+  });
+});

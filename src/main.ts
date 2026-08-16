@@ -27,6 +27,12 @@ import { argv, exit, stderr, stdout } from 'node:process';
 import type { Logger } from 'pino';
 
 import { ConfigError, loadConfig, type AppConfig, type ConfigSourceMap } from './config/index.js';
+import {
+  createHttpModule,
+  HTTP_SERVICE,
+  type HttpModuleOptions,
+  type HttpService,
+} from './http/index.js';
 import { createLogging, type Logging } from './logging/index.js';
 import {
   createSecretStore,
@@ -227,6 +233,25 @@ export interface BootOptions {
   /** ACL injection for the secrets directory, so tests mutate no real ACLs. */
   readonly acl?: TightenOptions;
   readonly onPhase?: PhaseObserver;
+  /**
+   * Listener overrides for the `http` module (M8).
+   *
+   * `port: 0` asks the OS for an ephemeral port, which is how tests bind
+   * without competing for 7477 — the config schema requires a real port number,
+   * and rightly so, so the escape hatch is here rather than in configuration.
+   */
+  readonly http?: {
+    readonly bind?: string;
+    readonly port?: number;
+    readonly webRoot?: string;
+    readonly heartbeatMs?: number;
+  };
+  /**
+   * Handles `POST /api/service/shutdown`. Defaults to the service's own
+   * {@link BootedService.shutdown}; M9 replaces it with the full lifecycle
+   * (grace budget, `run/core.port` removal, lock release).
+   */
+  readonly onShutdownRequest?: (reason: string) => void;
   readonly startTimeoutMs?: number;
   readonly stopTimeoutMs?: number;
   /** Called before a fatal boot error is rethrown. Defaults to `process.exit`. */
@@ -240,6 +265,10 @@ export interface BootedService {
   readonly config: AppConfig;
   readonly sources: ConfigSourceMap;
   readonly paths: DataRootPaths;
+  /** Where the shipped, read-only configuration layers were read from (§1.2). */
+  readonly installRoot: string;
+  /** The local listener's base URL (`http://127.0.0.1:7477`), once started. */
+  url(): string | undefined;
   readonly logging: Logging;
   readonly storage: Storage;
   /** The full store — only the composition root holds one (§3.2). */
@@ -271,6 +300,7 @@ async function buildModuleList(options: {
   readonly storage: () => Storage;
   readonly secrets: () => SecretStoreHandle;
   readonly secretConditions: () => readonly SecretsHealthCondition[];
+  readonly http: HttpModuleOptions;
   readonly additional: readonly Module[];
   readonly log: Logger;
 }): Promise<readonly Module[]> {
@@ -278,6 +308,7 @@ async function buildModuleList(options: {
   const modules: Module[] = [
     createStorageModule(options.storage),
     createSecretsModule({ get: options.secrets, conditions: options.secretConditions }),
+    createHttpModule(options.http),
   ];
 
   if (config.edition === 'home' && config.modules.remote.enabled) {
@@ -323,6 +354,8 @@ export async function boot(options: BootOptions = {}): Promise<BootedService> {
   let logging: Logging | undefined;
   let storage: Storage | undefined;
   let runtime: ModuleRuntime | undefined;
+  let service: BootedService | undefined;
+  let shutdownRequested = false;
 
   try {
     // --- Configuration (M2). Resolves before anything else exists, because
@@ -378,11 +411,55 @@ export async function boot(options: BootOptions = {}): Promise<BootedService> {
     let secretStore: SecretStoreHandle | undefined = undefined;
     let secretConditions: readonly SecretsHealthCondition[] = [];
 
+    // `POST /api/service/shutdown` (§4.2). Guarded against re-entry, and
+    // deferred to the caller when one is supplied — M9's lifecycle takes it
+    // over, which is why the route calls a function rather than `process.exit`.
+    const requestShutdown = (reason: string): void => {
+      if (shutdownRequested) return;
+      shutdownRequested = true;
+      if (options.onShutdownRequest !== undefined) {
+        options.onShutdownRequest(reason);
+        return;
+      }
+      log.info({ reason }, 'graceful shutdown starting');
+      void requireResource(service, 'service')
+        .shutdown()
+        .catch((failure: unknown) => {
+          log.error({ err: failure }, `shutdown failed: ${describeError(failure)}`);
+        });
+    };
+
     const modules = await buildModuleList({
       config,
       storage: () => requireResource(storage, 'storage'),
       secrets: () => requireResource(secretStore, 'secrets'),
       secretConditions: () => secretConditions,
+      http: {
+        version: readVersion(),
+        // Read at `start()`, by which point every module's `init` has run and
+        // the table is complete (§6.4).
+        routes: () => requireResource(runtime, 'runtime').routes.routes,
+        sources: loaded.sources,
+        origins: {
+          installRoot: loaded.paths.installRoot,
+          dataRoot: loaded.paths.dataRoot,
+          configFile: loaded.paths.configFile,
+          editionFile: loaded.paths.editionFile,
+        },
+        logging: requireResource(logging, 'logging'),
+        logsDir: paths.logs,
+        health: () => requireResource(runtime, 'runtime').health(),
+        phase: () => requireResource(runtime, 'runtime').phase,
+        requestShutdown,
+        installRoot: loaded.paths.installRoot,
+        startedAt: clock(),
+        ...(options.http?.bind === undefined ? {} : { bind: options.http.bind }),
+        ...(options.http?.port === undefined ? {} : { port: options.http.port }),
+        ...(options.http?.webRoot === undefined ? {} : { webRoot: options.http.webRoot }),
+        ...(options.http?.heartbeatMs === undefined
+          ? {}
+          : { heartbeatMs: options.http.heartbeatMs }),
+      },
       additional: options.additionalModules ?? [],
       log,
     });
@@ -460,10 +537,13 @@ export async function boot(options: BootOptions = {}): Promise<BootedService> {
 
     await runtime.startAll();
 
-    const service: BootedService = {
+    service = {
       config,
       sources: loaded.sources,
       paths,
+      installRoot: loaded.paths.installRoot,
+      url: () =>
+        requireResource(runtime, 'runtime').registry.require<HttpService>(HTTP_SERVICE)?.url(),
       logging,
       storage,
       secrets: secretStore,
@@ -524,35 +604,55 @@ async function safely(operation: () => Promise<void> | void): Promise<void> {
 }
 
 /**
- * Boots the service and keeps the process alive until SIGINT/SIGTERM.
+ * Boots the service and keeps the process alive.
  *
- * The keep-alive handle is a placeholder for M8's listener, which will hold the
- * event loop open by itself; M9 replaces the signal handling here with the real
- * lifecycle (single-instance lock, `run/core.port`, the
- * `service.shutdownGraceSeconds` budget).
+ * Nothing artificial holds the event loop open any more: the `http` module's
+ * listener does it, which is the correct reason for a service process to stay
+ * up — when the listener closes, the process ends. M9 replaces the signal
+ * handling here with the real lifecycle (single-instance lock, `run/core.port`,
+ * the `service.shutdownGraceSeconds` budget).
  */
 export async function serve(args: readonly string[], options: BootOptions = {}): Promise<void> {
-  const service = await boot({ argv: args, ...options });
-
-  const keepAlive = setInterval(() => {
-    // Nothing: an empty ref'd timer is the smallest thing that holds the event
-    // loop open while no listener is bound yet.
-  }, 60_000);
-
   let stopping = false;
-  const shutdown = (signal: NodeJS.Signals): void => {
+  const stop = async (service: BootedService, reason: string): Promise<void> => {
     if (stopping) return;
     stopping = true;
-    clearInterval(keepAlive);
-    service.logging.child('core').info({ signal }, 'shutdown signal received');
-    void service.shutdown().then(
-      () => exit(0),
-      () => exit(MODULE_FAILURE_EXIT_CODE),
-    );
+    service.logging.child('core').info({ reason }, 'shutdown requested');
+    try {
+      await service.shutdown();
+      exit(0);
+    } catch {
+      exit(MODULE_FAILURE_EXIT_CODE);
+    }
   };
 
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
+  // `POST /api/service/shutdown` and a signal take the same path, as §4.2 puts
+  // them on the same line: "SIGINT/SIGTERM/`POST /api/service/shutdown`".
+  //
+  // The listener binds during `startAll`, so a shutdown can be requested before
+  // `boot` has returned the service to stop; the reason is held and acted on the
+  // moment it exists, rather than dropped.
+  const state: { service?: BootedService; pending?: string } = {};
+  const service = await boot({
+    argv: args,
+    onShutdownRequest: (reason) => {
+      if (state.service === undefined) {
+        state.pending = reason;
+        return;
+      }
+      void stop(state.service, reason);
+    },
+    ...options,
+  });
+  state.service = service;
+  if (state.pending !== undefined) void stop(service, state.pending);
+
+  const onSignal = (signal: NodeJS.Signals): void => void stop(service, signal);
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
+
+  const url = service.url();
+  if (url !== undefined) service.logging.child('core').info({ url }, `agentmanager core at ${url}`);
 }
 
 /** True when this file is the process entry point rather than an import. */

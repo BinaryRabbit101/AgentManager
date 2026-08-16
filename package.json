@@ -13,8 +13,10 @@
     "node": ">=22"
   },
   "files": [
+    "config",
     "dist",
-    "migrations"
+    "migrations",
+    "web"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

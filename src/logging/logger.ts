@@ -81,9 +81,17 @@ export function createLogging(options: LoggingOptions): Logging {
     access: new RotatingFileWriter({ ...rotation, baseName: 'access' }),
   };
 
-  const loggerOptions = (component: string): LoggerOptions => ({
+  // `base: null` rather than `base: { component }`. pino concatenates the root's
+  // base bindings with each child's, so a component in both put **two**
+  // `component` keys on every child line — valid JSONL, but `JSON.parse` keeps
+  // only the last and any other reader may keep either (flagged at M7). The
+  // child binding is now the single source: even the root stream's own logger
+  // below is a child carrying exactly one. `null` also keeps pino's default
+  // `pid`/`hostname` bindings off the record, which `base: { component }` did
+  // implicitly and the record contract of §5.1 does not include.
+  const loggerOptions = (): LoggerOptions => ({
     level,
-    base: { component },
+    base: null,
     formatters: {
       level: (label: string) => ({ level: label }),
       log: redactRecord,
@@ -101,8 +109,12 @@ export function createLogging(options: LoggingOptions): Logging {
     },
   });
 
-  const logger = pino(loggerOptions(rootComponent), destination(writers.core, ring, emitPretty));
-  const accessLogger = pino(loggerOptions('access'), destination(writers.access, ring, emitPretty));
+  // The two stream roots carry no bindings at all; every logger handed out is a
+  // child of one of them, tagged with its component exactly once.
+  const coreRoot = pino(loggerOptions(), destination(writers.core, ring, emitPretty));
+  const accessRoot = pino(loggerOptions(), destination(writers.access, ring, emitPretty));
+  const logger = coreRoot.child({ component: rootComponent });
+  const accessLogger = accessRoot.child({ component: 'access' });
 
   // pino copies the level onto a child at creation, so a later change on the
   // parent does not reach children already made. Keeping the list is what makes
@@ -120,7 +132,7 @@ export function createLogging(options: LoggingOptions): Logging {
     child(component, bindings) {
       const extra =
         bindings === undefined ? {} : (redactValue(bindings) as Record<string, unknown>);
-      const created = logger.child({ ...extra, component });
+      const created = coreRoot.child({ ...extra, component });
       children.push(created);
       return created;
     },
@@ -128,6 +140,11 @@ export function createLogging(options: LoggingOptions): Logging {
     setLevel(next) {
       if (!isLogLevel(next)) throw new RangeError(`unknown log level: ${String(next)}`);
       currentLevel = next;
+      // The roots as well as their children: a child made *after* a level change
+      // inherits from its root, so leaving the roots behind would silently
+      // resurrect the old level for every module that logs late (§5.3).
+      coreRoot.level = next;
+      accessRoot.level = next;
       logger.level = next;
       accessLogger.level = next;
       for (const created of children) created.level = next;

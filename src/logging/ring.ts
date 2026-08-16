@@ -7,9 +7,13 @@
  */
 import { LEVEL_SEVERITY, type LogLevel, type LogQuery, type LogRecord } from './types.js';
 
+/** Cancels a {@link LogRing.subscribe}. Safe to call twice. */
+export type UnsubscribeLog = () => void;
+
 export class LogRing {
   readonly capacity: number;
   readonly #records: (LogRecord | undefined)[];
+  readonly #listeners = new Set<(record: LogRecord) => void>();
   #next = 0;
   #size = 0;
 
@@ -30,6 +34,36 @@ export class LogRing {
     this.#records[this.#next] = record;
     this.#next = (this.#next + 1) % this.capacity;
     if (this.#size < this.capacity) this.#size += 1;
+
+    // Snapshot, so a listener that unsubscribes while being notified does not
+    // change who else is notified about the record in flight.
+    for (const listener of [...this.#listeners]) {
+      try {
+        listener(record);
+      } catch {
+        // A subscriber must never be able to break the logger it is watching —
+        // least of all by throwing inside a call that is itself logging an error.
+      }
+    }
+  }
+
+  /**
+   * Notifies on every record as it is written, which is what `GET
+   * /api/logs/stream` (DESIGN §5.3) pushes live.
+   *
+   * The alternative — polling {@link query} — cannot distinguish two records
+   * written in the same millisecond, so a tail would silently drop or repeat
+   * lines. A record reaches subscribers already redacted, because the ring is
+   * fed from the destination stream after §5.4's write-time redaction.
+   */
+  subscribe(listener: (record: LogRecord) => void): UnsubscribeLog {
+    this.#listeners.add(listener);
+    return () => void this.#listeners.delete(listener);
+  }
+
+  /** Live subscriber count, for diagnostics and tests. */
+  get subscriberCount(): number {
+    return this.#listeners.size;
   }
 
   /** Every held record, oldest first. */

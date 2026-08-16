@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentManager</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family:
+          system-ui,
+          -apple-system,
+          Segoe UI,
+          sans-serif;
+      }
+      body {
+        margin: 0;
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+      }
+      main {
+        max-width: 34rem;
+        padding: 2rem;
+      }
+      h1 {
+        margin: 0 0 0.25rem;
+        font-size: 1.5rem;
+      }
+      p {
+        line-height: 1.5;
+        opacity: 0.85;
+      }
+      code {
+        font-family: ui-monospace, Consolas, monospace;
+      }
+      ul {
+        padding-left: 1.1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>AgentManager</h1>
+      <p>
+        The core service is running and serving its API. This page is the placeholder web bundle
+        that foundation ships so the static route and its SPA history fallback are real and
+        testable; the actual single-page app arrives with the <code>ui</code> element and replaces
+        this file.
+      </p>
+      <ul>
+        <li><a href="/healthz">/healthz</a> — liveness</li>
+        <li><a href="/api/health">/api/health</a> — module health</li>
+        <li><a href="/api/config/effective">/api/config/effective</a> — resolved configuration</li>
+        <li><a href="/api/logs">/api/logs</a> — recent log records</li>
+      </ul>
+    </main>
+  </body>
+</html>

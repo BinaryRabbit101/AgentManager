@@ -32,6 +32,7 @@
 import type { Logger } from 'pino';
 
 import type { AppConfig } from '../config/index.js';
+import type { RouteHandler } from '../http/types.js';
 import type { SecretResolver } from '../secrets/index.js';
 import type { Clock, SettingsRepository, Store } from '../storage/index.js';
 
@@ -114,14 +115,22 @@ export type RemotePolicy = 'allow' | 'deny';
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS' | 'ALL';
 
 /**
- * The handler, opaque to M7.
+ * The handler contract, defined by M8 and re-exported here.
  *
- * M7 owns the route *table*, not the HTTP framework: the request/response
- * contract arrives with the server in M8, and inventing one here would mean two
- * definitions to reconcile. `(...args: never[]) => unknown` accepts any function
- * without asserting anything about its parameters.
+ * M7 owned the route *table*, not the HTTP framework, and left this opaque
+ * because "the request/response contract arrives with the server in M8, and
+ * inventing one here would mean two definitions to reconcile". M8 defined it in
+ * `src/http/types.ts`, next to the server that calls it, and this is the one
+ * definition:
+ *
+ * ```ts
+ * (req: RequestContext, res: ResponseTools) => HttpResult | void | Promise<…>
+ * ```
+ *
+ * The import is type-only in both directions, so `src/modules` and `src/http`
+ * still have no runtime dependency on each other.
  */
-export type RouteHandler = (...args: never[]) => unknown;
+export type { RouteHandler };
 
 /** What a module hands to {@link ModuleContext.registerRoutes}. */
 export interface RouteDefinition {

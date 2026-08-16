@@ -5,7 +5,7 @@
  * loggers off it; nothing else in the tree opens a log file or formats a record.
  */
 export { createLogging, formatPretty, type CorrelationIds, type Logging } from './logger.js';
-export { LogRing } from './ring.js';
+export { LogRing, type UnsubscribeLog } from './ring.js';
 export {
   RotatingFileWriter,
   daysToMs,

@@ -157,6 +157,9 @@ afterEach(async () => {
  *
  * `secrets.provider=env` keeps the store off DPAPI and off the disk (§3.1), and
  * the injected `icacls` runner means no real ACL is ever touched.
+ *
+ * `http.port: 0` binds the M8 listener to an ephemeral port, so a test run never
+ * competes for the configured 7477 or with another test file.
  */
 async function bootTest(options: BootOptions = {}): Promise<BootedService> {
   const service = await boot({
@@ -168,6 +171,7 @@ async function bootTest(options: BootOptions = {}): Promise<BootedService> {
     acl: { run: () => {} },
     exit: (code) => void exitCodes.push(code),
     ...options,
+    http: { port: 0, ...options.http },
     argv: ['--set', 'secrets.provider=env', ...(options.argv ?? [])],
   });
   booted.push(service);
@@ -181,7 +185,9 @@ describe('boot', () => {
 
     expect(service.config.edition).toBe('work');
     expect(service.paths.dataRoot).toBe(resolve(dataRoot));
-    expect(service.runtime.order).toEqual(['storage', 'secrets']);
+    // §6.2's list order: `[storage, secrets, http, …]`.
+    expect(service.runtime.order).toEqual(['storage', 'secrets', 'http']);
+    expect(service.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(service.storage.schemaVersion).toBeGreaterThanOrEqual(1);
     expect(existsSync(join(dataRoot, 'state', 'agentmanager.db'))).toBe(true);
     expect(existsSync(join(dataRoot, 'state', 'logs', 'core.log'))).toBe(true);
@@ -200,11 +206,13 @@ describe('boot', () => {
 
     const health = await service.health();
     expect(health.status).toBe('ok');
-    expect(health.modules.map((module) => module.id)).toEqual(['storage', 'secrets']);
+    expect(health.modules.map((module) => module.id)).toEqual(['storage', 'secrets', 'http']);
     expect(health.modules.every((module) => module.critical)).toBe(true);
 
     await service.shutdown();
     booted = [];
+
+    expect(service.url()).toBeUndefined();
 
     expect(isDatabaseOpen(service.paths.database)).toBe(false);
     expect(service.runtime.phase).toBe('stopped');
@@ -386,7 +394,7 @@ describe('boot', () => {
       ],
     });
 
-    expect(service.runtime.order).toEqual(['storage', 'secrets', 'roster', 'projects']);
+    expect(service.runtime.order).toEqual(['storage', 'secrets', 'http', 'roster', 'projects']);
     // No module ships migrations yet, so nothing beyond foundation's set ran.
     expect(Object.keys(service.storage.setVersions)).toEqual(['foundation']);
   });

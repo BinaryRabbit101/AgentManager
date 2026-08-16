@@ -105,6 +105,27 @@ describe('record shape', () => {
     expect(written.every((r) => r.sessionId === 'S9')).toBe(true);
   });
 
+  it('puts exactly one component key on every line, on both streams', () => {
+    // M7 flagged the duplicate M8 fixed: the root logger's `base` and the
+    // child's binding both set `component`, so every child line carried two.
+    // Valid JSONL, but `JSON.parse` keeps only the last and another reader may
+    // keep either, which makes `component` unreliable as a filter — and
+    // `GET /api/logs?component=` is exactly that filter.
+    const instance = build();
+    instance.logger.info('root line');
+    instance.child('runner').info('child line');
+    instance.child('storage', { sessionId: 'S1' }).warn('bound child line');
+    instance.accessLogger.info({ path: '/healthz' }, 'request');
+
+    for (const file of ['core.log', 'access.log']) {
+      for (const line of lines(file)) {
+        expect(line.split('"component"')).toHaveLength(2);
+      }
+    }
+    expect(records('core.log').map((r) => r.component)).toEqual(['core', 'runner', 'storage']);
+    expect(records('access.log').map((r) => r.component)).toEqual(['access']);
+  });
+
   it('serialises errors without losing the message', () => {
     const { logger } = build();
     logger.error(new Error('storage unavailable'));
