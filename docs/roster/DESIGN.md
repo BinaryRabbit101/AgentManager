@@ -463,6 +463,9 @@ with no roster-specific work.
 | `POST` | `/draft` | draft-from-description (§12) |
 | `POST` | `/agents/:id/validate` | dry-run compile against a project id, returns effective permissions |
 | `GET` | `/agents/:id/avatar` | image or generated placeholder |
+| `PUT` | `/agents/:id/avatar` | multipart upload; written into the agent folder as `avatar.png` and sets `avatar: { kind: 'file', value: 'avatar.png' }` (§9.5) |
+| `PUT` | `/board-order` | `{ order: string[] }` — whole-list rewrite of `agent_ui_state.board_order` (§9.5) |
+| `PATCH` | `/agents/:id/ui-state` | `{ pinned }` — the other `agent_ui_state` field the board toggles |
 | WS | `roster.changed` | broadcast on any registry mutation, including external file edits |
 
 `POST /agents/:id/validate` exists for the UI: before launching, show the user the *effective*
@@ -518,6 +521,28 @@ best-effort-parsed.
 
 This makes "here's my code-reviewer agent" a shareable artefact, which is the point of file-based
 storage.
+
+### 9.5 Writing `agent_ui_state`, and uploading an avatar
+
+**`PUT /board-order { order: string[] }`** (ui §19, R2). Roster owns `board_order` (§2.2) and returns
+it as `uiState` on `GET /agents`; this is the write path. It takes the **whole list** and rewrites
+every row's `board_order` in one transaction — idempotent, and atomic in the sense that the board
+either has the new order or the old one. A per-card `PATCH` was rejected: dragging one card changes
+the position of every card after it, so per-card writes would mean N requests and, on a dropped
+connection, a torn order with duplicate or missing positions. Ids not in the roster are rejected
+(400) rather than silently dropped; ids omitted from `order` keep their relative order after the
+listed ones. Emits `roster.changed`. `PATCH /agents/:id/ui-state { pinned }` covers the only other
+board-owned field; both write `agent_ui_state` in SQLite and neither touches `agent.json`, which is
+the whole reason the table exists.
+
+**`PUT /agents/:id/avatar`** (ui §19, R7) closes the write path for `avatar.kind: 'file'` (§3.2),
+which the schema and `GET /agents/:id/avatar` supported but nothing could set. Multipart upload,
+capped by size (default 1 MB) and MIME type (`image/png`, `image/jpeg`, `image/webp`), transcoded or
+rejected — never stored under a caller-supplied filename. It is written into the agent folder as
+`avatar.png` via the same atomic temp-file + rename path as any other authored content (§2.3), and
+`agent.json` is updated to `{ "kind": "file", "value": "avatar.png" }` in the same operation, so the
+folder stays self-describing and duplicate/export carry the image with no special case. `DELETE` on
+the same path removes the file and reverts the definition to its emoji or initials.
 
 ---
 

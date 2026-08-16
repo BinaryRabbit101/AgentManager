@@ -175,7 +175,14 @@ gate, the §6.3 grant flow (`409 remote_access_required`, `PUT /api/remote/agent
 **Acceptance**
 - A remote `POST /api/sessions` for an ungranted agent returns 409 with the agent id and creates no
   session row; after the grant it succeeds and the session carries `origin: 'remote'`.
-- `confirmRemoteAccess: true` grants and starts in one call.
+- **A remote `POST /api/assignments/solo` for an ungranted agent is refused with `409
+  remote_access_required` and creates no assignment and no session row** — the product's real launch
+  path, tested as such; the same test covers `POST /api/assignments` (409 listing *every* ungranted
+  member) and `POST /api/assignments/:id/advance`. A test enumerates the live route table and asserts
+  every route that can start a session is gated, so a new launch route fails this milestone rather
+  than shipping ungated (DESIGN §6.2).
+- `confirmRemoteAccess: true` grants and starts in one call, including granting every listed member
+  of a pattern launch.
 - Stop, pause, transcript read, event stream, and **question answer** all succeed for an agent with
   **no** grant and for one whose grant has expired — the safety-valve and never-stranded invariants,
   each an explicit named test.

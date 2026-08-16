@@ -885,12 +885,33 @@ POST   /api/sessions/:id/resume
 POST   /api/sessions/:id/continue    → new session with resumed_from (§9.4)
 POST   /api/sessions/:id/stop        { reason? }
 POST   /api/sessions/:id/pin         { pinned: boolean }        -- projects' retention exemption
-GET    /api/sessions/:id/transcript  ?from=<byteOffset>&limit=  -- foundation §1.5 tailing
+GET    /api/sessions/:id/transcript  ?from=<byteOffset>&limit=&tail=<bytes>  -- foundation §1.5 tailing
 GET    /api/sessions/:id/stream      live event stream for one session
 GET    /api/runner/queue
 GET    /api/runner/usage
 PUT    /api/runner/capacity          { maxConcurrent }          -- settings, not config
 ```
+
+**The transcript route's offset/tail contract** (ui §19, R6), stated here because a client computing
+an offset from `sessions.transcript_bytes` needs it to be safe:
+
+- `from=<byteOffset>` reads forward. Every response returns **whole JSONL lines only** plus the
+  `next` offset to resume from. A `from` that lands mid-line is not an error and is not silently
+  truncated — it **advances to the following newline**, so an offset taken from `transcript_bytes`
+  mid-flush, or from a `session.delta` watermark, can never split a record or yield unparsable bytes.
+- `tail=<bytes>` reads **backward** from the end: the last N bytes, snapped forward to the next line
+  boundary, capped by `runner.transcript.maxTailBytes` (default 1 MB, 64 KB when unspecified). It is
+  mutually exclusive with `from` (400 if both are given), and it returns the same
+  `{ lines, from, next, pruned }` shape.
+- Both forms report `pruned: true` rather than failing when projects' retention has removed the
+  earlier part of the file, and `next` always advances so a poll loop terminates.
+
+This makes the HTTP route the exact peer of the in-process `getTranscriptTail` (§11.2), which already
+served the "last N bytes, whole lines" shape. Without `tail`, opening a long finished session — up to
+the 512 MB per-session cap (§10) — means paging forward from byte 0, which is work proportional to
+the transcript's length to show its end; with it, opening a finished session costs one request
+regardless of size, which is what the session view actually does on open before it subscribes to the
+live stream.
 
 `origin` (`local` | `remote`) is taken from foundation's request context and stored on
 `sessions.origin`; runner adds no remote-specific behaviour of its own (§15.3).
@@ -953,7 +974,7 @@ mechanism:
   "workspaceWaitMinutes": 60,
   "queueStaleHours": 24,
   "question":   { "holdMs": 900000, "expireHours": 24 },
-  "transcript": { "flushLines": 50, "flushMs": 2000, "maxMb": 512 },
+  "transcript": { "flushLines": 50, "flushMs": 2000, "maxMb": 512, "maxTailBytes": 1048576 },
   "rateLimit":  { "cooldownMs": 300000, "maxCooldownMs": 1800000 }
 }
 ```

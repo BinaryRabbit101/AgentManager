@@ -145,7 +145,7 @@ The remote middleware applies four rules, in order:
 
 | # | Rule | Response |
 |---|---|---|
-| 1 | **Static shell bypass** — `GET /`, `/assets/*`, `/index.html`, favicon, service worker: served **without** a bearer token. They contain no data; the phone must be able to load the app before it can authenticate. | 200 |
+| 1 | **Static shell bypass** — the SPA bundle foundation §6.4 serves on both listeners (`GET /`, `/assets/*`, `/index.html`, favicon, service worker) **and its history fallback** for any other non-`/api` `GET`: served **without** a bearer token. They contain no data; the phone must be able to load the app — including a deep-linked route arriving from an ntfy notification — before it can authenticate. | 200 |
 | 2 | **Deny list** — path matches a denied pattern (§3.2). Evaluated *before* auth so a denied route cannot be used as a token oracle. | `403 route_denied_remotely` |
 | 3 | **Bearer auth** — everything under `/api/**` (§4). | `401 unauthorized` |
 | 4 | **Per-agent grant gate** — only on the launch verbs of §6.2. | `409 remote_access_required` |
@@ -401,10 +401,30 @@ Three tiers, and the boundaries are load-bearing:
 |---|---|---|
 | **Observe** | list roster/projects/sessions, read a session, tail a transcript, stream events, read logs | **No.** Watching is the point of remote. |
 | **Restrain** | `POST /api/sessions/:id/stop`, `/pause`, `PUT /api/runner/capacity` (lower only, runner §15.3 #17) | **No — never.** Stopping a runaway agent from a phone must work for *any* agent, including one whose grant expired an hour ago. A safety valve behind a consent gate is not a safety valve. |
-| **Initiate** | `POST /api/sessions`, `POST /api/sessions/:id/continue`, `POST /api/sessions/:id/steer` | **Yes.** These are the verbs that make an agent do new work. |
+| **Initiate** | **Every session-initiating surface**: `POST /api/assignments/solo`, `POST /api/assignments`, `POST /api/assignments/:id/advance`, `POST /api/sessions` (where it exists as a raw route), `POST /api/sessions/:id/continue`, `POST /api/sessions/:id/steer` | **Yes.** These are the verbs that make an agent do new work. |
+
+**The gate binds to launch semantics, not to a route name.** The rule is: *any route that can cause a
+session to start, resume as new work, or receive new instructions is gated, for every agent it would
+put to work* — and the tier list above is an enumeration of that rule as of v1, not its definition. An
+element adding a route that starts sessions inherits the gate by virtue of what it does; if it is not
+listed here, the list is out of date, not the route exempt. This is stated as a principle because the
+enumeration was already wrong once: it named only `POST /api/sessions`, while the product's actual
+launch path is `POST /api/assignments/solo` (orchestrator §11.1, and pinned in its §16.7) for a
+drag-and-drop launch and `POST /api/assignments` for a pattern, so a remote client could start an
+agent with no grant simply by using the endpoint the UI actually calls (ui §19, R3). A gate defined
+over route names drifts silently the moment the launch path moves; one defined over launch semantics
+does not.
 
 `/steer` is in the gated tier because it injects arbitrary new instructions into a live session; it
-is initiation wearing a continuation's clothes.
+is initiation wearing a continuation's clothes. `POST /api/assignments/:id/advance` is in it for the
+same reason: it plans and starts the next turn, which is new work for whichever seats that turn fills.
+
+**Assignments have members, so the gate is evaluated per agent and reported as a set.** A pattern
+launch puts ≥2 agents to work; the request is refused unless **every** agent it would start holds a
+live grant, and the `409 remote_access_required` body carries the full list of ungranted agents
+(§6.3) so the client prompts once for all of them rather than N times through N retries.
+`confirmRemoteAccess` is honoured on all of these routes, granting each listed agent and proceeding
+atomically.
 
 **Answering a question is in the Observe tier and is a hard invariant** (§7.4): it is never gated by
 the flag, never on the deny list, never rate-limited beyond the global bucket. Gating it would
@@ -412,16 +432,21 @@ recreate exactly the failure ui's README forbids — a question stranded on the 
 
 ### 6.3 The grant flow, the auto-enable rule, and the disable rule
 
-**Grant / auto-enable.** A remote `POST /api/sessions` for an agent with no live grant returns:
+**Grant / auto-enable.** A remote call to any initiating route of §6.2 — `POST
+/api/assignments/solo`, `POST /api/assignments`, `POST /api/assignments/:id/advance`, `POST
+/api/sessions`, `/continue`, `/steer` — naming one or more agents without a live grant returns:
 
 ```
-409 { "error": "remote_access_required", "agentId": "...", "agentName": "..." }
+409 { "error": "remote_access_required",
+      "agents": [ { "agentId": "ada-architect", "agentName": "Ada" },
+                  { "agentId": "sam-skeptic",   "agentName": "Sam"  } ] }
 ```
 
-The client shows *"Allow **Ada** to be started remotely?"*, the user taps once, the client calls
-`PUT /api/remote/agents/ada/access {enabled:true}`, and **retries the original start**. The client may
-skip the round trip by sending `confirmRemoteAccess: true` in the start body, which grants and starts
-atomically.
+The list is always present, even for a solo launch of one agent, so the client has one shape to
+handle. The client shows *"Allow **Ada** and **Sam** to be started remotely?"*, the user taps once,
+the client grants each with `PUT /api/remote/agents/:id/access {enabled:true}`, and **retries the
+original request**. The client may skip the round trip by sending `confirmRemoteAccess: true` in the
+request body, which grants every named agent and starts atomically.
 
 This satisfies D5's "remote access auto-enables when an agent is started remotely" — the enable
 happens as part of the remote start, needing no trip to the desktop — while keeping it an *act*

@@ -1148,7 +1148,8 @@ usable loop in a local browser tab is worth more than a polished shell around no
 ## 19. Reconciliations raised
 
 Per CLAUDE.md's ground rule these are raised, not silently diverged from. Each is small and additive;
-only **R2** blocks a north-star feature.
+only **R2** blocks a north-star feature. **All seven are now resolved** — each target doc was amended;
+the resolution is noted under each item below.
 
 **R1 — foundation §6.4: nobody owns serving the SPA.** Foundation's v1 route inventory lists
 `/healthz`, `/api/health`, `/api/config/effective`, `/api/logs*`, `/api/service/shutdown`, `/api/events`
@@ -1158,6 +1159,8 @@ which presupposes they exist. Requested: foundation registers the static handler
 SPA history fallback (any non-`/api` GET → `index.html`), marked `remote: 'allow'`. Without the
 fallback, the ntfy deep link `…/questions/:id` (orchestrator §10) and every bookmarked route 404 on
 reload.
+**Resolved — see foundation §6.4**: foundation serves the bundle plus an SPA history fallback on both
+listeners, `remote: 'allow'`; remote §3.1 rule 1 now names it as the provider.
 
 **R2 — roster §9.1: no write path for `agent_ui_state`.** Roster owns `board_order` and returns it as
 `uiState` on `GET /agents`, but the API table has no endpoint that writes it. Drag-to-reorder is the
@@ -1165,6 +1168,8 @@ board's defining gesture and cannot persist. Requested: `PUT /api/roster/board-o
 (whole-list, idempotent, atomic — a per-card `PATCH` would produce N writes and a torn order on a
 dropped connection), plus `PATCH /api/roster/agents/:id/ui-state { pinned }`. **This is the one
 reconciliation the north star depends on.**
+**Resolved — see roster §9.1 / §9.5** (both endpoints, whole-list atomic write) and roster
+IMPLEMENTATION M3, whose acceptance now covers the reorder round-trip.
 
 **R3 — remote §6.2: the per-agent grant gate can be bypassed by the actual launch path.** Remote's
 "initiate" tier lists `POST /api/sessions`, `/continue` and `/steer`. But the UI's drag-and-drop launch
@@ -1176,6 +1181,10 @@ initiate tier; honour `confirmRemoteAccess` on them; and, because a pattern has 
 `409 remote_access_required` body carry a **list** of ungranted agents so the client can prompt once
 rather than N times. Flagged as security-relevant rather than cosmetic: as written, the grant gate is
 not enforced on the launch path.
+**Resolved — see remote §6.2 / §6.3**: the initiate tier now covers every session-initiating surface
+(`/api/assignments/solo`, `/api/assignments`, `/:id/advance`, the sessions routes) under the stated
+principle that the gate binds to launch semantics, not a route name; the 409 body carries the list of
+ungranted agents, and remote IMPLEMENTATION §8 tests the solo-assignment refusal.
 
 **R4 — foundation §6.5: `/api/events` has no subscription filter.** All events are fanned out to WS
 subscribers, including the high-volume non-persisted ones (`session.delta`, `session.message`,
@@ -1184,6 +1193,8 @@ global feed therefore receives token-level deltas it will discard. Requested: an
 filter on the subscription (and the matching `since` replay), so the client can subscribe to lifecycle
 and question events only and take per-session detail on runner's dedicated stream. Not blocking — v1
 discards client-side — but it is bytes over a radio for no benefit.
+**Resolved — see foundation §6.5**: `/api/events` takes an optional `types=` filter (exact types or
+`prefix.*`), applied identically to the live stream and the `since=` replay.
 
 **R5 — orchestrator §11.1: the `GET /api/questions` list projection is unspecified.** §16.1 pins what a
 card *is* (a `questions` row plus its recommendations) but not what the list returns. Rendering the
@@ -1191,6 +1202,8 @@ inbox needs, per item: `id, kind, status, prompt, options, createdAt, expiresAt,
 projectId, sessionId, recommendations[] (agentId, role, stance, strength, rationale), disagreement,
 contested, answeredVia`. Requested: that projection on the list endpoint, so a cold phone load is one
 request rather than one plus N joins against assignments and roster.
+**Resolved — see orchestrator §11.1**, which pins exactly that projection (recommendations embedded,
+assignment/project/session ids denormalised) for both the list and the single-question read.
 
 **R6 — runner §11.1: `GET /api/sessions/:id/transcript` cannot tail.** The HTTP route accepts only
 `from=<byteOffset>`, while the in-process `getTranscriptTail(sessionId, { maxBytes })` (§11.2) serves
@@ -1199,12 +1212,17 @@ Requested: either a `tail=<bytes>` parameter on the HTTP route, or an explicit r
 lands mid-line advances to the next newline so a client can compute an offset from
 `sessions.transcript_bytes` safely. Not blocking — v1 pages forward from 0 — but it makes opening a
 500 MB-capped transcript proportional to its size.
+**Resolved — see runner §11.1**: the HTTP route gains `tail=<bytes>` *and* the explicit rule that a
+`from` landing mid-line advances to the next newline, so both halves of the request are pinned.
 
 **R7 — roster §3.2 / §9.1: `avatar.kind: 'file'` has no write path.** The schema supports a file
 avatar and `GET /agents/:id/avatar` serves it, but nothing uploads one, so from the UI the kind is
 unreachable. Not blocking: v1 ships emoji and initials, and a PNG placed in the agent folder by hand is
 honoured. Requested when file avatars are wanted: `PUT /api/roster/agents/:id/avatar` (multipart,
 size- and type-capped, written into the agent folder like any other authored content).
+**Resolved — see roster §9.1 / §9.5**: the endpoint writes `avatar.png` into the agent folder and
+flips `agent.json` to `kind: 'file'`; roster IMPLEMENTATION M3 carries the acceptance. The *UI* for
+it remains deferred (§20) — the API path now exists when it is wanted.
 
 ---
 

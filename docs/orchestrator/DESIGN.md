@@ -925,6 +925,26 @@ GET    /api/orchestrator/status            §11.3 — the fleet view
 GET    /api/patterns                       pattern definitions, seats, defaults (drives the create dialog)
 ```
 
+**The `GET /api/questions` list projection is pinned** (ui §19, R5), because the inbox is the one
+screen a phone loads cold and it must cost exactly one request. Each item carries:
+
+```jsonc
+{ "id": "01J…", "kind": "question", "status": "open",
+  "prompt": "…", "options": [ { "id": "disk", "label": "…" } ],
+  "createdAt": "…", "expiresAt": "…",
+  "assignmentId": "01J…", "projectId": "…", "sessionId": "01J…",
+  "recommendations": [ { "agentId": "sam-skeptic", "role": "critic",
+                         "stance": "disk", "strength": "strong", "rationale": "…" } ],
+  "disagreement": true, "contested": false, "answeredVia": null }
+```
+
+That is the same card §16.1 defines — a `questions` row plus its recommendations — with the
+assignment, project and session ids denormalised onto it. Embedding the recommendations and the ids
+is the point: rendering the inbox otherwise means one list request plus N joins back against
+assignments and roster, over a tailnet link, before the first card can draw. Filters are
+`?status=&assignmentId=`; ordering is newest first; `GET /api/questions/:id` returns this same shape
+plus the full answer record.
+
 ### 11.2 The conversation view
 
 The single read the UI's "collaborations render as a readable conversation" requirement needs: an

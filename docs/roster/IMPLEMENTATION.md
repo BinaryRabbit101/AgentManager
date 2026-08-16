@@ -85,7 +85,9 @@ installer only creates and ACLs the directory (foundation §4.4), so on first ru
 ## M3 — CRUD + duplicate API
 
 `RosterService` methods and the HTTP routes in DESIGN §9.1 except `/draft`, `/export`, `/import`,
-`/validate`. Includes `agent_ui_state` reads/writes against foundation's SQLite, the
+`/validate`. Includes `agent_ui_state` reads/writes against foundation's SQLite (`PUT
+/api/roster/board-order` and `PATCH /agents/:id/ui-state`, DESIGN §9.5), avatar upload
+(`PUT /agents/:id/avatar` → `avatar.png`, §9.5), the
 `roster.changed` WebSocket broadcast, archive-on-delete, and purge-guard (asks foundation/session
 store whether any session references the id; if that store does not exist yet, purge is refused).
 
@@ -98,6 +100,12 @@ store whether any session references the id; if that store does not exist yet, p
 - `DELETE` moves the folder under `.archive/` and the id disappears from `GET /agents`; the
   archived definition is still readable by id for display.
 - `roster.changed` fires for API mutations **and** for an external file edit.
+- `PUT /api/roster/board-order` rewrites every row in one transaction: a reordered list survives a
+  restart and re-reads identically from `GET /agents`; replaying the same body is a no-op; an
+  unknown agent id is a 400 and leaves the previous order intact.
+- `PUT /agents/:id/avatar` writes `avatar.png` into the agent folder and flips `agent.json` to
+  `{ kind: 'file', value: 'avatar.png' }`; an oversize or non-image upload is refused and the
+  previous avatar survives.
 - API responses never contain a resolved secret value (asserted by a test that plants one).
 
 ---
