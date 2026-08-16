@@ -22,6 +22,14 @@ export type { AuthMode, AnthropicApiKeyCheckOptions } from './authWarning.js';
 
 export { ENV_PREFIX, envVarName, envVarNamesFor, isSecretKey, keyFromEnvVarName } from './keys.js';
 
+/**
+ * The ACL injection point, exported for the composition root (M7): it passes
+ * `CreateSecretStoreOptions.acl` through, and a test booting against a temp
+ * data root must be able to substitute the `icacls` runner rather than mutate
+ * a real ACL.
+ */
+export type { TightenOptions } from './acl.js';
+
 export { SECRETS_FILENAME } from './envelope.js';
 export { MASTER_KEY_FILENAME } from './keyfile.js';
 export { DPAPI_ENTROPY } from './dpapi.js';
