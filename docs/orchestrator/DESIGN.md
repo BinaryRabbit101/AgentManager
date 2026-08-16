@@ -6,6 +6,17 @@ agents through one goal, the **in-process MCP toolset** agents coordinate throug
 the **question inbox** the user answers from, and the **budgets and guardrails** that stop all of it
 from running away.
 
+> **M0 completed against pinned SDK 0.3.233 — [SDK-NOTES.md](SDK-NOTES.md) is the authority
+> wherever it and this document disagree.** [A1]–[A5] all held (A2/A4 observed live against a real
+> in-process MCP server, no auth needed). Three contradictions: **C1** — file-permission checks
+> consult only `Edit(path)` rules; scoped `Write(path)`/`NotebookEdit(path)`/`MultiEdit(path)` rules
+> are inert and `Edit(*)` collapses to bare `Edit` (auto-approve) — §2.5's scope shape survives only
+> because `Edit` is in its list, and roster/projects rule emission must respect this. **C2** — the
+> AskUserQuestion preference in §4.4 must branch on runner's `questionBridge: 'degraded'`
+> diagnostic. **C3** — MCP tools defer behind tool search by default; `report_status` needs
+> `alwaysLoad: true` or the `no_report` breaker fires on a wiring bug. Fifteen live checks (L1–L15)
+> are token-gated in `src/modules/orchestrator/__spike__/sdk.spike.test.ts`.
+
 Conforms to [architecture.md](../architecture.md) D1–D6. Consumes foundation's storage, config,
 secrets, logging, module and event decisions; roster's compiled sessions, `capabilities.overseer`,
 role addenda and permission composition; projects' launch context, workspace leases, work items and
