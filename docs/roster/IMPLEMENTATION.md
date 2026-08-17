@@ -245,6 +245,26 @@ permissions for an agent × project pair.
 - `POST /agents/:id/validate` returns the same `EffectivePermissions` the runner would get, and
   flags elevation when the project declares it.
 
+**Delivered.** A pack is `manifest.json` at the archive root plus the agent
+folder under `agent/` — the manifest is *about* the agent rather than part of it,
+and the prefix keeps an agent that carries its own `manifest.json` from being
+ambiguous. The zip reader is `readZip` in `src/http/zip.ts`, beside the writer
+that has been there since foundation §5.3: the container is one format, and two
+implementations of it in one repository would only ever be checked against each
+other.
+
+The secret guard walks every JSON file in the assembled pack — `agent.json`
+included — for a credential-shaped key (`credentialKeys.ts`, §10's one
+definition) holding a literal instead of a `{ secretRef }`. Its limit is stated
+where it is implemented: structured files only, because a token pasted into a
+persona paragraph is not detectable by any rule that would not also fire on every
+sentence containing the word "key".
+
+`POST /agents/:id/validate` was built with M3 rather than here — the ui's launch
+flow was already written against it and was degrading by probing for a 404 — so
+the fifth criterion is held by `validate.test.ts`, whose first two cases are
+exactly the sameness and elevation assertions listed above.
+
 ---
 
 ## M10 — Seed roster, docs, and hand-off
@@ -263,6 +283,25 @@ surface and diagnostics shapes).
 - The architect and skeptic seeds have `roles` entries matching the names orchestrator's v1 pattern
   expects.
 - Hand-off notes are linked from this file and reviewed by whoever designs runner.
+
+**Delivered.** The hand-off notes are **[HANDOFF.md](HANDOFF.md)** — one section
+each for runner (the `compileSession` contract), orchestrator (capability flags
+and role names) and ui (the API surface and the diagnostic shapes), plus a note
+on who may write into the library.
+
+The seed set is **four** identities — `priya-bugfix`, `ada-architect`,
+`sam-skeptic`, `mira-overseer` — rather than five, because the pair's drafting
+seat *is* the feature implementer: orchestrator's `PAIR_SEATS` declares `drafter`
+as `roles: ['architect', 'implementer']`, so `ada-architect` fills that seat under
+either name and `sam-skeptic` fills the critic seat. That keeps both "three or
+four seeded agents" and "the architect and skeptic seeds" true, with the two
+distinct identities orchestrator §3.3 requires of a pair.
+
+Seeding is governed by `roster.json`'s `seededAt` — once ever, so a deleted
+starter agent stays deleted — skipped entirely for a library that already holds
+agents, and disabled outright by the new `library.seed` config key, which the
+test harnesses set to `false` so their assertions stay about the agents they
+created.
 
 ---
 

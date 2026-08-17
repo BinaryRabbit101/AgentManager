@@ -178,7 +178,7 @@ A single key: `edition: "home" | "work"`.
 {
   "edition": "work",
   "dataRoot": null,                     // null = %LOCALAPPDATA%\AgentManager
-  "library":  { "root": null, "watch": true },
+  "library":  { "root": null, "watch": true, "seed": true },  // `seed`: roster M10's starter agents
   "http":     { "bind": "127.0.0.1", "port": 7477 },
   "remote":   { "bind": "tailscale", "port": 7478, "hostnameHint": null },
   "modules":  { "remote": { "enabled": false }, "orchestrator": { "enabled": true } },

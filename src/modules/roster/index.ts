@@ -312,6 +312,7 @@ export {
   archiveStamp,
   createRosterStore,
   ensurePluginManifest,
+  folderRelativePathProblem,
   libraryPaths,
   parseArchiveFolder,
   parseArchiveStamp,
@@ -320,6 +321,7 @@ export {
 } from './store.js';
 export type {
   ArchiveEntry,
+  FolderFile,
   LibraryPaths,
   LoadOutcome,
   ResolvedAgent,
@@ -335,7 +337,24 @@ export {
   createGitCommand,
   isEmptyDirectory,
   libraryCommitCount,
+  readRosterMetadata,
+  writeRosterMetadata,
 } from './bootstrap.js';
+
+// M10 — the starter roster and the library README (DESIGN §2.1).
+export {
+  ADA,
+  LIBRARY_README,
+  LIBRARY_README_FILENAME,
+  MIRA,
+  PRIYA,
+  SAM,
+  SEED_AGENTS,
+  seedDefinition,
+  seedLibrary,
+  writeLibraryReadme,
+} from './seed.js';
+export type { SeedAgent, SeedLibraryOptions, SeedResult } from './seed.js';
 export type {
   BootstrapLibraryOptions,
   BootstrapResult,
@@ -378,10 +397,39 @@ export {
 export { duplicateAgentId, duplicateDefinition } from './duplicate.js';
 export type { DuplicateIdRequest } from './duplicate.js';
 
+// M9 — import / export (DESIGN §9.4).
+export {
+  PACK_AGENT_PREFIX,
+  PACK_CONTENT_TYPE,
+  PACK_EXTENSION,
+  PACK_MANIFEST_FILENAME,
+  PACK_VERSION,
+  assertNoSecretValues,
+  buildAgentPack,
+  packEntryProblem,
+  packFilename,
+  packManifestSchema,
+  readAgentPack,
+  requiredSecretSchema,
+  requiredSecretsFor,
+  secretValueViolations,
+} from './pack.js';
+export type {
+  BuildAgentPackInput,
+  PackFile,
+  PackManifest,
+  ReadAgentPack,
+  RequiredSecret,
+  SecretValueViolation,
+} from './pack.js';
+
 export { createRosterService } from './service.js';
 export type {
   AgentView,
   DeleteResult,
+  ExportedPack,
+  ImportPreview,
+  ImportResult,
   ProjectDefaultsProvider,
   RosterChangeReason,
   RosterListView,
@@ -403,8 +451,11 @@ export {
   AvatarNotAnImageError,
   AvatarTooLargeError,
   ImmutableFieldError,
+  InvalidAgentPackError,
   InvalidRosterRequestError,
   LibraryWriteError,
+  PackSchemaVersionError,
+  PackSecretValueError,
   PurgeBlockedError,
   RosterServiceError,
   UnknownBoardOrderIdError,

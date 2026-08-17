@@ -26,7 +26,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { boot, type BootOptions, type BootedService } from '../../main.js';
 
+import { createGitCommand, libraryCommitCount } from './bootstrap.js';
 import { ROSTER_MODULE_ID, ROSTER_SERVICE } from './module.js';
+import { readAgentPack } from './pack.js';
 import type { AgentView, RosterListView, RosterService } from './service.js';
 import { TINY_PNG, makeSpacedTempDir, repoRoot, wait, type TempDir } from './__tests__/helpers.js';
 import { loadFixture } from './__tests__/fixtures.js';
@@ -47,7 +49,18 @@ async function bootCore(options: BootOptions = {}): Promise<BootedService> {
     exit: () => {},
     ...options,
     http: { port: 0, heartbeatMs: 0, ...options.http },
-    argv: ['--set', 'secrets.provider=env', ...(options.argv ?? [])],
+    argv: [
+      '--set',
+      'secrets.provider=env',
+      // Off by default here: the M2/M3/M8 cases below assert on a roster that
+      // is exactly what the test put in it, and four starter agents would make
+      // every one of those assertions about the seed set instead. The M10 block
+      // at the foot of the file turns it back on, which is the only place a
+      // clean install's *default* behaviour is what is under test.
+      '--set',
+      'library.seed=false',
+      ...(options.argv ?? []),
+    ],
   });
   service = booted;
   const url = booted.url();
@@ -134,7 +147,7 @@ describe('module registration', () => {
     expect(booted.runtime.registry.require<RosterService>(ROSTER_SERVICE)).toBeDefined();
   });
 
-  it('registers exactly the M3+M8 route surface, all reachable remotely', async () => {
+  it('registers exactly the §9.1 route surface, all reachable remotely', async () => {
     const booted = await bootCore();
     const mine = booted.runtime.routes.routes.filter(
       (route) => route.moduleId === ROSTER_MODULE_ID,
@@ -146,18 +159,18 @@ describe('module registration', () => {
       'GET /api/roster/agents',
       'GET /api/roster/agents/:id',
       'GET /api/roster/agents/:id/avatar',
+      'GET /api/roster/agents/:id/export',
       'PATCH /api/roster/agents/:id',
       'PATCH /api/roster/agents/:id/ui-state',
       'POST /api/roster/agents',
       'POST /api/roster/agents/:id/duplicate',
       'POST /api/roster/agents/:id/validate',
       'POST /api/roster/draft',
+      'POST /api/roster/import',
       'PUT /api/roster/agents/:id/avatar',
       'PUT /api/roster/board-order',
     ]);
-    // M9's pack endpoints are still absent rather than stubbed.
-    expect(mine.some((route) => route.path.includes('export'))).toBe(false);
-    expect(mine.some((route) => route.path.includes('import'))).toBe(false);
+    // The whole of §9.1's table, M9's two pack endpoints included.
     expect(mine.every((route) => route.remote === 'allow')).toBe(true);
   });
 
@@ -587,5 +600,131 @@ describe('the watcher, wired through library.watch', () => {
     expect(health.modules.find((module) => module.id === ROSTER_MODULE_ID)?.detail).toMatchObject({
       watching: false,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M10 — "A clean install produces a working board with the seeded agents
+//        visible and launchable"
+// ---------------------------------------------------------------------------
+
+/**
+ * The one block in this file that boots with the *shipped* configuration.
+ *
+ * Everything above turns seeding off so that the roster is what the test put in
+ * it; this is the case where the default is the thing under test. It goes
+ * through the real composition root because "a clean install" is not something
+ * a constructed service can be: the installer leaves an empty ACLed directory,
+ * foundation resolves `library.root` beneath the data root, and roster does the
+ * rest during `init` — and only a `boot()` exercises that chain.
+ */
+describe('a clean install (M10)', () => {
+  /** `boot()` with nothing overridden but the secret provider and the port. */
+  function bootClean(): Promise<BootedService> {
+    // `bootCore` appends `library.seed=false`; a later `--set` of the same key
+    // wins, so the default is restored rather than the helper duplicated.
+    return bootCore({ argv: ['--set', 'library.seed=true'] });
+  }
+
+  it('shows the four starter agents on the board, each with a persona', async () => {
+    await bootClean();
+
+    const listed = await get<RosterListView>('/api/roster/agents');
+    expect(listed.status).toBe(200);
+    expect(listed.body.agents.map((agent) => agent.definition.id).sort()).toEqual([
+      'ada-architect',
+      'mira-overseer',
+      'priya-bugfix',
+      'sam-skeptic',
+    ]);
+
+    // Visible means usable: a name, a face, a persona body and no error.
+    for (const agent of listed.body.agents) {
+      expect(agent.definition.meta.origin).toBe('seed');
+      expect(agent.definition.name.length).toBeGreaterThan(0);
+      expect(agent.avatarUrl).toContain(agent.definition.id);
+      expect(agent.persona.length).toBeGreaterThan(200);
+      expect(agent.diagnostics.filter((d) => d.level === 'error')).toEqual([]);
+      expect(agent.needsCredentials).toBe(false);
+    }
+    expect(listed.body.diagnostics.filter((d) => d.level === 'error')).toEqual([]);
+  });
+
+  it('leaves the library a hand-editable git repo with a README and no commits', async () => {
+    const booted = await bootClean();
+    const library = booted.paths.library;
+
+    expect(existsSync(join(library, 'README.md'))).toBe(true);
+    expect(readFileSync(join(library, 'README.md'), 'utf8')).toContain('safe to hand-edit');
+    expect(statSync(join(library, 'agents', 'priya-bugfix', 'agent.json')).isFile()).toBe(true);
+    // §2.1's invariant, still true after seeding: `git init`, never a commit.
+    expect(libraryCommitCount(library, createGitCommand())).toBe(0);
+    expect(
+      (
+        JSON.parse(readFileSync(join(library, 'roster.json'), 'utf8')) as {
+          seededAt: string | null;
+        }
+      ).seededAt,
+    ).not.toBeNull();
+  });
+
+  it('reports the module healthy, and every seed previews a permission set', async () => {
+    const booted = await bootClean();
+    const health = await booted.health();
+    const roster = health.modules.find((module) => module.id === ROSTER_MODULE_ID);
+    expect(roster?.status).toBe('ok');
+    expect(roster?.detail).toMatchObject({ agents: 4 });
+
+    // Launchable, over the wire: `POST /validate` is the dry-run compile the
+    // launch flow runs, so a seed that would not compile fails here.
+    for (const id of ['priya-bugfix', 'ada-architect', 'sam-skeptic', 'mira-overseer']) {
+      const preview = await call<{ effective: { mode: string; deny: string[] } }>(
+        'POST',
+        `/api/roster/agents/${id}/validate`,
+        {},
+      );
+      expect(preview.status, id).toBe(200);
+      expect(preview.body.effective.mode).toBeDefined();
+      expect(preview.body.effective.deny).toContain('Bash(git push*)');
+    }
+  });
+
+  it('does not re-seed on a restart, and does not resurrect a deleted starter', async () => {
+    const booted = await bootClean();
+    expect((await call('DELETE', '/api/roster/agents/sam-skeptic')).status).toBe(200);
+    await booted.shutdown();
+    service = undefined;
+
+    await bootClean();
+    const listed = await get<RosterListView>('/api/roster/agents');
+    expect(listed.body.agents.map((agent) => agent.definition.id).sort()).toEqual([
+      'ada-architect',
+      'mira-overseer',
+      'priya-bugfix',
+    ]);
+  });
+
+  it('exports a starter agent as a .agentpack over HTTP (M9)', async () => {
+    await bootClean();
+    const response = await fetch(`${base}/api/roster/agents/priya-bugfix/export`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('application/zip');
+    expect(response.headers.get('content-disposition')).toContain('priya-bugfix.agentpack');
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    expect(readAgentPack(bytes).manifest.agentId).toBe('priya-bugfix');
+
+    // And back in through the import route, as a preview that writes nothing.
+    const preview = await fetch(`${base}/api/roster/import`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/zip' },
+      body: new Uint8Array(bytes),
+    });
+    expect(preview.status).toBe(200);
+    expect((await preview.json()) as { proposedId: string }).toMatchObject({
+      proposedId: 'priya-bugfix-2',
+      collision: true,
+    });
+    expect((await get<RosterListView>('/api/roster/agents')).body.agents).toHaveLength(4);
   });
 });

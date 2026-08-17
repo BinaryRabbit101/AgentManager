@@ -107,7 +107,7 @@ describe('GET /api/projects and /api/projects/:id', () => {
       notes: '# Billing\n\nPHP 8.2.',
       workspacePolicy: 'shared',
       defaults: {
-        agentIds: ['priya-bugfix'],
+        agentIds: ['nobody-here'],
         env: [{ name: 'APP_ENV', value: 'test' }],
         permissionElevation: {
           allow: ['Bash(npm publish*)'],
@@ -128,7 +128,8 @@ describe('GET /api/projects and /api/projects/:id', () => {
       reason: 'the release agent publishes the package',
     });
     expect(answer.body.defaults.env).toEqual([{ name: 'APP_ENV', value: 'test' }]);
-    // `priya-bugfix` is not in this install's roster, so the lazy drop applies
+    // `nobody-here` is not in this install's roster — and, unlike a starter
+    // agent's id, never will be (roster M10) — so the lazy drop applies
     // and health says so rather than the project becoming unreadable.
     expect(answer.body.defaults.agentIds).toEqual([]);
     expect(answer.body.health.map((condition) => condition.code)).toContain('stale-agents');

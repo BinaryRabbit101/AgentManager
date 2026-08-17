@@ -12,10 +12,11 @@
  *   mounted by the `http` module when it starts (foundation §6.4);
  * - **its service**, published as `roster` so runner and orchestrator can reach
  *   it through `ctx.require` without importing this element;
- * - **the library itself.** Bootstrap is roster's, not the installer's (§2.1,
- *   foundation §4.4), and `init` is where it happens: the installer leaves an
- *   empty ACLed directory, and this is what turns it into a git repository with
- *   `roster.json`, `.gitignore` and `agents/`.
+ * - **the library itself.** Bootstrap *and seeding* are roster's, not the
+ *   installer's (§2.1, foundation §4.4), and `init` is where both happen: the
+ *   installer leaves an empty ACLed directory, and this is what turns it into a
+ *   git repository with `roster.json`, `.gitignore`, `agents/`, a README and —
+ *   on a first run against an empty library — the four starter agents of M10.
  *
  * ## The database handle, and why it is a constructor argument
  *
@@ -44,8 +45,10 @@ import type { Module, ModuleContext, ModuleHandle } from '../types.js';
 
 import { bootstrapLibrary, type GitCommand } from './bootstrap.js';
 import { compileSession } from './compileSession.js';
+import type { Diagnostic } from './contracts.js';
 import { realDraftQuery, type DraftQueryFn } from './draft.js';
 import { createRosterRoutes } from './routes.js';
+import { seedLibrary } from './seed.js';
 import { createRosterService, type ProjectDefaultsProvider } from './service.js';
 import type { CompileSessionInput, SessionToolsetProvider } from './sessionOptions.js';
 import { createRosterStore, type StoreHooks } from './store.js';
@@ -112,6 +115,39 @@ export function createRosterModule(
         ...(options.hooks === undefined ? {} : { hooks: options.hooks }),
       });
 
+      // The starter roster (M10), between bootstrap and the first load: the
+      // library exists by now, and the registry has not read it yet, so the
+      // seeds arrive as ordinary folders rather than as a special case anything
+      // downstream has to know about. Through `store.write`, so a seed is
+      // validated, gets its plugin manifest and is read back exactly like an
+      // agent created over the API.
+      const seedDiagnostics: Diagnostic[] = [];
+      if (ctx.config.library.seed) {
+        const seeded = seedLibrary({
+          store,
+          clock: ctx.clock,
+          ...(options.hooks === undefined ? {} : { hooks: options.hooks }),
+        });
+        seedDiagnostics.push(...seeded.diagnostics);
+        for (const diagnostic of seeded.diagnostics) {
+          ctx.logger.warn(
+            { code: diagnostic.code, agentId: diagnostic.agentId },
+            diagnostic.message,
+          );
+        }
+        if (seeded.seeded.length > 0) {
+          ctx.logger.info(
+            { agentIds: seeded.seeded, libraryRoot },
+            `seeded ${String(seeded.seeded.length)} starter agent(s) into a new agent library`,
+          );
+        } else if (seeded.reason === 'library-not-empty') {
+          ctx.logger.info(
+            { libraryRoot },
+            'the agent library already holds agents; the starter roster was not written',
+          );
+        }
+      }
+
       /**
        * §13's orchestration row (orchestrator R1), resolved **per launch**.
        *
@@ -137,7 +173,7 @@ export function createRosterModule(
         sessions: ctx.store.sessions,
         bus: ctx.bus,
         clock: ctx.clock,
-        bootDiagnostics: bootstrap.diagnostics,
+        bootDiagnostics: [...bootstrap.diagnostics, ...seedDiagnostics],
         // §10's `{ secretRef, resolved }` badge. The read-only face: this
         // service probes for presence and never reveals a value.
         secrets: ctx.secrets,

@@ -57,6 +57,13 @@ import { duplicateAgentId, duplicateDefinition } from './duplicate.js';
 import { RosterValidationError } from './errors.js';
 import { agentIdProblem } from './ids.js';
 import { integrationCredentialStatus, type IntegrationCredentialStatus } from './integrations.js';
+import {
+  PACK_EXTENSION,
+  buildAgentPack,
+  packFilename,
+  readAgentPack,
+  type RequiredSecret,
+} from './pack.js';
 import { parseAgentDefinition } from './parse.js';
 import {
   AGENT_SCHEMA_VERSION,
@@ -77,7 +84,12 @@ import {
 } from './serviceErrors.js';
 import { validateSkills } from './skills.js';
 import { mintAgentId } from './slug.js';
-import { AVATAR_FILENAME, type ResolvedAgent, type RosterStore } from './store.js';
+import {
+  AGENT_JSON_FILENAME,
+  AVATAR_FILENAME,
+  type ResolvedAgent,
+  type RosterStore,
+} from './store.js';
 import { createRosterRegistry, type RegistryChange, type RosterRegistry } from './registry.js';
 import type { AgentUiState, AgentUiStateRepository } from './uiState.js';
 
@@ -153,6 +165,53 @@ export interface ValidateResult {
   readonly assumedWriteAccess: boolean;
 }
 
+/** `GET /agents/:id/export` — the bytes and the name to offer them under (§9.4). */
+export interface ExportedPack {
+  readonly agentId: string;
+  readonly filename: string;
+  readonly bytes: Buffer;
+}
+
+/**
+ * `POST /import` without `?commit=true` (§9.4).
+ *
+ * Everything the owner needs in order to decide, and nothing written: "Import is
+ * two-phase: `POST /import` returns a preview (proposed id, collisions, missing
+ * secrets, unknown schema fields, skills being added) and `?commit=true` writes
+ * it."
+ */
+export interface ImportPreview {
+  /** False on a preview, true on the response to `?commit=true`. */
+  readonly committed: boolean;
+  /** The id in the pack. */
+  readonly sourceId: string;
+  /** Where it would land — the source id, or a suffixed one on a collision. */
+  readonly proposedId: string;
+  /** True when `sourceId` is already taken, live or archived (§9.3). */
+  readonly collision: boolean;
+  readonly name: string;
+  readonly specialty: string;
+  readonly packVersion: number;
+  readonly schemaVersion: number;
+  readonly exportedAt: string;
+  /** §9.4's manifest, with each ref's presence in *this* machine's store. */
+  readonly requiredSecrets: readonly (RequiredSecret & { readonly resolved: boolean })[];
+  /** The subset of the above that this machine cannot resolve — what the owner
+   *  must supply before the agent will launch (§10). */
+  readonly missingSecrets: readonly string[];
+  /** `skills/<name>/` folders the import would add (§7.1). */
+  readonly skills: readonly string[];
+  /** Every file the import would write, relative to the agent folder. */
+  readonly files: readonly string[];
+  readonly warnings: readonly string[];
+}
+
+/** `POST /import?commit=true` — the preview that was acted on, plus the agent. */
+export interface ImportResult extends ImportPreview {
+  readonly committed: true;
+  readonly agent: AgentView;
+}
+
 /** What `DELETE /agents/:id` answers with. */
 export interface DeleteResult {
   readonly agentId: string;
@@ -168,6 +227,7 @@ export type RosterChangeReason =
   | 'duplicated'
   | 'archived'
   | 'purged'
+  | 'imported'
   | 'avatar'
   | 'ui-state'
   | 'board-order'
@@ -196,6 +256,23 @@ export interface RosterService {
   patch(id: string, body: unknown): AgentView;
   duplicate(id: string, body: unknown): AgentView;
   remove(id: string, options?: { readonly purge?: boolean }): DeleteResult;
+  /**
+   * `GET /agents/:id/export` (§9.4) — the agent folder as a `.agentpack`.
+   *
+   * Refuses rather than redacts when the folder holds a credential value: a pack
+   * carries refs, and an export that quietly dropped a key would produce an
+   * agent that imports cleanly and then fails at launch for no visible reason.
+   */
+  exportPack(id: string): ExportedPack;
+  /**
+   * `POST /import` (§9.4) — preview, or write.
+   *
+   * Asynchronous because the preview reports which of the pack's
+   * `requiredSecrets` this machine can resolve, and that is a question for
+   * foundation's secret store. Nothing is revealed: the probe answers a boolean,
+   * exactly as {@link RosterService.credentials} does.
+   */
+  importPack(bytes: unknown, options?: { readonly commit?: boolean }): Promise<ImportPreview>;
   setBoardOrder(order: unknown): RosterListView;
   patchUiState(id: string, body: unknown): AgentView;
   putAvatar(id: string, upload: AvatarUpload): AgentView;
@@ -663,6 +740,126 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
       uiState.delete(id);
       settle('archived', [id]);
       return { agentId: id, archivedAt: entry.archivedAt, purged: false };
+    },
+
+    exportPack(id) {
+      // Archived agents export too: §9.3 keeps them readable "for display", and
+      // an owner who archived an agent by mistake reaching for its pack is a
+      // better outcome than one who cannot get it back at all.
+      const agent = requireKnown(id);
+      const bytes = buildAgentPack({
+        definition: agent.definition,
+        files: store.readFolderFiles(agent.dir),
+        exportedAt: isoTimestamp(clock()),
+      });
+      return { agentId: id, filename: packFilename(id), bytes };
+    },
+
+    async importPack(bytes, importOptions = {}) {
+      if (!Buffer.isBuffer(bytes)) {
+        throw new InvalidRosterRequestError(
+          `Send the ${PACK_EXTENSION} as the request body, or as a multipart/form-data file part.`,
+        );
+      }
+      const pack = readAgentPack(bytes);
+      const source = pack.definition;
+
+      // §9.4: "On id collision the importer picks a new id and rewrites nothing
+      // else." `registry.knows` covers archived ids too, because §9.3 never
+      // reuses one; the folder check catches an id whose definition is currently
+      // unloadable and so is not in the registry at all.
+      const taken = (candidate: string): boolean =>
+        registry.knows(candidate) || store.hasFolder(candidate);
+      const collision = taken(source.id);
+      let proposedId = source.id;
+      if (collision) {
+        const minted = duplicateAgentId({ sourceId: source.id, taken });
+        if (minted === undefined) {
+          throw new RosterServiceError(
+            'agent_id_exhausted',
+            `No free agent id could be derived from "${source.id}"; rename or archive the agent ` +
+              'that already holds it before importing.',
+            409,
+            { agentId: source.id },
+          );
+        }
+        proposedId = minted;
+      }
+
+      const probe = options.secrets;
+      const requiredSecrets = await Promise.all(
+        pack.manifest.requiredSecrets.map(async (secret) => ({
+          ...secret,
+          resolved: probe === undefined ? false : (await probe.get(secret.ref)) !== undefined,
+        })),
+      );
+      const missingSecrets = requiredSecrets
+        .filter((secret) => !secret.resolved)
+        .map((secret) => secret.ref);
+
+      const warnings: string[] = [];
+      if (collision) {
+        warnings.push(
+          `Agent id "${source.id}" is already in use; the import will land as "${proposedId}".`,
+        );
+      }
+      if (missingSecrets.length > 0) {
+        warnings.push(
+          `This agent needs ${String(missingSecrets.length)} credential(s) that are not in this ` +
+            `machine's secret store: ${missingSecrets.join(', ')}. It will import, and refuse to ` +
+            'launch until they are supplied (DESIGN §10).',
+        );
+      }
+
+      const preview: ImportPreview = {
+        committed: false,
+        sourceId: source.id,
+        proposedId,
+        collision,
+        name: source.name,
+        specialty: source.specialty,
+        packVersion: pack.manifest.packVersion,
+        schemaVersion: pack.manifest.schemaVersion,
+        exportedAt: pack.manifest.exportedAt,
+        requiredSecrets,
+        missingSecrets,
+        skills: pack.skills,
+        files: pack.files.map((file) => file.name),
+        warnings,
+      };
+
+      // Phase one ends here, having touched nothing: "Preview lists collisions,
+      // missing secrets, and skills to be added, and **writes nothing**" (M9).
+      if (importOptions.commit !== true) return preview;
+
+      // The folder first, `agent.json` second — the same order duplicate uses
+      // (§9.2), and for the same reason: `store.write` reads the folder back and
+      // validates the skill names against it, so the skills have to be there.
+      const now = isoTimestamp(clock());
+      store.writeFolderFiles(
+        proposedId,
+        pack.files.filter((file) => file.name !== AGENT_JSON_FILENAME),
+      );
+      const definition: AgentDefinition = {
+        ...source,
+        id: proposedId,
+        // §9.4: the id and the provenance are what an import rewrites, and
+        // nothing else — "the importer picks a new id and rewrites nothing
+        // else". `duplicatedFrom` is cleared because the clone link is a link
+        // into *this* library, and the pack's source is not in it.
+        meta: {
+          ...source.meta,
+          createdAt: now,
+          updatedAt: now,
+          origin: 'imported',
+          duplicatedFrom: null,
+        },
+      };
+      const written = persist(definition, undefined);
+      uiState.ensure(proposedId);
+      settle('imported', [proposedId]);
+
+      return { ...preview, committed: true, agent: viewOf(written) } satisfies ImportResult;
     },
 
     setBoardOrder(order) {

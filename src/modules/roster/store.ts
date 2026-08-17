@@ -41,7 +41,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import { isoTimestamp, type Clock } from '../../storage/time.js';
 
@@ -235,6 +235,44 @@ export interface ResolvedAgent {
   readonly diagnostics: readonly Diagnostic[];
 }
 
+/**
+ * One file inside an agent folder, addressed the way an archive addresses it.
+ *
+ * Forward slashes regardless of platform, because these names travel: they are
+ * what `.agentpack` writes into a zip (§9.4) and what an import reads back, and a
+ * pack exported on Windows has to open on a Mac. The conversion to and from
+ * `node:path` separators happens in this module and nowhere else.
+ */
+export interface FolderFile {
+  /** Relative to the agent folder: `persona.md`, `skills/triage/SKILL.md`. */
+  readonly name: string;
+  readonly data: Buffer;
+}
+
+/**
+ * Why a relative path may not be joined onto an agent folder, or `undefined`.
+ *
+ * Checked on the name **as written**, before any `join`: `join` normalises
+ * traversal away, so a name inspected after joining looks harmless precisely
+ * when it was not. This is the guard between a downloaded archive and the
+ * filesystem, and it lives here because this module is the only one that turns a
+ * name into a path.
+ */
+export function folderRelativePathProblem(name: string): string | undefined {
+  if (name.length === 0) return 'is empty';
+  if (name.length > 512) return 'is longer than 512 characters';
+  if (name.includes('\\')) return 'contains a backslash; folder paths use forward slashes';
+  if (name.startsWith('/')) return 'is an absolute path';
+  if (/^[A-Za-z]:/.test(name)) return 'names a drive';
+  if (name.includes('\0')) return 'contains a NUL byte';
+  const segments = name.split('/');
+  if (segments.some((segment) => segment === '..')) return 'escapes the agent folder with ".."';
+  if (segments.some((segment) => segment === '' || segment === '.')) {
+    return 'has an empty or "." path segment';
+  }
+  return undefined;
+}
+
 /** The result of reading one folder. Never a throw (§2.3). */
 export type LoadOutcome =
   | { readonly ok: true; readonly agent: ResolvedAgent }
@@ -298,6 +336,25 @@ export interface RosterStore {
   readAvatar(dir: string, filename: string): Buffer | undefined;
   /** Deep-copies a whole agent folder — persona, roles, skills, avatar (§9.2). */
   copyFolder(fromId: string, toId: string): void;
+  /**
+   * Every authored file in an agent folder, recursively, as `/`-separated paths
+   * relative to the folder — what `.agentpack` export ships (§9.4).
+   *
+   * Takes a directory rather than an id for the same reason {@link
+   * RosterStore.readAvatar} does: an archived agent's folder is not under
+   * `agents/`, and §9.3 keeps it readable.
+   */
+  readFolderFiles(dir: string): FolderFile[];
+  /**
+   * Writes a set of relative paths into `agents/<id>/` — the import half of
+   * {@link RosterStore.readFolderFiles} (§9.4).
+   *
+   * Every name is re-validated here even though the pack reader already did:
+   * this is the function that turns a name from a downloaded archive into a
+   * path, and a traversal check that lives only in the caller is a traversal
+   * check one refactor away from being gone.
+   */
+  writeFolderFiles(id: string, files: readonly FolderFile[]): void;
   /** Moves the folder under `.archive/<id>-<stamp>/` and returns where (§9.3). */
   archive(id: string): ArchiveEntry;
   /** Removes the live folder and every archived copy of the id (§9.3). */
@@ -594,6 +651,57 @@ export function createRosterStore(options: RosterStoreOptions): RosterStore {
         });
       } catch (cause) {
         throw new LibraryWriteError(`copying agent "${fromId}" to "${toId}"`, { cause });
+      }
+    },
+
+    readFolderFiles(dir) {
+      const out: FolderFile[] = [];
+      const walk = (current: string, prefix: string): void => {
+        let entries;
+        try {
+          entries = readdirSync(current, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const entry of [...entries].sort((a, b) => (a.name < b.name ? -1 : 1))) {
+          const name = `${prefix}${entry.name}`;
+          if (entry.name.includes(TEMP_PREFIX)) continue;
+          // The plugin manifest is generated from the definition (§7.1), so
+          // shipping it would put a *stale* one — naming the exporting agent's
+          // id — into a pack whose import may well land under a different id.
+          // The write that follows an import regenerates it.
+          if (entry.isDirectory()) {
+            if (entry.name === PLUGIN_MANIFEST_DIRNAME) continue;
+            walk(join(current, entry.name), `${name}/`);
+            continue;
+          }
+          if (!entry.isFile()) continue;
+          try {
+            out.push({ name, data: readFileSync(join(current, entry.name)) });
+          } catch {
+            // A file that vanished between the listing and the read is one the
+            // owner just deleted; the export is of what is there now.
+          }
+        }
+      };
+      walk(dir, '');
+      return out;
+    },
+
+    writeFolderFiles(id, files) {
+      const dir = agentDir(id);
+      try {
+        for (const file of files) {
+          const problem = folderRelativePathProblem(file.name);
+          if (problem !== undefined) {
+            throw new Error(`the path "${file.name}" ${problem}`);
+          }
+          const target = join(dir, ...file.name.split('/'));
+          mkdirSync(dirname(target), { recursive: true });
+          writeFileAtomic(target, file.data, hooks);
+        }
+      } catch (cause) {
+        throw new LibraryWriteError(`writing the folder of agent "${id}"`, { cause });
       }
     },
 

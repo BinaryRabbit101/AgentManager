@@ -196,6 +196,75 @@ export class AvatarNotAnImageError extends RosterServiceError {
   }
 }
 
+/**
+ * The uploaded `.agentpack` is not one (§9.4, M9).
+ *
+ * A 400 rather than a 415, because the content type is not what was wrong: the
+ * caller sent bytes claiming to be a pack and they were not readable as one.
+ */
+export class InvalidAgentPackError extends RosterServiceError {
+  override readonly name = 'InvalidAgentPackError';
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super('invalid_agentpack', message, 400, {}, options);
+  }
+}
+
+/**
+ * The pack was written by a newer build (§9.4).
+ *
+ * **Both numbers are in the message**, which is M9's acceptance verbatim: "an
+ * import whose `schemaVersion` exceeds the build's is refused with both numbers
+ * in the message". A refusal that named only one of them would leave the owner
+ * unable to tell whether to upgrade this build or to ask for a re-export from an
+ * older one.
+ */
+export class PackSchemaVersionError extends RosterServiceError {
+  override readonly name = 'PackSchemaVersionError';
+
+  constructor(
+    readonly field: 'schemaVersion' | 'packVersion',
+    readonly packValue: number,
+    readonly supported: number,
+  ) {
+    super(
+      'agentpack_too_new',
+      `This pack declares ${field} ${String(packValue)}; this build reads ${field} ` +
+        `${String(supported)} at most. Upgrade AgentManager, or ask for an export from a build ` +
+        'that writes the older version — the pack is not parsed on a best-effort basis (DESIGN §9.4).',
+      409,
+      { field, packVersion: packValue, supportedVersion: supported },
+    );
+  }
+}
+
+/**
+ * Export refused because the folder holds a credential value (§9.4's guard).
+ *
+ * A 409 rather than a 500: nothing is broken, the library is in a state the
+ * owner authored and can fix by replacing the literal with a `secretRef`. The
+ * offending keys are named; their **values never are**, which is the entire
+ * point of refusing.
+ */
+export class PackSecretValueError extends RosterServiceError {
+  override readonly name = 'PackSecretValueError';
+
+  constructor(
+    readonly agentId: string,
+    readonly violations: readonly { readonly file: string; readonly path: string }[],
+  ) {
+    super(
+      'agentpack_would_carry_secret',
+      `Agent "${agentId}" cannot be exported: ` +
+        violations.map((v) => `${v.file} holds a literal value at ${v.path}`).join('; ') +
+        '. Packs carry secret references only — replace the value with a { "secretRef": "…" } ' +
+        'and put the value in the secret store (DESIGN §9.4, §10).',
+      409,
+      { agentId, violations: violations.map((v) => ({ file: v.file, path: v.path })) },
+    );
+  }
+}
+
 /** A write to the library failed — a full disk, a lock, a revoked ACL. */
 export class LibraryWriteError extends RosterServiceError {
   override readonly name = 'LibraryWriteError';

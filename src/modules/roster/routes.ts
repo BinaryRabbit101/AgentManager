@@ -16,17 +16,23 @@
  * PUT    /api/roster/board-order            { order: string[] }
  * POST   /api/roster/draft                  draft-from-description (§12, M8)
  * POST   /api/roster/agents/:id/validate    dry-run compile (§9.1)
+ * GET    /api/roster/agents/:id/export      .agentpack download (§9.4, M9)
+ * POST   /api/roster/import[?commit=true]   preview, then write (§9.4, M9)
  * ```
  *
- * `/export` and `/import` are deliberately absent rather than stubbed — they
- * are M9, and a route that answers 501 is a promise this milestone did not
- * make.
+ * That is the whole of §9.1's table.
  *
- * `/validate` is listed in §9.1 beside them but lands here rather than with the
- * pack format: the ui's launch flow is already written against it and degrades
- * by *probing for a 404* (`web/src/launch/permissionPreview.ts`), which is the
- * one shape of feature detection that element's own rules forbid — so the route
- * existing is what retires the exception. Its body is `{ effective,
+ * `/import` is **two-phase and the phases share a route**, which is §9.4's
+ * shape: the same bytes are read twice, once to describe what would happen and
+ * once to do it, and a separate `/import/preview` endpoint would let the two
+ * answers drift. The preview is a 200 and the commit a 201, so a caller can tell
+ * from the status alone whether anything was written.
+ *
+ * `/validate` is listed in §9.1 beside them but landed with M3 rather than with
+ * the pack format: the ui's launch flow was already written against it and
+ * degraded by *probing for a 404* (`web/src/launch/permissionPreview.ts`), which
+ * is the one shape of feature detection that element's own rules forbid — so the
+ * route existing is what retired the exception. Its body is `{ effective,
  * diagnostics, … }`, and the first two are what that accessor reads.
  *
  * Every failure is a typed refusal translated in one place: a
@@ -44,8 +50,9 @@ import type { Logger } from 'pino';
 import type { HttpResult, RequestContext, ResponseTools } from '../../http/types.js';
 import type { RouteDefinition } from '../types.js';
 
-import { readAvatarUpload } from './avatar.js';
+import { firstFilePart, multipartBoundary, readAvatarUpload } from './avatar.js';
 import { RosterValidationError } from './errors.js';
+import { PACK_CONTENT_TYPE } from './pack.js';
 import type { RosterService } from './service.js';
 import { RosterServiceError } from './serviceErrors.js';
 
@@ -265,6 +272,47 @@ export function createRosterRoutes(deps: RosterRoutesDeps): RouteDefinition[] {
         answeringAsync(logger, req, res, async () =>
           res.json(await service.validate(id(req), req.body ?? {})),
         ),
+    },
+
+    {
+      method: 'GET',
+      path: `${ROSTER_API_PREFIX}/agents/:id/export`,
+      description: 'Downloads the agent folder as a .agentpack (zip). Secret refs only, no values.',
+      handler: (req, res) =>
+        answering(logger, req, res, () => {
+          const pack = service.exportPack(id(req));
+          return res.bytes(pack.bytes, PACK_CONTENT_TYPE, {
+            headers: {
+              'content-disposition': `attachment; filename="${pack.filename}"`,
+              // The pack is a snapshot of a folder that changes under a fixed
+              // URL; a cached one would hand out yesterday's persona.
+              'cache-control': 'no-store',
+            },
+          });
+        }),
+    },
+
+    {
+      method: 'POST',
+      path: `${ROSTER_API_PREFIX}/import`,
+      description:
+        'Reads a .agentpack: a preview by default, a write with ?commit=true (two-phase, §9.4).',
+      handler: (req, res) =>
+        answeringAsync(logger, req, res, async () => {
+          const boundary = multipartBoundary(req.headers['content-type']);
+          const bytes =
+            boundary !== undefined && Buffer.isBuffer(req.body)
+              ? firstFilePart(req.body, boundary)
+              : req.body;
+          // `?commit` with no value is the shell-friendly spelling of
+          // `?commit=true`, matching how `?purge` reads on DELETE.
+          const raw = req.query.get('commit');
+          const commit = raw !== null && raw !== 'false' && raw !== '0';
+          const result = await service.importPack(bytes, { commit });
+          // 201 only when something was created: a preview is a read, and a UI
+          // that keyed off the status would otherwise think it had committed.
+          return res.json(result, result.committed ? { status: 201 } : {});
+        }),
     },
 
     {

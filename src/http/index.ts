@@ -61,7 +61,7 @@ export {
   type HttpService,
 } from './module.js';
 
-export { createZip, type ZipEntry } from './zip.js';
+export { ZipReadError, createZip, readZip, type ZipEntry } from './zip.js';
 
 export {
   DEFAULT_TAIL_BYTES,

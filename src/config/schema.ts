@@ -54,6 +54,18 @@ export const foundationConfigShape = {
   library: z.strictObject({
     root: nonEmpty.nullable(),
     watch: z.boolean(),
+    /**
+     * Write the starter roster into an empty library on first run (roster
+     * DESIGN §2.1, M10).
+     *
+     * Contributed by roster, and configuration rather than a constant for the
+     * same reason `library.watch` is: an owner restoring a roster from a backup,
+     * or provisioning a machine that will `git pull` its library, wants the
+     * board empty until they say otherwise. Seeding is already once-ever
+     * (`roster.json`'s `seededAt`); this is the knob for the run *before* that
+     * decision is recorded.
+     */
+    seed: z.boolean(),
   }),
   http: z.strictObject({
     bind: nonEmpty,
@@ -143,7 +155,7 @@ export type AppConfig = z.infer<z.ZodObject<typeof foundationConfigShape>>;
 const foundationDefaults: { readonly [K in keyof typeof foundationConfigShape]: AppConfig[K] } = {
   edition: 'work',
   dataRoot: null,
-  library: { root: null, watch: true },
+  library: { root: null, watch: true, seed: true },
   http: { bind: '127.0.0.1', port: 7477 },
   remote: REMOTE_CONFIG_DEFAULTS,
   modules: { remote: { enabled: false }, orchestrator: { enabled: true } },

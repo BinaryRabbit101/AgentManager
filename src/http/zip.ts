@@ -17,8 +17,18 @@
  * Scope is deliberately narrow: no ZIP64, no encryption, no streaming, no
  * directories. The inputs are a handful of log files bounded by §5.2's rotation
  * policy, and everything is assembled in memory.
+ *
+ * ## The reader
+ *
+ * {@link readZip} is the inverse, added for roster's `.agentpack` import (roster
+ * DESIGN §9.4). It lives here rather than in that element for the reason the
+ * writer gives: the container is one format, and two implementations of the same
+ * length-prefixed record layout in one repository is one implementation too many
+ * — a reader that disagreed with the writer about, say, whether the local header
+ * or the central directory is authoritative would produce archives that only
+ * round-trip through themselves.
  */
-import { crc32, deflateRawSync } from 'node:zlib';
+import { crc32, deflateRawSync, inflateRawSync } from 'node:zlib';
 
 const LOCAL_HEADER_SIGNATURE = 0x04034b50;
 const CENTRAL_HEADER_SIGNATURE = 0x02014b50;
@@ -125,4 +135,117 @@ export function createZip(entries: readonly ZipEntry[]): Buffer {
   end.writeUInt16LE(0, 20); // comment length
 
   return Buffer.concat([...parts, directory, end]);
+}
+
+// ---------------------------------------------------------------------------
+// Reading
+// ---------------------------------------------------------------------------
+
+/** The archive is not a zip, or is a zip this reader will not accept. */
+export class ZipReadError extends Error {
+  override readonly name = 'ZipReadError';
+}
+
+/**
+ * The central directory is authoritative.
+ *
+ * A zip carries every entry's metadata twice — once in the local header ahead of
+ * the payload, once in the central directory at the end — and the two are allowed
+ * to disagree (streaming writers put zeroes in the local header and the truth in
+ * the directory). Reading names, sizes and checksums from the directory and using
+ * the local header only to find where the payload starts is the standard
+ * resolution, and it is also the one that cannot be fooled by a crafted local
+ * header naming a different file from the one the directory lists.
+ */
+export function readZip(archive: Buffer): ZipEntry[] {
+  const eocd = findEndOfCentralDirectory(archive);
+  const count = archive.readUInt16LE(eocd + 10);
+  let cursor = archive.readUInt32LE(eocd + 16);
+
+  const entries: ZipEntry[] = [];
+  for (let index = 0; index < count; index += 1) {
+    if (
+      cursor + 46 > archive.byteLength ||
+      archive.readUInt32LE(cursor) !== CENTRAL_HEADER_SIGNATURE
+    ) {
+      throw new ZipReadError(
+        `the zip central directory is truncated at entry ${String(index + 1)}`,
+      );
+    }
+    const method = archive.readUInt16LE(cursor + 10);
+    const checksum = archive.readUInt32LE(cursor + 16);
+    const compressedSize = archive.readUInt32LE(cursor + 20);
+    const uncompressedSize = archive.readUInt32LE(cursor + 24);
+    const nameLength = archive.readUInt16LE(cursor + 28);
+    const extraLength = archive.readUInt16LE(cursor + 30);
+    const commentLength = archive.readUInt16LE(cursor + 32);
+    const localOffset = archive.readUInt32LE(cursor + 42);
+    const name = archive.subarray(cursor + 46, cursor + 46 + nameLength).toString('utf8');
+    cursor += 46 + nameLength + extraLength + commentLength;
+
+    if (
+      localOffset + 30 > archive.byteLength ||
+      archive.readUInt32LE(localOffset) !== LOCAL_HEADER_SIGNATURE
+    ) {
+      throw new ZipReadError(`"${name}" does not begin with a local file header`);
+    }
+    // The local header's own name and extra lengths, not the directory's: the
+    // extra field is routinely a different length in the two places.
+    const payloadStart =
+      localOffset +
+      30 +
+      archive.readUInt16LE(localOffset + 26) +
+      archive.readUInt16LE(localOffset + 28);
+    const payloadEnd = payloadStart + compressedSize;
+    if (payloadEnd > archive.byteLength) {
+      throw new ZipReadError(`"${name}" runs past the end of the archive`);
+    }
+    const payload = archive.subarray(payloadStart, payloadEnd);
+
+    let data: Buffer;
+    if (method === METHOD_STORE) {
+      data = Buffer.from(payload);
+    } else if (method === METHOD_DEFLATE) {
+      try {
+        data = inflateRawSync(payload);
+      } catch (cause) {
+        throw new ZipReadError(`"${name}" could not be decompressed`, { cause });
+      }
+    } else {
+      throw new ZipReadError(
+        `"${name}" uses compression method ${String(method)}; only store (0) and deflate (8) are supported`,
+      );
+    }
+
+    // Both checks are cheap and both catch a corrupted download, which is the
+    // realistic way a hand-shared `.agentpack` goes wrong.
+    if (data.byteLength !== uncompressedSize) {
+      throw new ZipReadError(
+        `"${name}" is ${String(data.byteLength)} bytes, not the declared ${String(uncompressedSize)}`,
+      );
+    }
+    if (crc32(data) !== checksum) throw new ZipReadError(`"${name}" failed its CRC check`);
+
+    entries.push({ name, data });
+  }
+
+  return entries;
+}
+
+/**
+ * The end-of-central-directory record, found by scanning backwards.
+ *
+ * There is no other way: the record is last, it is variable-length because of its
+ * trailing comment, and the comment may itself contain the signature. Scanning
+ * from the end finds the *last* plausible record, and the comment length is
+ * checked against the remaining bytes so a signature that happens to sit inside a
+ * comment is rejected rather than believed.
+ */
+function findEndOfCentralDirectory(archive: Buffer): number {
+  const earliest = Math.max(0, archive.byteLength - 22 - 0xffff);
+  for (let at = archive.byteLength - 22; at >= earliest; at -= 1) {
+    if (archive.readUInt32LE(at) !== END_OF_CENTRAL_DIRECTORY_SIGNATURE) continue;
+    if (at + 22 + archive.readUInt16LE(at + 20) === archive.byteLength) return at;
+  }
+  throw new ZipReadError('this is not a zip archive: no end-of-central-directory record');
 }

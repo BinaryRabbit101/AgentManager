@@ -26,7 +26,7 @@
  * (foundation §6.1), and the two use git for entirely different things.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 
 import type { Diagnostic } from './contracts.js';
 import { AGENT_SCHEMA_VERSION } from './schema.js';
@@ -79,8 +79,58 @@ function streamText(cause: unknown): string {
 /** `roster.json` — "roster-level metadata: schemaVersion, seededAt" (§2.1). */
 export interface RosterMetadata {
   readonly schemaVersion: number;
-  /** Set by M10's seeding; `null` until starter agents are written. */
+  /**
+   * When the seeding pass ran (M10), or `null` before it has.
+   *
+   * It records that the **decision** was taken, not that files appeared: a
+   * library that already held agents is stamped too, having deliberately been
+   * left alone. That is what makes seeding a once-ever event — an owner who
+   * deletes a starter agent does not find it back after a restart, which is the
+   * behaviour anyone would expect and the opposite of what "seed whenever the
+   * library looks empty" would give them.
+   */
   readonly seededAt: string | null;
+}
+
+/** What a `roster.json` that cannot be read is treated as. */
+const DEFAULT_ROSTER_METADATA: RosterMetadata = {
+  schemaVersion: AGENT_SCHEMA_VERSION,
+  seededAt: null,
+};
+
+/**
+ * `roster.json`, or the default when it is missing or unreadable.
+ *
+ * Deliberately forgiving: this file gates one cosmetic decision (whether to
+ * write four example agents), and a service that refused to start because the
+ * owner put a comment in it would be trading a real failure for a trivial one.
+ * A malformed file reads as "not seeded yet", and the folder check in
+ * `seedLibrary` is what stops that from duplicating anything.
+ */
+export function readRosterMetadata(paths: LibraryPaths): RosterMetadata {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(paths.rosterJson, 'utf8')) as unknown;
+  } catch {
+    return DEFAULT_ROSTER_METADATA;
+  }
+  if (typeof raw !== 'object' || raw === null) return DEFAULT_ROSTER_METADATA;
+  const record = raw as Record<string, unknown>;
+  const schemaVersion = record['schemaVersion'];
+  const seededAt = record['seededAt'];
+  return {
+    schemaVersion: typeof schemaVersion === 'number' ? schemaVersion : AGENT_SCHEMA_VERSION,
+    seededAt: typeof seededAt === 'string' && seededAt.length > 0 ? seededAt : null,
+  };
+}
+
+/** Rewrites `roster.json` through the same atomic path as any other file. */
+export function writeRosterMetadata(
+  paths: LibraryPaths,
+  metadata: RosterMetadata,
+  hooks: StoreHooks = {},
+): void {
+  writeFileAtomic(paths.rosterJson, `${JSON.stringify(metadata, null, 2)}\n`, hooks);
 }
 
 /**
@@ -166,8 +216,7 @@ export function bootstrapLibrary(options: BootstrapLibraryOptions): BootstrapRes
     created.push(paths.agents);
   }
   if (!existsSync(paths.rosterJson)) {
-    const metadata: RosterMetadata = { schemaVersion: AGENT_SCHEMA_VERSION, seededAt: null };
-    writeFileAtomic(paths.rosterJson, `${JSON.stringify(metadata, null, 2)}\n`, hooks);
+    writeRosterMetadata(paths, DEFAULT_ROSTER_METADATA, hooks);
     created.push(paths.rosterJson);
   }
   if (!existsSync(paths.gitignore)) {

@@ -293,8 +293,14 @@ export function callRoute(
   routes: readonly RouteDefinition[],
   method: string,
   path: string,
-  options: { readonly body?: unknown; readonly params?: Record<string, string> } = {},
-): Promise<{ status: number; body: unknown }> {
+  options: {
+    readonly body?: unknown;
+    readonly params?: Record<string, string>;
+    /** `?commit=true` and friends — the routes that branch on a flag need it. */
+    readonly query?: Record<string, string>;
+    readonly contentType?: string;
+  } = {},
+): Promise<{ status: number; body: unknown; bytes: Buffer; headers: Record<string, string> }> {
   const route = routes.find((entry) => entry.method === method && entry.path === path);
   if (route === undefined) throw new Error(`no route ${method} ${path}`);
 
@@ -302,13 +308,13 @@ export function callRoute(
     method,
     path,
     params: options.params ?? {},
-    query: new URLSearchParams(),
+    query: new URLSearchParams(options.query ?? {}),
     body: options.body,
     origin: 'local' as const,
     requestId: 'test-request',
     tokenId: undefined,
     tokenAttribution: undefined,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': options.contentType ?? 'application/json' },
     url: path,
     remoteAddress: '127.0.0.1',
     logger: silentLogger(),
@@ -321,15 +327,18 @@ export function callRoute(
 
   return Promise.resolve(route.handler(request, tools)).then((result) => {
     const answered = result as HttpResult | undefined;
-    if (answered === undefined) return { status: 204, body: undefined };
-    const raw = answered.body?.toString('utf8') ?? '';
+    if (answered === undefined) {
+      return { status: 204, body: undefined, bytes: Buffer.alloc(0), headers: {} };
+    }
+    const bytes = answered.body ?? Buffer.alloc(0);
+    const raw = bytes.toString('utf8');
     let body: unknown = raw;
     try {
       body = JSON.parse(raw) as unknown;
     } catch {
-      // A non-JSON body (an avatar) stays a string.
+      // A non-JSON body (an avatar, a `.agentpack`) stays a string.
     }
-    return { status: answered.status, body };
+    return { status: answered.status, body, bytes, headers: answered.headers ?? {} };
   });
 }
 

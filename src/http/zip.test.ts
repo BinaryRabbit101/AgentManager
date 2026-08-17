@@ -1,7 +1,8 @@
+import { randomBytes } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 
-import { createZip } from './zip.js';
+import { ZipReadError, createZip, readZip as readZipUnderTest } from './zip.js';
 
 /**
  * Reads an archive back with nothing but `node:zlib`, so the test proves the
@@ -71,5 +72,52 @@ describe('createZip', () => {
     const archive = createZip([]);
     expect(archive).toHaveLength(22);
     expect(readZip(archive).size).toBe(0);
+  });
+});
+
+/**
+ * The reader (roster DESIGN §9.4's `.agentpack` import).
+ *
+ * The round-trip cases deliberately go through the *independent* reader above as
+ * well, so a bug shared between `createZip` and `readZip` — the two halves that
+ * would otherwise only ever be checked against each other — cannot hide.
+ */
+describe('readZip', () => {
+  it('reads back both compression methods an archive can hold', () => {
+    const compressible = Buffer.from('a'.repeat(5000));
+    const tiny = Buffer.from('x');
+    const archive = createZip([
+      { name: 'big.log', data: compressible },
+      { name: 'nested/tiny.log', data: tiny },
+    ]);
+
+    const read = readZipUnderTest(archive);
+    expect(read.map((entry) => entry.name)).toEqual(['big.log', 'nested/tiny.log']);
+    expect(read[0]?.data.equals(compressible)).toBe(true);
+    expect(read[1]?.data.equals(tiny)).toBe(true);
+    // The independent reader agrees, so the container is a zip and not a
+    // private format the two functions happen to share.
+    expect(readZip(archive).get('big.log')?.equals(compressible)).toBe(true);
+  });
+
+  it('reads a UTF-8 entry name and an empty archive', () => {
+    const archive = createZip([{ name: 'persona—naïve.md', data: Buffer.from('héllo', 'utf8') }]);
+    expect(readZipUnderTest(archive)[0]?.name).toBe('persona—naïve.md');
+    expect(readZipUnderTest(createZip([]))).toEqual([]);
+  });
+
+  it('refuses bytes that are not a zip', () => {
+    expect(() => readZipUnderTest(Buffer.from('not a zip at all'))).toThrow(ZipReadError);
+    expect(() => readZipUnderTest(Buffer.alloc(0))).toThrow(/not a zip archive/);
+  });
+
+  it('refuses an archive whose payload was tampered with', () => {
+    // Random bytes are incompressible, so the writer stores them verbatim and
+    // flipping one leaves the declared length intact — the CRC is then the only
+    // thing standing between a corrupted download and a written file.
+    const archive = createZip([{ name: 'a.txt', data: randomBytes(64) }]);
+    const tampered = Buffer.from(archive);
+    tampered[40] = (tampered[40] ?? 0) ^ 0xff;
+    expect(() => readZipUnderTest(tampered)).toThrow(/CRC/);
   });
 });

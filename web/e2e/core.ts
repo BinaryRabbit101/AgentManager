@@ -65,7 +65,16 @@ export async function bootCore(options: BootOptions = {}): Promise<BootedCore> {
     exit: () => {},
     ...options,
     http: { port: 0, heartbeatMs: 0, ...options.http },
-    argv: ['--set', 'secrets.provider=env', ...(options.argv ?? [])],
+    argv: [
+      '--set',
+      'secrets.provider=env',
+      // No starter roster (roster M10): every test here creates the agents it
+      // asserts on, and four extras on the board would make "the roster is what
+      // this test put in it" false for all of them.
+      '--set',
+      'library.seed=false',
+      ...(options.argv ?? []),
+    ],
   });
   const base = booted.url();
   if (base === undefined) throw new Error('the listener did not bind');

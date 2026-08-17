@@ -3,7 +3,8 @@
   "dataRoot": null,
   "library": {
     "root": null,
-    "watch": true
+    "watch": true,
+    "seed": true
   },
   "http": {
     "bind": "127.0.0.1",
