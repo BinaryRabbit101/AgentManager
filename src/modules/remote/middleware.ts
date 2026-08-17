@@ -1,55 +1,92 @@
 /**
- * The remote listener's request policy — remote DESIGN §3.1, §4, §9.2;
- * IMPLEMENTATION §4, §5, §6.
+ * The remote listener's request policy — remote DESIGN §3.1, §3.4, §4, §6, §9.2;
+ * IMPLEMENTATION §4, §5, §6, §7, §8.
  *
  * This file replaces M3's placeholder, which refused every request because a
  * socket existed and no credential mechanism did. What stands in its place is the
- * chain foundation's `mount` runs in front of every handler on the tailnet
+ * chain foundation's `mount` runs in front of every handler on the remote
  * listener, in this order:
  *
  * | # | Middleware | Refuses with |
  * |---|---|---|
- * | 1 | {@link createPeerGuard} — §9.2 #6, peer inside `100.64.0.0/10` | `403 peer_not_on_tailnet` |
+ * | 1 | {@link createPeerGuard} — D5's peer boundary for the configured mode | `403 peer_not_on_tailnet` / `403 peer_not_allowed` |
  * | 2 | {@link createHostGuard} — §9.2 #8, `Host` allowlist | `421 misdirected_request` |
- * | 3 | {@link createRoutePolicy} — §3.1's four rules | `403` / `401` / `429` |
+ * | 3 | {@link createRoutePolicy} — §3.1's four rules | `403` / `401` / `409` / `429` |
  *
  * The peer and `Host` guards are separate middlewares rather than steps inside
  * the third because §9.2 #6 says "refused **before any routing**": they must not
  * be able to end up downstream of a rule that serves something.
  *
- * ## Why rules 1–3 of §3.1 are one middleware and not three
+ * ## Why §3.1's rules are one middleware and not four
  *
  * Rule 1 (the static shell) *grants* access; a foundation `Middleware` can only
  * refuse (by returning a result) or abstain (by returning nothing). A rule that
  * says "and stop asking questions" cannot be expressed as an early middleware in
- * a chain that keeps running, so the three rules that decide one request live in
- * one function, in the order §3.1 gives them. {@link decideRoutePolicy} holds the
- * decision as a pure function so it can be enumerated over the live route table.
+ * a chain that keeps running, so the rules that decide one request live in one
+ * function, in the order §3.1 gives them. {@link decideRoutePolicy} and
+ * {@link classifyPath} hold their halves of the decision as pure functions, so both
+ * can be enumerated over the live route table.
  *
- * ## What is deliberately absent
+ * The full order inside {@link createRoutePolicy}, since it *is* the security
+ * property:
  *
- * Rule 4 — the per-agent grant gate — is M8. Its absence is not a hole: with no
- * grant gate, an authenticated remote client can start a session, which is
- * exactly what the *local* client can do, and D5's consent requirement is a
- * milestone away rather than a bypassed check. Stream tickets (§3.4) are M7, and
- * until they exist a browser cannot open a WS/SSE stream remotely at all — the
- * closed direction.
+ * 1. **static shell** → served unauthenticated (§3.1 rule 1);
+ * 2. **deny list** → `403`, *before* auth, so a denied route is not a token
+ *    oracle (§3.1 rule 2);
+ * 3. **lockout** → `429`, before any credential is looked at (§4.6);
+ * 4. **bearer**, or a §3.4 **ticket** on one of the three declared stream paths
+ *    when — and only when — no header was sent;
+ * 5. **attribution and `last_used_at`**, then §3.3's browse bucket;
+ * 6. **stream registration**, so §4.5's revoke can close what this request opens;
+ * 7. **the per-agent grant gate** → `409 remote_access_required` (§3.1 rule 4).
+ *
+ * Steps 6 and 7 are reached only by a request that authenticated, which is what
+ * makes "an unauthenticated stream can never be in the connection map" and "an
+ * ungated launch cannot reach its handler" true by construction rather than by
+ * inspection.
  */
 import type { HttpResult, Middleware, RequestContext, ResponseTools } from '../../http/types.js';
 import type { Clock } from '../../storage/index.js';
 
 import {
+  REMOTE_ACCESS_REQUIRED_CODE,
+  agentsForRequest,
+  classifyPath,
+  wantsConfirm,
+  type GateStores,
+} from './gate.js';
+import type { GrantStore } from './grants.js';
+import {
   BROWSE_PATH,
   ROUTE_DENIED_CODE,
   decideRoutePolicy,
+  isStreamTicketRequest,
   type PolicyDecision,
 } from './policy.js';
 import type { AuthLimiter, RouteBucket } from './rateLimit.js';
+import { decorateSse, type StreamRegistry } from './streams.js';
 import { CGNAT_RANGE, isCgnatIPv4 } from './tailscale.js';
-import { UNAUTHORIZED_CODE, UNAUTHORIZED_MESSAGE, type RemoteTokenService } from './tokens.js';
+import type { TicketStore } from './tickets.js';
+import {
+  UNAUTHORIZED_CODE,
+  UNAUTHORIZED_MESSAGE,
+  hasExpired,
+  type RemoteTokenService,
+  type TokenVerdict,
+} from './tokens.js';
 
-/** §9.2 #6: a peer that is not a tailnet node address. */
+/** §9.2 #6: a peer that is not a tailnet node address (tailscale mode). */
 export const PEER_REFUSED_CODE = 'peer_not_on_tailnet';
+
+/**
+ * D5 as amended: a peer that is not in `remote.proxy.allowedPeers` (proxy mode).
+ *
+ * A distinct code from {@link PEER_REFUSED_CODE} because the two mean different
+ * things to whoever reads the log line — "this did not come over the tailnet"
+ * versus "this did not come from the proxy host" — while the *response body* is
+ * as detail-free as M6's is: a refused peer learns nothing about the allowlist.
+ */
+export const PEER_NOT_ALLOWED_CODE = 'peer_not_allowed';
 
 /** §9.2 #8: the `Host` header names something this listener is not. */
 export const MISDIRECTED_CODE = 'misdirected_request';
@@ -178,35 +215,99 @@ function facts(request: RequestContext): RequestFacts {
 // 1 — the peer guard (§9.2 #6)
 // ---------------------------------------------------------------------------
 
+/**
+ * Which peers this listener will answer, and what it says when it will not.
+ *
+ * One shape for both of D5's modes, because the *position* of the check is the
+ * security property and must not vary: it runs before routing, before bearer
+ * auth, and before the rate limiter's failure accounting, so a peer that may not
+ * talk to us at all cannot consume another peer's budget, cannot probe the deny
+ * list, and cannot make a token oracle out of the 401/403 boundary.
+ */
+export interface PeerPolicy {
+  /** The error code on the refusal — for the log line, not for the caller. */
+  readonly code: string;
+  /** Whether a normalised peer literal may be served. */
+  readonly allow: (address: string) => boolean;
+  /** The audit reason. May name the policy; the response body never does. */
+  readonly describe: (peer: string | undefined) => string;
+  /** The client-facing message. Deliberately carries no detail (§8.2). */
+  readonly message: string;
+}
+
+/** §9.2 #6 — tailscale mode: the peer must be a tailnet node address. */
+export const TAILNET_PEER_POLICY: PeerPolicy = {
+  code: PEER_REFUSED_CODE,
+  allow: isCgnatIPv4,
+  describe: (peer) =>
+    `the peer address ${peer ?? '(unknown)'} is not a Tailscale node address ` +
+    `(${CGNAT_RANGE}), so this connection did not arrive over the tailnet`,
+  message:
+    'This listener serves the tailnet only. The connection did not arrive from a Tailscale ' +
+    'node address (architecture D5, remote DESIGN §9.2).',
+};
+
+/**
+ * D5 as amended — proxy mode: the raw TCP peer must be a declared proxy host.
+ *
+ * The comparison is against `req.socket.remoteAddress` only (normalised out of
+ * its IPv4-mapped-IPv6 form). **`X-Forwarded-For` is never read**, here or
+ * anywhere in this module: it is a header the proxy writes and therefore a header
+ * an attacker who reached the socket can also write, so treating it as identity
+ * would hand the allowlist's key to whoever it was meant to exclude. The proxy's
+ * own client IP is a fact for logs, and this element does not even read it for
+ * that.
+ */
+export function proxyPeerPolicy(allowedPeers: readonly string[]): PeerPolicy {
+  const allowed = new Set(
+    allowedPeers.map((entry) => normalisePeer(entry) ?? entry.trim().toLowerCase()),
+  );
+  return {
+    code: PEER_NOT_ALLOWED_CODE,
+    allow: (address) => allowed.has(address),
+    describe: (peer) =>
+      `the peer address ${peer ?? '(unknown)'} is not one of the ${String(allowed.size)} peer(s) ` +
+      'remote.proxy.allowedPeers declares, so this connection did not arrive from the proxy host',
+    message:
+      'This listener answers only the proxy host that fronts it. The connection did not arrive ' +
+      'from a declared peer (architecture D5, amended 2026-08-17).',
+  };
+}
+
 export interface PeerGuardDeps {
   /**
-   * Whether a peer may be served. Defaults to §2.1's CGNAT check.
+   * Which peers may be served. Defaults to {@link TAILNET_PEER_POLICY}.
    *
-   * §9.2 #6: "Bound to a Tailscale-only address this should be unreachable; it
-   * costs five lines and catches the misconfiguration that would otherwise be
-   * silent." It is injectable for the same reason the detector is: a test drives
-   * the mounted listener over loopback, and loopback is — correctly — refused by
-   * the production predicate.
+   * The module builds this from `remote.bind`: §2.1's CGNAT check in tailscale
+   * mode, {@link proxyPeerPolicy} over `remote.proxy.allowedPeers` in proxy mode.
+   */
+  readonly peerPolicy?: PeerPolicy;
+  /**
+   * Overrides only the predicate, keeping the policy's codes and messages.
+   *
+   * Injectable for the same reason the detector is: a test drives the mounted
+   * listener over loopback, and loopback is — correctly — refused by the
+   * production predicate.
    */
   readonly allowPeer?: (address: string) => boolean;
   readonly audit: RemoteAuditSink;
 }
 
 export function createPeerGuard(deps: PeerGuardDeps): Middleware {
-  const allow = deps.allowPeer ?? isCgnatIPv4;
+  const policy = deps.peerPolicy ?? TAILNET_PEER_POLICY;
+  const allow = deps.allowPeer ?? policy.allow;
   return (request: RequestContext, response: ResponseTools): HttpResult | undefined => {
+    // The raw TCP peer, and nothing else. No header is consulted.
     const peer = normalisePeer(request.remoteAddress);
     if (peer !== undefined && allow(peer)) return undefined;
-    const reason =
-      `the peer address ${peer ?? '(unknown)'} is not a Tailscale node address ` +
-      `(${CGNAT_RANGE}), so this connection did not arrive over the tailnet`;
-    deps.audit.refused({ ...facts(request), status: 403, code: PEER_REFUSED_CODE, reason });
-    return response.error(
-      403,
-      PEER_REFUSED_CODE,
-      'This listener serves the tailnet only. The connection did not arrive from a Tailscale ' +
-        'node address (architecture D5, remote DESIGN §9.2).',
-    );
+    // One `warn`-level access-log line per refused connection (§9.1 #4).
+    deps.audit.refused({
+      ...facts(request),
+      status: 403,
+      code: policy.code,
+      reason: policy.describe(peer),
+    });
+    return response.error(403, policy.code, policy.message);
   };
 }
 
@@ -267,6 +368,33 @@ export interface RoutePolicyDeps {
    * rather than making an audit line the reason a request fails.
    */
   readonly resolvePath?: (path: string) => string;
+  /**
+   * §3.4's single-use stream tickets.
+   *
+   * Optional so a policy test that is not about streams need not build one; when
+   * it is absent a `?ticket=` is simply never a credential, which is the closed
+   * direction.
+   */
+  readonly tickets?: TicketStore;
+  /** §4.5's `tokenId → Set<connection>` map. Absent = no stream registration. */
+  readonly streams?: StreamRegistry;
+  /** §3.1 rule 4 — the per-agent grant gate (§6). Absent = no gate. */
+  readonly gate?: GrantGateDeps;
+}
+
+/** What rule 4 needs in order to answer "may this client put this agent to work?". */
+export interface GrantGateDeps {
+  readonly grants: GrantStore;
+  readonly stores: GateStores;
+  /**
+   * DESIGN §6.3's last disable trigger: "Global `remote.enabled: false` → Grants
+   * **survive**, all remote initiation is blocked anyway."
+   *
+   * Read here as well as in the listener because the listener's answer is "the
+   * socket closes", and a request already in flight when the switch flipped must
+   * not be the one that slips through.
+   */
+  readonly enabled: () => boolean;
 }
 
 export function createRoutePolicy(deps: RoutePolicyDeps): Middleware {
@@ -328,14 +456,25 @@ export function createRoutePolicy(deps: RoutePolicyDeps): Middleware {
     }
 
     const presented = readBearerToken(request);
-    const verdict = deps.tokens.verify(presented);
+    // §3.4: a browser cannot set `Authorization` on `new EventSource(url)`, so a
+    // single-use ticket stands in — but **only** on the three stream paths of
+    // `STREAM_TICKET_PATHS`, only when no header was sent, and only once. The
+    // bearer header always wins where it exists, so this can never weaken a
+    // request that already carried the durable credential.
+    const ticketed =
+      presented === undefined && deps.tickets !== undefined
+        ? redeemTicket(request, at, deps.tickets, deps.tokens)
+        : undefined;
+    const verdict = ticketed ?? deps.tokens.verify(presented);
+    /** Whether the caller offered *some* credential, so a failure is a sign-in attempt. */
+    const offered = presented !== undefined || ticketed !== undefined;
 
     if (!verdict.ok) {
       // A request that presented *nothing* is not a sign-in attempt and must not
       // consume the budget: a browser that has not paired yet would otherwise
       // lock itself out of the pairing screen, and the brute-force this counter
       // exists to make visible necessarily presents a credential (§4.6, §10.1).
-      if (presented !== undefined) {
+      if (offered) {
         const outcome = deps.limiter.recordFailure(peer, at);
         if (outcome.firstInWindow) {
           deps.audit.authFailed({
@@ -411,9 +550,119 @@ export function createRoutePolicy(deps: RoutePolicyDeps): Middleware {
       });
     }
 
-    // Rule 4 — the per-agent grant gate — is M8. Nothing stands here yet.
+    // §4.5's half of the map: a stream this request is about to open belongs to
+    // this token, so revoking the token can close it. Done *after* authentication
+    // and never before, so an unauthenticated stream can never be registered.
+    if (deps.streams !== undefined && isStreamTicketRequest(request.method, request.path)) {
+      decorateSse(response, record.id, deps.streams);
+    }
+
+    // Rule 4 — the per-agent grant gate (§3.1 rule 4, §6.2, §6.3).
+    const gate = deps.gate;
+    if (gate === undefined) return undefined;
+    const tier = classifyPath(request.method, request.path);
+    if (tier !== 'initiate') return undefined;
+
+    // §6.3's last trigger: with the global switch off, initiation is blocked and
+    // grants are left alone — "re-enabling does not re-nag the user".
+    if (!gate.enabled()) {
+      deps.audit.refused({
+        ...facts(request),
+        status: 403,
+        code: ROUTE_DENIED_CODE,
+        reason: 'remote access is switched off, so no remote client may start work',
+      });
+      return response.error(
+        403,
+        ROUTE_DENIED_CODE,
+        'Remote access is switched off on the machine, so nothing can be started remotely. ' +
+          'Switch it back on from the machine itself (remote DESIGN §5, §6.3).',
+      );
+    }
+
+    const named = agentsForRequest(
+      {
+        method: request.method,
+        path: request.path,
+        params: request.params,
+        body: request.body,
+      },
+      gate.stores,
+    );
+
+    // §6.3's atomic path: `confirmRemoteAccess: true` grants every named agent and
+    // proceeds in the one call, so the client need not round-trip through a 409.
+    if (wantsConfirm(request.body) && !named.unresolved) {
+      for (const agent of named.agents) {
+        gate.grants.grant(agent.agentId, at, { via: 'remote', tokenId: record.id });
+      }
+      return undefined;
+    }
+
+    // Evaluated per agent and reported as a set, so "the client prompts once for
+    // all of them rather than N times through N retries" (§6.2).
+    const ungranted = named.agents.filter((agent) => !gate.grants.isLive(agent.agentId, at));
+    if (named.unresolved || ungranted.length > 0) {
+      deps.audit.refused({
+        ...facts(request),
+        status: 409,
+        code: REMOTE_ACCESS_REQUIRED_CODE,
+        reason: named.unresolved
+          ? 'an initiating request named no agent this gate could resolve, so it is refused closed'
+          : `these agents hold no live remote-access grant: ${ungranted
+              .map((agent) => agent.agentId)
+              .join(', ')}`,
+      });
+      return response.error(
+        409,
+        REMOTE_ACCESS_REQUIRED_CODE,
+        named.unresolved
+          ? 'This request would start work, but the agents it names could not be determined, so ' +
+              'it is refused rather than allowed unchecked (remote DESIGN §6.2).'
+          : 'These agents have not been allowed to be started remotely yet. Grant them and retry, ' +
+              'or send "confirmRemoteAccess": true to grant and start in one call (remote DESIGN ' +
+              '§6.3).',
+        // §6.3: "The list is always present, even for a solo launch of one agent,
+        // so the client has one shape to handle."
+        { agents: ungranted.map((agent) => ({ ...agent })) },
+      );
+    }
+
+    // §6.3: the TTL is "measured from the last remote start of that agent
+    // (sliding, not fixed)", so a permitted launch slides every named grant.
+    for (const agent of named.agents) gate.grants.touch(agent.agentId, at);
     return undefined;
   };
+}
+
+/**
+ * §3.4's ticket, redeemed once, on a stream path only.
+ *
+ * @returns `undefined` when the request offered no ticket at all (so it is not a
+ *   sign-in attempt and must not consume the lockout budget), `{ok:false}` when it
+ *   offered one that is unknown, expired, already used, or bound to a token that
+ *   is no longer live, and `{ok:true}` with the minting token's record otherwise.
+ */
+function redeemTicket(
+  request: RequestContext,
+  at: number,
+  tickets: TicketStore,
+  tokens: RemoteTokenService,
+): TokenVerdict | undefined {
+  if (!isStreamTicketRequest(request.method, request.path)) return undefined;
+  const presented = request.query.get('ticket');
+  if (presented === null || presented.length === 0) return undefined;
+
+  const consumed = tickets.consume(presented, at);
+  if (!consumed.ok) return { ok: false };
+  // §3.4: "The connection inherits the token's identity for the whole of its life,
+  // so revoking the token kills the stream." Re-checking here is what makes a
+  // ticket minted moments before a revoke worth nothing.
+  const record = tokens.record(consumed.tokenId);
+  if (record === undefined) return { ok: false };
+  if (record.revokedAt !== null) return { ok: false };
+  if (hasExpired(record.expiresAt, at)) return { ok: false };
+  return { ok: true, record };
 }
 
 /**

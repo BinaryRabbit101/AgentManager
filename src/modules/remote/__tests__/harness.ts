@@ -53,6 +53,7 @@ import {
   type AuthBlockDetail,
   type AuthFailureDetail,
   type BrowseDetail,
+  type PeerPolicy,
   type RefusalDetail,
   type RemoteAuditSink,
 } from '../middleware.js';
@@ -109,6 +110,13 @@ export interface RemoteHarnessOptions {
   readonly routes?: readonly RouteDefinition[];
   /** Overrides the peer predicate. Omit to accept loopback; pass to test the guard. */
   readonly allowPeer?: (address: string) => boolean;
+  /**
+   * The whole peer policy — predicate, code and message.
+   *
+   * Passed by `proxy.test.ts` so D5's amended peer allowlist is exercised as the
+   * production object rather than as a lambda that happens to agree with it.
+   */
+  readonly peerPolicy?: PeerPolicy;
   /** Overrides the `Host` allowlist. */
   readonly allowedHosts?: () => readonly string[];
   readonly maxFailures?: number;
@@ -319,8 +327,15 @@ export async function createRemoteHarness(
     clock,
     audit: sink,
     // Loopback, because that is where the socket is (see this file's header). A
-    // test that wants the production predicate simply omits the override.
-    allowPeer: options.allowPeer ?? ((address) => address === '127.0.0.1' || address === '::1'),
+    // test that wants a production predicate passes `peerPolicy` (proxy mode) or
+    // omits both (tailscale mode's CGNAT check).
+    ...(options.peerPolicy === undefined ? {} : { peerPolicy: options.peerPolicy }),
+    ...(options.peerPolicy !== undefined && options.allowPeer === undefined
+      ? {}
+      : {
+          allowPeer:
+            options.allowPeer ?? ((address) => address === '127.0.0.1' || address === '::1'),
+        }),
     allowedHosts: options.allowedHosts ?? (() => ['127.0.0.1', TAILNET_ADDRESS, MAGIC_DNS]),
     ...(options.peerName === undefined ? {} : { peerName: options.peerName }),
     ...(options.resolvePath === undefined ? {} : { resolvePath: options.resolvePath }),

@@ -49,6 +49,53 @@ export const ROUTE_DENIED_CODE = 'route_denied_remotely';
 /** `GET /api/fs/browse` — the one route with its own bucket (§3.3). */
 export const BROWSE_PATH = '/api/fs/browse';
 
+/**
+ * The routes a §3.4 stream ticket may authenticate — and **only** these.
+ *
+ * §3.4 names the three live surfaces: foundation's `/api/events` and
+ * `/api/logs/stream`, and runner's `/api/sessions/:id/stream`. The list is an
+ * allowlist rather than a heuristic ("any GET that opens an SSE stream") because
+ * a ticket is a credential that travels in a URL, and the set of places a URL
+ * credential is accepted must be short, fixed, and readable at a glance. A route
+ * not on this list refuses a ticket exactly as it refuses a missing header, so
+ * the ticket scheme can never become a general-purpose `?access_token=`.
+ *
+ * `/api/sessions/:id/stream` is listed although this build's runner has not
+ * registered it yet: an entry that matches nothing costs nothing, and the
+ * alternative is that the route arrives unauthenticable from a browser.
+ */
+export const STREAM_TICKET_PATHS: readonly string[] = [
+  '/api/events',
+  '/api/logs/stream',
+  '/api/sessions/:id/stream',
+];
+
+/**
+ * Matches an exact path, a `:name`-segmented pattern, or a `/**` suffix.
+ *
+ * Deliberately not a regex — a security list a reader cannot verify at a glance
+ * is not belt-and-braces.
+ */
+export function pathMatchesPattern(pattern: string, path: string): boolean {
+  if (pattern.endsWith('/**')) {
+    const prefix = pattern.slice(0, -3);
+    return path === prefix || path.startsWith(`${prefix}/`);
+  }
+  if (!pattern.includes(':')) return path === pattern;
+  const expected = pattern.split('/');
+  const actual = path.split('/');
+  if (expected.length !== actual.length) return false;
+  return expected.every(
+    (segment, index) => segment.startsWith(':') || segment === (actual[index] ?? ''),
+  );
+}
+
+/** True when a ticket may stand in for the bearer header on this request (§3.4). */
+export function isStreamTicketRequest(method: string, path: string): boolean {
+  if (method !== 'GET') return false;
+  return STREAM_TICKET_PATHS.some((pattern) => pathMatchesPattern(pattern, path));
+}
+
 /** Methods a backstop entry matches. `'*'` matches every method. */
 export type BackstopMethods = readonly string[];
 
@@ -159,11 +206,7 @@ export function isStaticShellRequest(method: string, path: string): boolean {
 }
 
 function patternMatches(pattern: string, path: string): boolean {
-  if (pattern.endsWith('/**')) {
-    const prefix = pattern.slice(0, -3);
-    return path === prefix || path.startsWith(`${prefix}/`);
-  }
-  return path === pattern;
+  return pathMatchesPattern(pattern, path);
 }
 
 function methodMatches(methods: BackstopMethods, method: string): boolean {

@@ -385,12 +385,23 @@ describe('M3 — the shared route table (§6.4) and remote’s own routes (§5)'
 
     expect(table.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
       'DELETE /api/remote/tokens/:id',
+      'GET /api/remote/agents',
       'GET /api/remote/status',
       'GET /api/remote/tokens',
       'POST /api/remote/restart',
+      'POST /api/remote/stream-ticket',
       'POST /api/remote/tokens',
+      'PUT /api/remote/agents/:id/access',
       'PUT /api/remote/enabled',
     ]);
+    // M7/M8's three: the ticket route and both grant routes are reachable
+    // remotely. The grant *write* is §3.2's one deliberate exception to the
+    // loosening principle, and it is declared here rather than assumed.
+    expect(table.find((route) => route.path === '/api/remote/stream-ticket')?.remote).toBe('allow');
+    expect(table.find((route) => route.path === '/api/remote/agents')?.remote).toBe('allow');
+    expect(table.find((route) => route.path === '/api/remote/agents/:id/access')?.remote).toBe(
+      'allow',
+    );
     expect(table.find((route) => route.path === '/api/remote/status')?.remote).toBe('allow');
     // §3.2's loosening principle, declared where the routes are defined: minting a
     // credential and restarting the transport are local-only; listing and revoking
@@ -670,12 +681,18 @@ describe('M3 — remote’s source never binds a socket itself', () => {
   const sources = [
     'index.ts',
     'listener.ts',
+    'proxy.ts',
     'tailscale.ts',
     'routes.ts',
+    'streamRoutes.ts',
     'tokenRoutes.ts',
     'middleware.ts',
     'policy.ts',
+    'gate.ts',
+    'grants.ts',
     'rateLimit.ts',
+    'streams.ts',
+    'tickets.ts',
     'tokens.ts',
     'ports.ts',
     'config.ts',
@@ -761,5 +778,175 @@ describe('M4/M6 — the real policy chain is wired into the mounted listener', (
 
     // One mount attempt, with three middlewares.
     expect(mounts).toEqual([{ middleware: 3 }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D5's proxy bind mode, through the real composition root
+// ---------------------------------------------------------------------------
+
+/** A machine whose only external IPv4 is a fixture LAN address nobody holds. */
+function lanDetect(address: string): NonNullable<NonNullable<BootOptions['remote']>['detect']> {
+  return {
+    locateCli: () => undefined,
+    networkInterfaces: () => ({
+      Loopback: [
+        {
+          address: '127.0.0.1',
+          netmask: '255.0.0.0',
+          family: 'IPv4',
+          mac: '00:00:00:00:00:00',
+          internal: true,
+          cidr: '127.0.0.1/8',
+        },
+      ],
+      Ethernet: [
+        {
+          address,
+          netmask: '255.255.255.0',
+          family: 'IPv4',
+          mac: '00:11:22:33:44:55',
+          internal: false,
+          cidr: `${address}/24`,
+        },
+      ],
+    }),
+  };
+}
+
+/**
+ * A fixture LAN address this machine certainly does not hold.
+ *
+ * The prover is fed an interface list that *claims* it, so the module reaches the
+ * real `mount(...).listen()` and fails there — which is exactly the observation
+ * these tests want: proxy mode got as far as asking foundation to bind the
+ * declared address, and left no socket behind.
+ */
+const UNBINDABLE_LAN = '192.168.253.253';
+
+const proxyArgs = (bind: string, peers: readonly string[] = ['192.168.253.9']): string[] => [
+  '--set',
+  'remote.bind=proxy',
+  '--set',
+  `remote.proxy=${JSON.stringify({ bind, allowedPeers: peers })}`,
+];
+
+describe('D5 amendment — proxy mode through the real core', () => {
+  it('asks foundation to mount the declared LAN address with origin remote, and leaves no socket', async () => {
+    const mounts: { bind: string; port: number; origin: string; middleware: number }[] = [];
+    const booted = await bootHome({
+      argv: proxyArgs(UNBINDABLE_LAN),
+      remote: { detect: lanDetect(UNBINDABLE_LAN), timers: neverFires },
+      additionalModules: [
+        {
+          id: 'fixture-proxy-mount-spy',
+          dependsOn: ['http'],
+          init(ctx) {
+            const http = ctx.require<{
+              mount: (options: {
+                bind: string;
+                port: number;
+                origin: string;
+                middleware?: readonly unknown[];
+              }) => unknown;
+            }>('http');
+            const original = http?.mount.bind(http);
+            if (http !== undefined && original !== undefined) {
+              http.mount = (options) => {
+                mounts.push({
+                  bind: options.bind,
+                  port: options.port,
+                  origin: options.origin,
+                  middleware: options.middleware?.length ?? 0,
+                });
+                return original(options);
+              };
+            }
+            return {};
+          },
+        },
+      ],
+    });
+
+    // The one mount attempt is on the declared LAN address — never a wildcard,
+    // never the Tailscale range, never loopback — with the same three-middleware
+    // chain tailscale mode gets.
+    expect(mounts).toEqual([{ bind: UNBINDABLE_LAN, port: 7478, origin: 'remote', middleware: 3 }]);
+    // `listen()` failed (this host does not hold that address), so nothing is bound
+    // and nothing is claimed.
+    expect(nonLoopbackListeners()).toEqual([]);
+    expect(booted.bind.remote).toBeNull();
+    expect(booted.bind.nonLoopback).toEqual([]);
+
+    const status = await call<RemoteStatus>('GET', '/api/remote/status');
+    expect(status.body.mode).toBe('proxy');
+    expect(status.body.state).toBe('waiting');
+    expect(status.body.boundAddress).toBeNull();
+  });
+
+  it('stays in waiting, with no socket, when the machine does not hold the declared address', async () => {
+    const booted = await bootHome({
+      argv: proxyArgs('192.168.254.254'),
+      // The interface list holds a *different* LAN address, so the prover refuses.
+      remote: { detect: lanDetect(UNBINDABLE_LAN), timers: neverFires },
+    });
+
+    expect(nonLoopbackListeners()).toEqual([]);
+    expect(booted.bind.remote).toBeNull();
+
+    const status = await call<RemoteStatus>('GET', '/api/remote/status');
+    expect(status.body.mode).toBe('proxy');
+    expect(status.body.state).toBe('waiting');
+    expect(status.body.lastError).toContain('no interface on this machine holds');
+    expect(status.body.detectionSource).toBe('proxy');
+    // No Tailscale fact is invented, and none is looked for.
+    expect(status.body.magicDnsName).toBeNull();
+    expect(status.body.tailscaleState).toBe('not applicable (proxy mode)');
+
+    // And the health condition does not tell the owner to check Tailscale on a
+    // machine where Tailscale deliberately is not installed.
+    const health = await call<{ conditions: { id: string; message: string }[] }>(
+      'GET',
+      '/api/health',
+    );
+    const condition = health.body.conditions.find((entry) => entry.id === 'remote.unavailable');
+    expect(condition?.message).toContain('declared LAN address');
+    expect(condition?.message).not.toContain('Tailscale is');
+  });
+
+  it('spawns no subprocess and locates no Tailscale CLI in proxy mode', async () => {
+    let cliLookups = 0;
+    await bootHome({
+      argv: proxyArgs(UNBINDABLE_LAN),
+      remote: {
+        detect: {
+          ...lanDetect(UNBINDABLE_LAN),
+          locateCli: () => {
+            cliLookups += 1;
+            return undefined;
+          },
+        },
+        timers: neverFires,
+      },
+    });
+
+    // Detection is skipped entirely: the tailnet-membership gate lives on the
+    // proxy host in this mode, so there is nothing here to ask Tailscale about.
+    expect(cliLookups).toBe(0);
+  });
+
+  it('leaves the work edition exactly as closed as before — no listener of any mode', async () => {
+    // The proxy block is present in configuration and the edition still refuses to
+    // load the module at all, which is D6 unchanged by the amendment.
+    const booted = await bootCore({ argv: proxyArgs(UNBINDABLE_LAN) });
+
+    expect(booted.config.edition).toBe('work');
+    expect(booted.config.remote.bind).toBe('proxy');
+    expect(booted.config.modules.remote.enabled).toBe(false);
+    expect(booted.runtime.order).not.toContain(REMOTE_MODULE_ID);
+    expect(booted.runtime.registry.require(REMOTE_SERVICE)).toBeUndefined();
+    expect(nonLoopbackListeners()).toEqual([]);
+    expect(booted.bind.nonLoopback).toEqual([]);
+    expect((await call('GET', '/api/remote/status')).status).toBe(404);
   });
 });

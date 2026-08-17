@@ -77,6 +77,10 @@ describe('M1 — the namespace is remote-owned and complete (§11)', () => {
       bind: 'tailscale',
       port: 7478,
       hostnameHint: null,
+      // D5's 2026-08-17 amendment: proxy mode's own block, `null` in the shipped
+      // default because the shipped mode is `"tailscale"` (`proxy.test.ts` owns the
+      // cross-key rule).
+      proxy: null,
       // Remote's namespace extension.
       detect: { cli: null, pollMs: 30_000, retryMaxMs: 120_000 },
       token: { ttlDays: 90, maxActive: 10 },

@@ -11,6 +11,7 @@
   },
   "remote": {
     "bind": "tailscale",
+    "proxy": null,
     "port": 7478,
     "hostnameHint": null,
     "detect": {

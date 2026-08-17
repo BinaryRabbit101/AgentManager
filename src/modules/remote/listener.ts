@@ -32,6 +32,16 @@
  *    reaches `down` and stops, because "endless retry against a permanently
  *    occupied port is log spam pretending to be resilience" (§2.3).
  *
+ * ## One state machine, both of D5's bind modes
+ *
+ * D5 as amended (2026-08-17) has two modes, and this file runs **one** traversal
+ * for both: the prover is injected ({@link AddressProver} — `tailscale.ts` in
+ * tailscale mode, `proxy.ts` in proxy mode) and produces the same `Detection`, so
+ * proxy mode inherits the two independent proofs, the fail-closed poll and the
+ * `down` ceiling rather than getting a shorter route to `listen()`. The only two
+ * facts {@link RemoteListenerDeps.mode} changes are which address literals
+ * {@link assertBindable} accepts, and the `source` string on the published claim.
+ *
  * ## Nothing here is time-dependent
  *
  * Timers and jitter are injected ({@link RemoteTimers}, `random`), and every
@@ -46,8 +56,10 @@ import type { BoundAddress } from '../../lifecycle/bind.js';
 import type { Middleware } from '../../http/types.js';
 import type { Clock } from '../../storage/index.js';
 
+import { REMOTE_BIND_LITERAL, REMOTE_BIND_PROXY, type RemoteBindMode } from './config.js';
 import type { HttpListener, ListenerOptions } from './ports.js';
-import { CGNAT_RANGE, isCgnatIPv4, type Detection, type TailscaleDetector } from './tailscale.js';
+import type { AddressProver } from './proxy.js';
+import { CGNAT_RANGE, isCgnatIPv4, type Detection, type DetectionSource } from './tailscale.js';
 
 /** §2.3's states, plus `stopped` for a module that has been shut down. */
 export type RemoteListenerState = 'waiting' | 'binding' | 'listening' | 'down' | 'stopped';
@@ -84,7 +96,29 @@ export const realTimers: RemoteTimers = {
 };
 
 export interface RemoteListenerDeps {
-  readonly detector: TailscaleDetector;
+  /**
+   * Proves the address, in whichever of D5's two modes this install uses.
+   *
+   * Typed as the mode-neutral {@link AddressProver} — `TailscaleDetector`
+   * satisfies it structurally — so this file runs one state machine for both
+   * modes rather than two, and proxy mode inherits the two independent
+   * detections, the fail-closed poll and the `down` ceiling unchanged.
+   */
+  readonly detector: AddressProver;
+  /**
+   * `remote.bind`. The **only** thing this file branches on, and it branches on
+   * exactly two facts: which address literals {@link assertBindable} will accept,
+   * and what `source` the published claim carries.
+   */
+  readonly mode?: RemoteBindMode;
+  /**
+   * In proxy mode, `remote.proxy.bind` — the one address the owner declared.
+   *
+   * Compared against what the prover returned immediately before `listen()`, so
+   * a prover that answered something else (a subverted config path, a harness, a
+   * future refactor) is refused at the point of no return rather than trusted.
+   */
+  readonly expectedAddress?: string;
   /** Foundation's `HttpService.mount` — the same route table, a second socket. */
   readonly mount: (options: ListenerOptions) => HttpListener;
   readonly port: number;
@@ -119,7 +153,9 @@ export interface RemoteStatus {
   readonly lastError: string | null;
   /** Bind failures still inside §2.3's ten-minute window. */
   readonly recentBindFailures: number;
-  readonly detectionSource: 'cli' | 'interface' | null;
+  readonly detectionSource: DetectionSource | null;
+  /** `remote.bind` — which of D5's two modes this listener is running. */
+  readonly mode: RemoteBindMode;
 }
 
 export interface RemoteListener {
@@ -142,29 +178,69 @@ export interface RemoteListener {
   poll(): Promise<void>;
 }
 
+/** What {@link assertBindable} is checking against. */
+export interface BindableOptions {
+  /** Defaults to `tailscale` — the mode that existed before D5's amendment. */
+  readonly mode?: RemoteBindMode;
+  /** Proxy mode only: `remote.proxy.bind`, the address the owner declared. */
+  readonly expected?: string;
+}
+
 /**
  * The last gate before `listen()`.
  *
- * Every address reaching this function has already passed `validateCandidates`,
+ * Every address reaching this function has already been proven — by
+ * `validateCandidates` in tailscale mode, by `validateProxyBind` in proxy mode —
  * so in a correct build it always succeeds. It exists for the build that is not
- * correct: a detector — or a future refactor, or a test harness — that hands back
- * `0.0.0.0`, `::`, `127.0.0.1` or a LAN address must be refused *here*, at the
- * point of no return, rather than trusted because something upstream promised.
+ * correct: a prover — or a future refactor, or a test harness — that hands back
+ * `0.0.0.0`, `::`, `127.0.0.1`, or an address other than the one the owner
+ * declared, must be refused *here*, at the point of no return, rather than
+ * trusted because something upstream promised.
+ *
+ * The three refusals that hold in **both** modes (wildcard, loopback, IPv6) are
+ * the ones that are about exposure rather than about which network the address
+ * belongs to. What differs is the fourth:
+ *
+ * - **tailscale** — the address must be inside `100.64.0.0/10`, so a LAN address
+ *   can never be bound.
+ * - **proxy** — the address must be exactly `remote.proxy.bind`. A LAN address is
+ *   the point of this mode, so the range check is replaced by an *identity* check
+ *   against the declared one: the owner named one interface, and this is the
+ *   second independent confirmation that it is the interface being bound.
  *
  * @returns the reason to refuse, or `undefined` when the address may be bound.
  */
-export function assertBindable(address: string): string | undefined {
+export function assertBindable(address: string, options: BindableOptions = {}): string | undefined {
+  const mode = options.mode ?? REMOTE_BIND_LITERAL;
   const value = address.trim().toLowerCase();
   if (value.length === 0) return 'the detected address is empty';
   if (value === '0.0.0.0' || value === '::' || value === '*') {
     return `"${address}" is a wildcard address and would expose every interface this machine has`;
   }
   if (value === 'localhost' || value.startsWith('127.') || value === '::1') {
-    return `"${address}" is a loopback address; the remote listener exists to be reachable over the tailnet`;
+    return `"${address}" is a loopback address; the remote listener exists to be reachable from another device`;
   }
   if (value.includes(':')) {
     return `"${address}" is IPv6; v1 binds IPv4 only (remote DESIGN §2.2)`;
   }
+
+  if (mode === REMOTE_BIND_PROXY) {
+    const expected = options.expected?.trim().toLowerCase();
+    if (expected === undefined || expected.length === 0) {
+      return (
+        'proxy mode has no declared remote.proxy.bind to compare against, so nothing can be ' +
+        'confirmed as the interface the owner named'
+      );
+    }
+    if (value !== expected) {
+      return (
+        `"${address}" is not the address remote.proxy.bind declares ("${options.expected ?? ''}"), ` +
+        'and proxy mode binds only the one interface the owner named'
+      );
+    }
+    return undefined;
+  }
+
   if (!isCgnatIPv4(value)) {
     return `"${address}" is outside ${CGNAT_RANGE}, so it is not a Tailscale node address`;
   }
@@ -174,13 +250,21 @@ export function assertBindable(address: string): string | undefined {
 export function createRemoteListener(deps: RemoteListenerDeps): RemoteListener {
   const timers = deps.timers ?? realTimers;
   const random = deps.random ?? Math.random;
+  const mode = deps.mode ?? REMOTE_BIND_LITERAL;
+  const bindableOptions: BindableOptions = {
+    mode,
+    ...(deps.expectedAddress === undefined ? {} : { expected: deps.expectedAddress }),
+  };
+  /** What the log lines and `lastError` call the address, per mode. */
+  const addressNoun =
+    mode === REMOTE_BIND_PROXY ? 'declared proxy-facing LAN address' : 'Tailscale address';
 
   let state: RemoteListenerState = 'waiting';
   let listener: HttpListener | undefined;
   let bound: BoundAddress | null = null;
   let magicDnsName: string | null = null;
   let tailscaleState: string | null = null;
-  let detectionSource: 'cli' | 'interface' | null = null;
+  let detectionSource: DetectionSource | null = null;
   let lastError: string | null = null;
   let backoffMs = INITIAL_BACKOFF_MS;
   let bindFailures: number[] = [];
@@ -291,11 +375,14 @@ export function createRemoteListener(deps: RemoteListenerDeps): RemoteListener {
 
     // §9.1 #2: "remote independently re-validates the same address through §2.1
     // immediately before `listen()`". A second full detection, not a cached one —
-    // the whole value is that it can disagree with the first.
+    // the whole value is that it can disagree with the first. Proxy mode inherits
+    // this unchanged: `proxy.ts`'s `detect()` re-enumerates the machine's
+    // interfaces on every call, so a declared LAN address that went away between
+    // the decision and the bind is caught here rather than bound.
     const confirmed = await deps.detector.detect();
     if (!confirmed.ok) {
       toWaiting(
-        `the Tailscale address stopped validating between detection and bind: ${confirmed.message}`,
+        `the ${addressNoun} stopped validating between detection and bind: ${confirmed.message}`,
         confirmed,
       );
       deps.logger.warn({ reason: confirmed.reason }, lastError ?? confirmed.message);
@@ -304,7 +391,7 @@ export function createRemoteListener(deps: RemoteListenerDeps): RemoteListener {
     }
     if (confirmed.address !== first.address) {
       toWaiting(
-        `the Tailscale address changed between detection and bind (${first.address} → ` +
+        `the ${addressNoun} changed between detection and bind (${first.address} → ` +
           `${confirmed.address}); refusing to bind either until one validates twice`,
         confirmed,
       );
@@ -313,14 +400,17 @@ export function createRemoteListener(deps: RemoteListenerDeps): RemoteListener {
       return;
     }
 
-    const refusal = assertBindable(confirmed.address);
+    const refusal = assertBindable(confirmed.address, bindableOptions);
     if (refusal !== undefined) {
       toWaiting(
-        `refusing to bind the detected address: ${refusal}. Only a validated Tailscale address ` +
-          'may be bound (architecture D5, remote DESIGN §2.1).',
+        `refusing to bind the detected address: ${refusal}. ${
+          mode === REMOTE_BIND_PROXY
+            ? 'Only the LAN interface remote.proxy.bind declares may be bound'
+            : 'Only a validated Tailscale address may be bound'
+        } (architecture D5, remote DESIGN §2.1).`,
         confirmed,
       );
-      deps.logger.error({ address: confirmed.address }, lastError ?? refusal);
+      deps.logger.error({ address: confirmed.address, mode }, lastError ?? refusal);
       scheduleRetry();
       return;
     }
@@ -350,10 +440,13 @@ export function createRemoteListener(deps: RemoteListenerDeps): RemoteListener {
 
     // The bound port, not the requested one: a test may ask for an ephemeral
     // port, and the claim foundation compares against the OS must be the truth.
+    // `source` names *how* the address was decided (foundation §6.3 carries it
+    // into the fatal message), so proxy mode publishes the same claim shape with
+    // `source: 'proxy'` — one claim contract, two modes.
     bound = {
       address: address.address,
       port: address.port,
-      source: `tailscale-${confirmed.source}`,
+      source: confirmed.source === 'proxy' ? 'proxy' : `tailscale-${confirmed.source}`,
     };
     state = 'listening';
     lastError = null;
@@ -363,11 +456,14 @@ export function createRemoteListener(deps: RemoteListenerDeps): RemoteListener {
         address: bound.address,
         port: bound.port,
         source: bound.source,
+        mode,
         magicDnsName,
         tailscaleState,
         routes: mounted.routes.length,
       },
-      `remote listener bound on the Tailscale interface at ${bound.address}:${String(bound.port)}`,
+      `remote listener bound on the ${
+        mode === REMOTE_BIND_PROXY ? 'declared proxy-facing LAN interface' : 'Tailscale interface'
+      } at ${bound.address}:${String(bound.port)}`,
     );
     scheduleWatch();
   };
@@ -383,7 +479,7 @@ export function createRemoteListener(deps: RemoteListenerDeps): RemoteListener {
 
     const detection = await deps.detector.detect();
     if (!detection.ok) {
-      await closeSocket(`Tailscale address is gone: ${detection.reason}`);
+      await closeSocket(`${addressNoun} is gone: ${detection.reason}`);
       toWaiting(detection.message, detection);
       deps.logger.warn(
         { reason: detection.reason, backendState: detection.backendState },
@@ -396,11 +492,11 @@ export function createRemoteListener(deps: RemoteListenerDeps): RemoteListener {
     const current = bound?.address;
     if (detection.address !== current) {
       // §2.3: close, re-validate the new candidate from scratch, rebind.
-      await closeSocket(`Tailscale address changed (${String(current)} → ${detection.address})`);
-      toWaiting(`the Tailscale address changed to ${detection.address}; rebinding`);
+      await closeSocket(`${addressNoun} changed (${String(current)} → ${detection.address})`);
+      toWaiting(`the ${addressNoun} changed to ${detection.address}; rebinding`);
       deps.logger.warn(
         { previous: current, next: detection.address },
-        'the Tailscale address changed; the socket was closed and the new address will be ' +
+        'the bound address changed; the socket was closed and the new address will be ' +
           're-validated from scratch before any rebind',
       );
       await cycle();
@@ -450,6 +546,7 @@ export function createRemoteListener(deps: RemoteListenerDeps): RemoteListener {
       recentBindFailures: bindFailures.filter((stamp) => now() - stamp < BIND_FAILURE_WINDOW_MS)
         .length,
       detectionSource,
+      mode,
     }),
 
     poll,

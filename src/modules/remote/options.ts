@@ -17,8 +17,12 @@
  */
 import type { Logger } from 'pino';
 
+import type { GrantStore } from './grants.js';
 import type { RemoteListener, RemoteTimers } from './listener.js';
-import type { TailscaleDetector, TailscaleDetectorDeps } from './tailscale.js';
+import type { AddressProver } from './proxy.js';
+import type { StreamRegistry } from './streams.js';
+import type { TailscaleDetectorDeps } from './tailscale.js';
+import type { TicketStore } from './tickets.js';
 import type { RemoteTokenService } from './tokens.js';
 
 /** What only the composition root can supply. */
@@ -36,7 +40,7 @@ export interface RemoteModuleDeps {
 
 /** What the module built, handed to {@link RemoteModuleOptions.onReady}. */
 export interface RemoteInternals {
-  readonly detector: TailscaleDetector;
+  readonly detector: AddressProver;
   readonly listener: RemoteListener;
   /**
    * §4's credential store.
@@ -46,14 +50,29 @@ export interface RemoteInternals {
    * route it is also trying to test.
    */
   readonly tokens: RemoteTokenService;
+  /** §3.4's ticket store, so a test can assert single use from both sides. */
+  readonly tickets: TicketStore;
+  /** §4.5's connection map, so a leak is a number a test can read. */
+  readonly streams: StreamRegistry;
+  /** §6.1's grant rows, so a test drives the real store rather than settings. */
+  readonly grants: GrantStore;
+  /**
+   * Runs one heartbeat tick now instead of on its timer; returns how many
+   * half-open connections it reaped. The same seam `listener.poll()` is.
+   */
+  heartbeat(): number;
+  /** Runs §6.3's sweep now; returns the agent ids whose grants expired. */
+  sweepGrants(): readonly string[];
 }
 
 export interface RemoteModuleOptions {
   /**
-   * Replaces the detector wholesale. Tests that assert on the state machine
-   * inject one of these; tests that assert on detection itself use `detect`.
+   * Replaces the address prover wholesale. Tests that assert on the state machine
+   * inject one of these; tests that assert on proving itself use `detect`.
    */
-  readonly detector?: TailscaleDetector;
+  readonly detector?: AddressProver;
+  /** Pins a stream ticket's bytes, so a test can assert on the exact value. */
+  readonly ticketBytes?: (size: number) => Buffer;
   /** Injected into the default detector — the CLI probe and interface enumeration. */
   readonly detect?: TailscaleDetectorDeps;
   /**

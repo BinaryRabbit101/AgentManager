@@ -144,6 +144,16 @@ export interface RemoteTokenService {
   revoke(id: string): boolean;
   get(id: string): TokenView | undefined;
   /**
+   * The raw row for a token id, for the one caller that needs the record rather
+   * than the view: §3.4's ticket redemption, which has a `tokenId` in hand and
+   * must re-check that the credential behind it is still live before letting a
+   * stream inherit its identity.
+   *
+   * It is a *read of an id*, never of a credential: there is no path from this
+   * row back to a usable token, because only `sha256(token)` is stored.
+   */
+  record(id: string): RemoteTokenRecord | undefined;
+  /**
    * The whole of authentication (§4.6).
    *
    * @param presented what the client sent, or `undefined` when it sent nothing.
@@ -304,6 +314,8 @@ export function createRemoteTokenService(deps: RemoteTokenServiceDeps): RemoteTo
       const record = deps.tokens.get(id);
       return record === undefined ? undefined : toView(record, now());
     },
+
+    record: (id) => deps.tokens.get(id),
 
     verify: (presented) => {
       if (presented === undefined || presented.length === 0) return { ok: false };

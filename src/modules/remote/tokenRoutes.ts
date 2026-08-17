@@ -42,9 +42,11 @@ import type { Logger } from 'pino';
 import type { SettingsRepository } from '../../storage/index.js';
 import type { RouteDefinition } from '../types.js';
 
+import type { GrantStore } from './grants.js';
 import type { RemoteListener } from './listener.js';
 import { ROUTE_DENIED_CODE } from './policy.js';
 import { clientUrl } from './routes.js';
+import type { StreamRegistry } from './streams.js';
 import { RemoteTokenError, type MintRequest, type RemoteTokenService } from './tokens.js';
 
 export interface TokenRouteDeps {
@@ -53,6 +55,19 @@ export interface TokenRouteDeps {
   readonly settings: SettingsRepository;
   readonly hostnameHint: string | null;
   readonly logger: Logger;
+  /**
+   * §4.5's other half: "Revocation is effective immediately and **also**
+   * **terminates every live WS/SSE connection bound to that token**. […] without
+   * it, a revoked device keeps streaming session output indefinitely, which would
+   * make the revoke button a lie."
+   */
+  readonly streams?: StreamRegistry;
+  /**
+   * §4.5's last clause: "Revoking the **last** active token additionally clears
+   * every per-agent remote grant (§6.3) — no remote identity exists, so nothing
+   * should stay pre-authorized for one."
+   */
+  readonly grants?: GrantStore;
   /**
    * Called after the kill switch is written, with the new value.
    *
@@ -205,17 +220,37 @@ export function createTokenRoutes(deps: TokenRouteDeps): readonly RouteDefinitio
           return response.error(404, 'not_found', `No remote token with id ${id}.`);
         }
         const revoked = deps.tokens.revoke(id);
+        // §4.5, in the order the design states it. The streams go first: the row
+        // is already revoked, so a connection closed here cannot be re-opened by
+        // the same credential.
+        const closedStreams = deps.streams?.closeToken(id) ?? 0;
+        // "Revoking the last active token additionally clears every per-agent
+        // remote grant — no remote identity exists, so nothing should stay
+        // pre-authorized for one."
+        const clearedGrants =
+          revoked && deps.tokens.activeCount() === 0
+            ? (deps.grants?.revokeAll('last_token_revoked') ?? [])
+            : [];
         deps.logger.warn(
-          { tokenId: id, prefix: existing.prefix, label: existing.label, origin: request.origin },
+          {
+            tokenId: id,
+            prefix: existing.prefix,
+            label: existing.label,
+            origin: request.origin,
+            closedStreams,
+            clearedGrants: clearedGrants.length,
+          },
           revoked
             ? 'revoked a remote access token'
             : 'a remote access token was already revoked; nothing changed',
         );
-        // M7 adds the other half of §4.5 — terminating that token's live WS/SSE
-        // connections — and M8 the clearing of per-agent grants when the last
-        // active token goes. Neither exists yet, and neither weakens this: the
-        // token stops authenticating on the very next request.
-        return response.json({ id, revoked, token: deps.tokens.get(id) });
+        return response.json({
+          id,
+          revoked,
+          token: deps.tokens.get(id),
+          closedStreams,
+          clearedGrants,
+        });
       },
     },
 

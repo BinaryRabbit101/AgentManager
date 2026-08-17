@@ -89,8 +89,16 @@ export function isTailnetUla(address: string): boolean {
 // The result type
 // ---------------------------------------------------------------------------
 
-/** Which of §2.2's two paths produced the answer. */
-export type DetectionSource = 'cli' | 'interface';
+/**
+ * Which path produced the answer.
+ *
+ * `cli` and `interface` are §2.2's two Tailscale paths. `proxy` is D5's amended
+ * mode, proven in `proxy.ts` — it lives in this union rather than in a parallel
+ * type because `listener.ts` runs **one** state machine for both modes, and a
+ * second result type would be the first step towards a second, more trusting
+ * route to `listen()`.
+ */
+export type DetectionSource = 'cli' | 'interface' | 'proxy';
 
 /** A proven address. Only this shape may reach `server.listen()`. */
 export interface TailscaleAddress {
@@ -119,7 +127,13 @@ export type RefusalReason =
   /** Two candidates survived validation. Never a coin toss (§2.1 rule 3). */
   | 'ambiguous-interface'
   /** A tailnet address exists, but only as IPv6. Out of scope for v1 (§2.2). */
-  | 'ipv6-only';
+  | 'ipv6-only'
+  /** Proxy mode: `remote.proxy.bind` is a shape that can never be bound. */
+  | 'proxy-address-invalid'
+  /** Proxy mode: no interface on this machine holds the declared address. */
+  | 'proxy-address-absent'
+  /** Proxy mode: the declared address is only on an `internal` adapter. */
+  | 'proxy-address-internal';
 
 export interface TailscaleRefusal {
   readonly ok: false;
