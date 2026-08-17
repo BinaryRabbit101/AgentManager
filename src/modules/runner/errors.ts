@@ -89,6 +89,44 @@ export class DuplicateSessionInputError extends RunnerError {
   }
 }
 
+/**
+ * SDK-NOTES **C1**'s assertion firing: a reconciliation delta came out negative.
+ *
+ * `result.modelUsage` and `result.total_cost_usd` are cumulative **per `query()`
+ * call** and restart at zero on a resume, so runner meters against a per-run
+ * baseline (§7.1 as amended). A negative delta can therefore mean only one
+ * thing: the run boundary was missed and the baseline belongs to a different
+ * run. Clamping it to zero would look like it worked and would quietly shrink
+ * `session_usage` — and with it `assignments.tokens_used`, which the budget halt
+ * reads — so it throws instead. A parked-and-resumed session earning its budget
+ * back is the bug this refuses to hide.
+ */
+export class NegativeUsageDeltaError extends RunnerError {
+  constructor(
+    sessionId: string,
+    runId: string,
+    model: string,
+    tokens: { input: number; output: number; cacheRead: number; cacheCreation: number },
+    costDelta?: number,
+  ) {
+    super(
+      'negative_usage_delta',
+      `Usage for session "${sessionId}" went backwards for "${model}" within run "${runId}". ` +
+        'modelUsage and total_cost_usd are cumulative per query() call and reset on resume ' +
+        '(SDK-NOTES C1), so a negative delta means the per-run baseline was taken from the ' +
+        'wrong run rather than that tokens were refunded.',
+      500,
+      {
+        sessionId,
+        runId,
+        model,
+        delta: { ...tokens },
+        ...(costDelta === undefined ? {} : { costDelta }),
+      },
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The launch chain (§3.1, §3.2)
 // ---------------------------------------------------------------------------

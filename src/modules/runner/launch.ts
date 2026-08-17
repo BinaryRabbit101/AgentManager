@@ -48,7 +48,9 @@ import type {
   ProjectsRepository,
   SessionOrigin,
   SessionStatus,
+  SettingsRepository,
 } from '../../storage/index.js';
+import { newId } from '../../storage/index.js';
 import type { SecretResolver } from '../../secrets/index.js';
 
 import { resolveAgentEnv } from './agentEnv.js';
@@ -71,6 +73,7 @@ import {
   ProjectNotLaunchableError,
   ProviderUnavailableError,
   QueueFullError,
+  RunnerError,
   SessionExecutionError,
   SessionStartTimeoutError,
   WorkspaceUnavailableError,
@@ -78,17 +81,23 @@ import {
 } from './errors.js';
 import { createInputQueue } from './inputQueue.js';
 import type { LeaseBook } from './leases.js';
-import { outcomeForResult } from './messages.js';
+import { classifyRateLimit, outcomeForResult, readRateLimitEvent } from './messages.js';
 import { assertOptionsWhitelisted } from './optionGuard.js';
 import type { RunnerSessionRecord, SessionPriority, SessionRepository } from './repository.js';
 import { runReaderLoop } from './readerLoop.js';
+import {
+  bandRank,
+  clampCapacity,
+  createScheduler,
+  type QueueEntry,
+  type QueueState,
+  type Scheduler,
+} from './scheduler.js';
 import type { QueryFn } from './sdk.js';
 import { TERMINAL_STATUSES, type ExitReason } from './status.js';
 import { composeSummary } from './summary.js';
 import type { SessionTranscript, TranscriptFactory } from './transcript.js';
-
-/** M3's cap. M5 replaces this with the weighted, overridable one of §6.1. */
-const M3_MAX_CONCURRENT = 1;
+import { createRunMeter, type UsageRepository } from './usage.js';
 
 /** How much of the child's stderr is kept for a failure message (§3.2, §9.2). */
 const STDERR_TAIL_BYTES = 4096;
@@ -122,12 +131,16 @@ export type LogSink = (
 
 export interface LaunchChainDeps {
   readonly sessions: SessionRepository;
+  /** M4's meter: `usage_events`, `session_usage`, `assignments.tokens_used` (§7). */
+  readonly usage: UsageRepository;
   readonly transcripts: TranscriptFactory;
   /** Foundation's repositories — the only door to another element's tables (§1.3). */
   readonly store: {
     readonly assignments: Pick<AssignmentsRepository, 'get' | 'listMembers'>;
     readonly agents: Pick<AgentsRepository, 'get'>;
     readonly projects: Pick<ProjectsRepository, 'get'>;
+    /** The runtime capacity override lives here, not in config (§6.1). */
+    readonly settings: Pick<SettingsRepository, 'get' | 'set'>;
   };
   /** `ctx.require('roster')` — fatal when absent (§11.3). */
   readonly roster: () => RosterProvider | undefined;
@@ -176,6 +189,12 @@ export interface LaunchChain {
   onWorkspaceReleased(): void;
   /** Live sessions, for the health report and the queue panel. */
   activeCount(): number;
+  /** §11.2's `queueState()`. */
+  queueState(): QueueState;
+  /** The queue panel's rows, running first (§11.1's `GET /api/runner/queue`). */
+  queueEntries(): readonly QueueEntry[];
+  /** `PUT /api/runner/capacity` (§6.1). Returns the clamped value stored. */
+  setCapacity(maxConcurrent: number): number;
   /** Stops admitting. M9 owns the rest of shutdown. */
   stopAdmitting(): void;
 }
@@ -184,10 +203,7 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
   const { sessions, transcripts, store, leases, config } = deps;
   const log: LogSink = deps.log ?? ((): void => {});
 
-  const active = new Set<string>();
   const settled = new Map<string, Array<(record: RunnerSessionRecord) => void>>();
-  let admitting = true;
-  let pumping = false;
 
   // -------------------------------------------------------------------------
   // Events (§10) — the three lifecycle events the launch chain owns. The full
@@ -254,49 +270,50 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
   }
 
   // -------------------------------------------------------------------------
-  // Step 2 — the pump (M5 replaces it with the real scheduler)
+  // Step 2 — the scheduler (§6, M5)
   // -------------------------------------------------------------------------
 
-  function nextAdmissible(): RunnerSessionRecord | undefined {
-    const queued = sessions
-      .list({ status: 'queued' })
-      .filter((session) => session.blockedReason === null && !active.has(session.id));
-    // §6.2: two priority bands, FIFO by `queued_at` within each.
-    const ordered = [...queued].sort((left, right) => {
-      const band = bandRank(left.priority) - bandRank(right.priority);
-      if (band !== 0) return band;
-      return (left.queuedAt ?? '').localeCompare(right.queuedAt ?? '');
-    });
-    return ordered[0];
-  }
+  const scheduler: Scheduler = createScheduler({
+    sessions,
+    config,
+    settings: store.settings,
+    clock: deps.clock,
+    // `runSession` is total — every failure it can name becomes a status. The
+    // scheduler's own catch is the guard for the ones it cannot.
+    run: (sessionId) => runSession(sessionId),
+    onSettled: notifySettled,
+    onBlockedExpired: (sessionId, reason) => {
+      // §3.2 row 4: "failed after runner.workspaceWaitMinutes". No transcript
+      // exists — the file opens at step 8, after the lease — so the reason goes
+      // on the row and into `session.ended`, which is where the UI reads it.
+      failQueued(
+        sessionId,
+        'workspace_unavailable',
+        `No workspace became available within ${String(config.workspaceWaitMinutes)} minutes: ${reason}`,
+      );
+    },
+    onChanged: (state) => {
+      // §10: `runner.queue.changed`, not persisted — it is a live panel, and its
+      // durable record is the session rows it is computed from.
+      deps.bus?.emit({ type: 'runner.queue.changed', ids: {}, payload: state, persist: false });
+    },
+    onRateLimited: (payload) => {
+      deps.bus?.emit({ type: 'runner.ratelimited', ids: {}, payload, persist: true });
+    },
+    log,
+  });
 
-  function pump(): void {
-    if (pumping) return;
-    pumping = true;
-    try {
-      while (admitting && active.size < M3_MAX_CONCURRENT) {
-        const next = nextAdmissible();
-        if (next === undefined) return;
-        active.add(next.id);
-        void runSession(next.id)
-          // `runSession` is total — every failure it can name becomes a status.
-          // This is the guard for the ones it cannot: a repository that refuses
-          // a transition must not surface as an unhandled rejection.
-          .catch((error: unknown) => {
-            log('error', 'a session ended in an unhandled failure', {
-              sessionId: next.id,
-              error: describe(error),
-            });
-          })
-          .finally(() => {
-            active.delete(next.id);
-            notifySettled(next.id);
-            pump();
-          });
-      }
-    } finally {
-      pumping = false;
-    }
+  /** A queued session that will never start, settled without a transcript. */
+  function failQueued(sessionId: string, exitReason: ExitReason, message: string): void {
+    const record = sessions.get(sessionId);
+    if (record === undefined || TERMINAL_STATUSES.has(record.status)) return;
+    finish(sessionId, undefined, 'failed', exitReason, {
+      prompt: sessions.input(sessionId)?.prompt ?? '',
+      lastAssistantText: null,
+      turns: 0,
+      message,
+    });
+    notifySettled(sessionId);
   }
 
   // -------------------------------------------------------------------------
@@ -338,10 +355,11 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
 
       if (isWorkspaceRefusal(acquired)) {
         if (acquired.retryable) {
-          // §3.2 row 4, retryable half: stays `queued`, consumes no slot, and is
-          // re-evaluated on `workspace.released`. The `workspaceWaitMinutes`
-          // deadline is M5's.
-          sessions.patch(sessionId, { blockedReason: acquired.reason });
+          // §3.2 row 4, retryable half: stays `queued`, consumes no slot, is
+          // re-evaluated on `workspace.released`, and fails once it has waited
+          // longer than `runner.workspaceWaitMinutes` — the deadline the
+          // scheduler keeps from the moment of this first refusal.
+          scheduler.block(sessionId, acquired.reason);
           log('info', 'session is waiting for a workspace', {
             sessionId,
             code: acquired.code,
@@ -469,6 +487,39 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       input.push(prompt);
       const sdkSession = deps.query({ prompt: input, options });
 
+      // --- metering (§7, M4) ------------------------------------------------
+      // One meter per `query()` call, because that is the only grain
+      // `modelUsage` and `total_cost_usd` actually have (SDK-NOTES C1). A
+      // pause/resume on this row gets a *new* run id and a fresh baseline.
+      const openTranscript = transcript;
+      const meter = createRunMeter({
+        usage: deps.usage,
+        sessionId,
+        assignmentId: session.assignmentId,
+        runId: newId(),
+        log,
+        onUsage: (metered) => {
+          emit(
+            'session.usage',
+            session,
+            {
+              seq: openTranscript.nextSeq(),
+              source: metered.source,
+              delta: {
+                input: metered.delta.input,
+                output: metered.delta.output,
+                cacheRead: metered.delta.cacheRead,
+                cacheCreation: metered.delta.cacheCreation,
+              },
+              model: metered.model,
+              sessionTotals: metered.totals ?? null,
+              assignmentTokensUsed: metered.assignmentTokensUsed ?? null,
+            },
+            false,
+          );
+        },
+      });
+
       // --- step 10: running, then the reader loop of §2.4 -------------------
       const outcome = await runReaderLoop({
         session: sdkSession,
@@ -476,7 +527,33 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         transcript,
         startTimeoutMs: config.startTimeoutMs,
         abort,
+        onMessage: (message) => {
+          // Live deltas, deduped by assistant `message.id` (§7.1). Metering is
+          // never allowed to end a session: a token count that cannot be written
+          // is a bug worth a loud log line, not a lost turn.
+          if (message.type === 'assistant') {
+            meterSafely(sessionId, () => meter.recordAssistantMessage(message));
+          }
+          const rateLimit = readRateLimitEvent(message);
+          if (rateLimit?.exhausted === true) {
+            scheduler.noteRateLimit({
+              source: 'rate_limit_event',
+              resetsAt: rateLimit.resetsAt,
+              hint: `The CLI reported ${rateLimit.rateLimitType ?? 'a plan window'} as exhausted.`,
+            });
+          }
+        },
+        onResult: (facts) => {
+          // §2.4 step 1, "record turn-level usage": the per-turn figure is
+          // `result.usage` (main loop, genuinely per-turn), and the authoritative
+          // correction is the per-run difference of `result.modelUsage` (C1).
+          meterSafely(sessionId, () => meter.recordResult(facts));
+          const source = classifyRateLimit(facts);
+          if (source !== undefined) scheduler.noteRateLimit({ source });
+        },
         onInit: (facts) => {
+          // §6.4: "reset by any successful session start".
+          scheduler.noteStarted();
           session = sessions.transition(sessionId, 'running', {
             sdkSessionId: facts.sdkSessionId,
             model: facts.model,
@@ -576,6 +653,21 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       // assignment is no longer open (§3.1's safety net).
       await leases.releaseSession(session.assignmentId, sessionId);
     }
+  }
+
+  /**
+   * §6.1's weight, read once at enqueue.
+   *
+   * Runner reads roster's declared default and copies it; it does not derive a
+   * weight from a model, a permission set, or anything else it can see. An agent
+   * roster cannot answer for — an unreachable provider, a definition without the
+   * field — weighs 1, because the alternative is refusing to queue a session
+   * over a scheduling hint.
+   */
+  function weightFor(agentId: string): number {
+    const declared = deps.roster()?.registry?.get(agentId)?.definition.defaults?.concurrencyWeight;
+    if (typeof declared !== 'number' || !Number.isFinite(declared)) return 1;
+    return clampCapacity(declared);
   }
 
   /** §3.1 step 6, and nothing else: runner supplies inputs, roster composes. */
@@ -698,6 +790,27 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     );
   }
 
+  /**
+   * Runs a metering write, and never lets it end a session.
+   *
+   * The write is transactional and its failures are real — SDK-NOTES C1's
+   * negative-delta assertion in particular — but a session that produced work
+   * and then died because its token counter could not be updated is strictly
+   * worse than one whose counter is stale and says so in `core.log`. The
+   * assertion is still loud; it is just not fatal to the agent's work.
+   */
+  function meterSafely(sessionId: string, write: () => unknown): void {
+    try {
+      write();
+    } catch (error) {
+      log('error', 'usage metering failed for a session', {
+        sessionId,
+        error: describe(error),
+        code: error instanceof RunnerError ? error.code : undefined,
+      });
+    }
+  }
+
   function requireProjects(): ProjectsProvider {
     const projects = deps.projects();
     if (projects === undefined) {
@@ -722,6 +835,10 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
           ...(request.role === undefined ? {} : { role: request.role }),
           ...(request.priority === undefined ? {} : { priority: request.priority }),
           ...(request.origin === undefined ? {} : { origin: request.origin }),
+          // §6.1: roster's `defaults.concurrencyWeight`, copied onto the row at
+          // enqueue so admission order is decidable from one read over
+          // `sessions` without reaching back into roster.
+          weight: weightFor(request.agentId),
           // §8.3: written at admission so a live session already has a readable
           // row, and again at the terminal transition.
           summary: composeSummary({ prompt: request.prompt, status: 'queued' }),
@@ -748,7 +865,7 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
           true,
         );
 
-        pump();
+        scheduler.evaluate();
         return { sessionId: record.id, status: record.status, queuePosition };
       });
     },
@@ -756,7 +873,7 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     awaitSettled(sessionId) {
       const record = sessions.require(sessionId);
       const isSettled =
-        !active.has(sessionId) &&
+        !scheduler.isActive(sessionId) &&
         (record.status !== 'queued' || record.blockedReason !== null) &&
         record.status !== 'running';
       if (isSettled) return Promise.resolve(record);
@@ -771,24 +888,18 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       await leases.releaseAssignment(assignmentId);
     },
 
-    onWorkspaceReleased() {
-      // Every blocked entry is eligible again; whether it is admitted is the
-      // pump's call, and whether it stays blocked is projects' answer next time.
-      for (const session of sessions.list({ status: 'queued' })) {
-        if (session.blockedReason !== null) sessions.patch(session.id, { blockedReason: null });
-      }
-      pump();
+    onWorkspaceReleased: () => {
+      scheduler.unblockAll();
     },
 
-    activeCount: () => active.size,
+    activeCount: () => scheduler.activeCount(),
+    queueState: () => scheduler.state(),
+    queueEntries: () => scheduler.entries(),
+    setCapacity: (maxConcurrent) => scheduler.setCapacity(maxConcurrent),
     stopAdmitting: () => {
-      admitting = false;
+      scheduler.stop();
     },
   };
-}
-
-function bandRank(priority: SessionPriority): number {
-  return priority === 'interactive' ? 0 : 1;
 }
 
 /** A message a human can act on — never a stack trace (§3.2). */

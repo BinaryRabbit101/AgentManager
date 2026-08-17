@@ -112,13 +112,15 @@ describe('module registration', () => {
   it('applies migrations/runner/ after foundation and records it under "runner"', async () => {
     const booted = await bootCore();
 
-    expect(booted.storage.setVersions[RUNNER_MODULE_ID]).toBe(1);
+    // Two migrations now: `0001_runner.sql` and M4's `0002_usage.sql`.
+    expect(booted.storage.setVersions[RUNNER_MODULE_ID]).toBe(2);
     const ledger = booted.storage.db
       .prepare<[], { module: string; version: number }>(
         'SELECT module, version FROM schema_migrations',
       )
       .all();
     expect(ledger).toContainEqual({ module: RUNNER_MODULE_ID, version: 1 });
+    expect(ledger).toContainEqual({ module: RUNNER_MODULE_ID, version: 2 });
 
     // The added columns exist, which is only possible if foundation's
     // `0001_init.sql` created `sessions` first.
@@ -153,13 +155,13 @@ describe('module registration', () => {
 
     const second = await bootCore();
     expect(second.storage.applied.some((entry) => entry.setId === RUNNER_MODULE_ID)).toBe(false);
-    expect(second.storage.setVersions[RUNNER_MODULE_ID]).toBe(1);
+    expect(second.storage.setVersions[RUNNER_MODULE_ID]).toBe(2);
     const rows = second.storage.db
       .prepare<[string], { n: number }>(
         'SELECT COUNT(*) AS n FROM schema_migrations WHERE module = ?',
       )
       .get(RUNNER_MODULE_ID);
-    expect(rows?.n).toBe(1);
+    expect(rows?.n).toBe(2);
   });
 
   it('reports healthy with no sessions present, and stops cleanly', async () => {
@@ -170,7 +172,9 @@ describe('module registration', () => {
     expect(runner).toMatchObject({ id: RUNNER_MODULE_ID, status: 'ok', critical: false });
     expect(runner?.detail).toMatchObject({
       sessions: { queued: 0, running: 0, paused: 0, done: 0 },
-      capacity: 1,
+      // The scheduler's own view (M5): the effective cap, which `ctx.config`
+      // cannot report because the `settings` override outranks it (§6.1).
+      queue: { running: 0, queued: 0, blocked: 0, capacity: 1, cooling: false },
     });
     expect(health.status).toBe('ok');
 

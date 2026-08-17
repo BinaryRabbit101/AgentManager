@@ -124,14 +124,20 @@ describe('the launch chain runs a session end to end (§3.1)', () => {
       });
       await harness.service.awaitSettled(started.sessionId);
 
-      const types = harness.events.map((event) => event.type);
+      // The scheduler's `runner.queue.changed` and the meter's `session.usage`
+      // interleave with the lifecycle events (M4, M5); both are session-less or
+      // unpersisted, and the three lifecycle events keep their order.
+      const types = harness.events
+        .map((event) => event.type)
+        .filter((type) => type.startsWith('session.') && type !== 'session.usage');
       expect(types).toEqual(['session.queued', 'session.started', 'session.ended']);
       for (const event of harness.events) {
+        if (!event.type.startsWith('session.')) continue;
         expect(event.ids.sessionId).toBe(started.sessionId);
         expect(event.ids.assignmentId).toBe(seed.assignmentId);
         expect(event.ids.projectId).toBe(seed.projectId);
         expect(event.ids.agentId).toBe(seed.agentId);
-        expect(event.persist).toBe(true);
+        expect(event.persist).toBe(event.type !== 'session.usage');
       }
     } finally {
       harness.close();

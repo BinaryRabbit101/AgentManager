@@ -1,6 +1,19 @@
 /**
- * `GET /api/sessions/:id/transcript` (runner DESIGN §11.1) — the only route M2
- * ships, and the peer of `RunnerService.getTranscriptTail`.
+ * Runner's HTTP surface as far as M2, M4 and M5 take it (runner DESIGN §11.1).
+ * The rest of §11.1's table — the control verbs, the event stream, the listing —
+ * arrives with M6, M9 and M10.
+ *
+ * ```
+ * GET /api/sessions/:id             record + usage + queue position   (M4/M5)
+ * GET /api/sessions/:id/transcript  ?from=&limit= | ?tail=            (M2)
+ * GET /api/runner/queue             the queue panel's state and rows  (M5)
+ * PUT /api/runner/capacity          { maxConcurrent }, 1..8, settings (M5)
+ * ```
+ *
+ * `GET /api/sessions/:id` is where §7.3's rule becomes visible: the estimate is
+ * called `costUsdEstimate` and nothing on the payload can be read as spend.
+ *
+ * ## `GET /api/sessions/:id/transcript` — the peer of `getTranscriptTail`
  *
  * ```
  * ?from=<byteOffset>&limit=<lines>   read forward, whole lines, plus `next`
@@ -22,7 +35,7 @@ import type { Logger } from 'pino';
 import type { HttpResult, RequestContext, ResponseTools } from '../../http/types.js';
 import type { RouteDefinition } from '../types.js';
 
-import { InvalidRequestError, RunnerError } from './errors.js';
+import { InvalidRequestError, RunnerError, SessionNotFoundError } from './errors.js';
 import type { RunnerService } from './service.js';
 
 export interface RunnerRoutesDeps {
@@ -77,12 +90,66 @@ export function createRunnerRoutes(deps: RunnerRoutesDeps): readonly RouteDefini
     });
   };
 
+  const session = async (req: RequestContext, res: ResponseTools): Promise<HttpResult> => {
+    const sessionId = req.params['id'] ?? '';
+    const detail = await service.getSessionDetail(sessionId);
+    if (detail === undefined) throw new SessionNotFoundError(sessionId);
+    return res.json({
+      session: detail.session,
+      // §7.3: "rendered as 'estimated model cost' and never as spend". The field
+      // name is the first line of that defence — a client cannot accidentally
+      // print `usage.costUsd` as a total because there is no such field.
+      usage: detail.usage,
+      queuePosition: detail.queuePosition,
+    });
+  };
+
+  const queue = (_req: RequestContext, res: ResponseTools): Promise<HttpResult> =>
+    Promise.resolve(res.json({ ...service.queueState(), entries: service.queueEntries() }));
+
+  const capacity = (req: RequestContext, res: ResponseTools): Promise<HttpResult> => {
+    const body = req.body;
+    const requested =
+      typeof body === 'object' && body !== null
+        ? (body as Record<string, unknown>)['maxConcurrent']
+        : undefined;
+    if (typeof requested !== 'number' || !Number.isFinite(requested)) {
+      throw new InvalidRequestError(
+        '"maxConcurrent" must be a number. It is clamped to 1..8 (§6.1) and stored in settings, ' +
+          'so it survives a restart without editing config.',
+        'maxConcurrent',
+      );
+    }
+    return Promise.resolve(res.json({ maxConcurrent: service.setCapacity(requested) }));
+  };
+
   return [
+    {
+      method: 'GET',
+      path: '/api/sessions/:id',
+      description: 'One session: the record, its usage rollup and its queue position (§11.1).',
+      handler: (req, res) => guard(() => session(req, res), res, logger),
+    },
     {
       method: 'GET',
       path: '/api/sessions/:id/transcript',
       description: 'Tail a session transcript by byte offset or from the end (§11.1).',
       handler: (req, res) => guard(() => transcript(req, res), res, logger),
+    },
+    {
+      method: 'GET',
+      path: '/api/runner/queue',
+      description: 'The scheduler: capacity, cool-down, and every queued or running session (§6).',
+      handler: (req, res) => guard(() => queue(req, res), res, logger),
+    },
+    {
+      // §15.3 leaves "a remote client may lower the cap but not raise it" to
+      // remote's own policy layer; runner's route is the same route on both
+      // listeners, per §11.1's "no route is runner-specific".
+      method: 'PUT',
+      path: '/api/runner/capacity',
+      description: 'Set the runtime concurrency cap (1..8), stored in settings (§6.1).',
+      handler: (req, res) => guard(() => capacity(req, res), res, logger),
     },
   ];
 }

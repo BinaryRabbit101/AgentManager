@@ -55,7 +55,10 @@ function sqlLines(source: string): string[] {
 }
 
 const FORBIDDEN_TABLES = ['agents', 'projects', 'assignments', 'questions'];
-const OWNED_TABLES = ['sessions', 'session_inputs'];
+// `usage_events` and `session_usage` join the list with M4: foundation ships
+// them, runner owns them (§1), and the metering statements live in `usage.ts`
+// for the same reason the `sessions` statements live in `repository.ts`.
+const OWNED_TABLES = ['sessions', 'session_inputs', 'usage_events', 'session_usage'];
 
 describe('SQL stays inside runner’s own tables (M3 acceptance)', () => {
   it('names only sessions and session_inputs on any SQL-carrying line', () => {

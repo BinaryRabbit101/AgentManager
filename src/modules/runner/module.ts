@@ -47,6 +47,7 @@ import { realQuery, type QueryFn } from './sdk.js';
 import { createRunnerService, type RunnerService } from './service.js';
 import { createTranscriptFactory, type TranscriptFactory } from './transcript.js';
 import { createTranscriptReader, type TranscriptReader } from './transcriptReader.js';
+import { createUsageRepository, type UsageRepository } from './usage.js';
 
 /** The module id: `dependsOn`, the service registry, and `migrations/runner/`. */
 export const RUNNER_MODULE_ID = 'runner';
@@ -57,6 +58,7 @@ export const RUNNER_SERVICE = 'runner';
 /** Everything the module builds, exposed for the tests that drive it directly. */
 export interface RunnerInternals {
   readonly sessions: SessionRepository;
+  readonly usage: UsageRepository;
   readonly transcripts: TranscriptFactory;
   readonly reader: TranscriptReader;
   readonly service: RunnerService;
@@ -91,6 +93,15 @@ export function createRunnerModule(
       const sessions = createSessionRepository({
         db: open.db,
         store: ctx.store,
+        clock: ctx.clock,
+      });
+
+      // M4's meter. `usage_events` and `session_usage` are runner's tables (§1);
+      // `assignments.tokens_used` is reached only through foundation's
+      // repository, inside the same transaction (§7.2).
+      const usage = createUsageRepository({
+        db: open.db,
+        assignments: ctx.store.assignments,
         clock: ctx.clock,
       });
 
@@ -130,11 +141,13 @@ export function createRunnerModule(
 
       const launch = createLaunchChain({
         sessions,
+        usage,
         transcripts,
         store: {
           assignments: ctx.store.assignments,
           agents: ctx.store.agents,
           projects: ctx.store.projects,
+          settings: ctx.store.settings,
         },
         roster: () => ctx.require<RosterProvider>('roster'),
         projects: () => ctx.require<ProjectsProvider>('projects'),
@@ -159,7 +172,7 @@ export function createRunnerModule(
         },
       });
 
-      const service = createRunnerService({ sessions, transcripts: reader, launch });
+      const service = createRunnerService({ sessions, usage, transcripts: reader, launch });
 
       // §15.1-5: orchestrator emits `assignment.closed`; runner releases the
       // workspace lease on it. §6.2: a session blocked on a retryable workspace
@@ -177,7 +190,7 @@ export function createRunnerModule(
 
       ctx.provide(RUNNER_SERVICE, service);
       ctx.registerRoutes(createRunnerRoutes({ service, logger: ctx.logger }));
-      options.onReady?.({ sessions, transcripts, reader, service, launch });
+      options.onReady?.({ sessions, usage, transcripts, reader, service, launch });
 
       ctx.logger.info(
         {
@@ -200,10 +213,9 @@ export function createRunnerModule(
             status: 'ok',
             detail: {
               sessions: counts,
-              running: launch.activeCount(),
-              // The two numbers a queue panel needs before the scheduler (M5)
-              // exists to report anything richer.
-              capacity: runner.maxConcurrent,
+              // The scheduler's own view (§6): the effective cap includes the
+              // `settings` override, which `ctx.config` cannot see.
+              queue: launch.queueState(),
               queueLimit: runner.queueLimit,
             },
           };

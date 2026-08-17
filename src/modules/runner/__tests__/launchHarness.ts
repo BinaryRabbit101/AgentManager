@@ -14,6 +14,10 @@
  */
 import { resolve } from 'node:path';
 
+import type { Logger } from 'pino';
+
+import { bytes, empty, error, json, text } from '../../../http/response.js';
+import type { HttpResult, RequestContext, ResponseTools } from '../../../http/types.js';
 import { Secret, type SecretResolver } from '../../../secrets/index.js';
 import type { AppEvent, EmitEvent } from '../../types.js';
 import { createAssignmentContextStub } from '../assignmentContext.js';
@@ -33,14 +37,28 @@ import { createLaunchChain, type LaunchChain, type LaunchChainDeps } from '../la
 import { createLeaseBook } from '../leases.js';
 import { createSessionRepository, type SessionRepository } from '../repository.js';
 import type { QueryFn } from '../sdk.js';
+import { createRunnerRoutes } from '../routes.js';
 import { createRunnerService, type RunnerService } from '../service.js';
 import { createTranscriptFactory, type TranscriptFactory } from '../transcript.js';
 import { createTranscriptReader } from '../transcriptReader.js';
+import { createUsageRepository, type UsageRepository } from '../usage.js';
 import { openTestStorage } from './helpers.js';
 import { successScript, scriptedQuery } from './fakeQuery.js';
 import type { Storage } from '../../../storage/index.js';
 
 export const FIXED_NOW = new Date('2026-08-16T10:00:00.000Z');
+
+/** The helpers the real server hands a handler, minus the `sse` no route opens. */
+const responseTools: ResponseTools = {
+  json,
+  text,
+  bytes,
+  empty,
+  error,
+  sse: () => {
+    throw new Error('no runner route opens an SSE stream before M10');
+  },
+};
 
 /** What the fake roster's `compileSession` returns, before per-test overrides. */
 export function fakeCompiledOptions(cwd: string): SdkOptions {
@@ -69,6 +87,8 @@ export interface FakeRosterOptions {
   /** `false` publishes a roster service with no compiler, as an early build would. */
   readonly withCompiler?: boolean;
   readonly knownAgents?: readonly string[];
+  /** roster's `defaults.concurrencyWeight` per agent, for §6.1's weighted cap. */
+  readonly weights?: Readonly<Record<string, number>>;
 }
 
 export interface FakeRoster extends RosterProvider {
@@ -90,10 +110,18 @@ export function fakeRoster(options: FakeRosterOptions = {}): FakeRoster {
     inputs,
     outputs,
     registry: {
-      get: (agentId) =>
-        known !== undefined && !known.includes(agentId)
-          ? undefined
-          : { definition: { id: agentId, name: agentId }, archivedAt: null },
+      get: (agentId) => {
+        if (known !== undefined && !known.includes(agentId)) return undefined;
+        const weight = options.weights?.[agentId];
+        return {
+          definition: {
+            id: agentId,
+            name: agentId,
+            ...(weight === undefined ? {} : { defaults: { concurrencyWeight: weight } }),
+          },
+          archivedAt: null,
+        };
+      },
     },
     ...(options.withCompiler === false
       ? {}
@@ -230,6 +258,7 @@ export interface RecordedLog {
 export interface LaunchHarness {
   readonly storage: Storage;
   readonly sessions: SessionRepository;
+  readonly usage: UsageRepository;
   readonly transcripts: TranscriptFactory;
   readonly service: RunnerService;
   readonly launch: LaunchChain;
@@ -244,6 +273,16 @@ export interface LaunchHarness {
     assignmentId: string;
     agentId: string;
   };
+  /**
+   * Calls one of runner's routes against the handler contract — no socket,
+   * because `RouteHandler` was defined so a handler is testable without one
+   * (foundation §6.4).
+   */
+  call(
+    method: string,
+    path: string,
+    options?: { body?: unknown; params?: Record<string, string>; query?: string },
+  ): Promise<{ status: number; body: Record<string, unknown> }>;
   /** Reads a transcript back as parsed lines. */
   transcriptLines(sessionId: string): Record<string, unknown>[];
   close(): void;
@@ -252,6 +291,8 @@ export interface LaunchHarness {
 export interface LaunchHarnessOptions {
   readonly dataRoot: string;
   readonly query?: QueryFn;
+  /** A meter that fails, for M4's "neither side applied" transaction test. */
+  readonly usage?: UsageRepository;
   readonly roster?: FakeRoster;
   readonly projects?: FakeProjects;
   readonly assignmentContext?: AssignmentContextProvider;
@@ -259,11 +300,13 @@ export interface LaunchHarnessOptions {
   readonly auth?: LaunchChainDeps['auth'];
   readonly config?: Partial<RunnerConfig>;
   readonly agentEnv?: Record<string, string | null>;
+  /** An advanceable clock, for the deadlines M5 measures in minutes. */
+  readonly clock?: () => Date;
 }
 
 export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness {
   const storage = openTestStorage(options.dataRoot);
-  const clock = (): Date => FIXED_NOW;
+  const clock = options.clock ?? ((): Date => FIXED_NOW);
   const config: RunnerConfig = {
     ...RUNNER_CONFIG_DEFAULTS,
     ...options.config,
@@ -271,6 +314,9 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
   };
 
   const sessions = createSessionRepository({ db: storage.db, store: storage.store, clock });
+  const usage =
+    options.usage ??
+    createUsageRepository({ db: storage.db, assignments: storage.store.assignments, clock });
   const transcripts = createTranscriptFactory({
     transcripts: storage.store.transcripts,
     sessions: storage.store.sessions,
@@ -296,11 +342,13 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
 
   const launch = createLaunchChain({
     sessions,
+    usage,
     transcripts,
     store: {
       assignments: storage.store.assignments,
       agents: storage.store.agents,
       projects: storage.store.projects,
+      settings: storage.store.settings,
     },
     roster: () => roster,
     projects: () => projects,
@@ -337,12 +385,17 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
     log: (level, message, detail) => logs.push({ level, message, detail: detail ?? {} }),
   });
 
-  const service = createRunnerService({ sessions, transcripts: reader, launch });
+  const service = createRunnerService({ sessions, usage, transcripts: reader, launch });
+  const routes = createRunnerRoutes({
+    service,
+    logger: { error: () => undefined, debug: () => undefined } as unknown as Logger,
+  });
 
   let seeded = 0;
   return {
     storage,
     sessions,
+    usage,
     transcripts,
     service,
     launch,
@@ -368,6 +421,26 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
         goal: 'a fixture assignment',
       });
       return { projectId: project.id, assignmentId: assignment.id, agentId };
+    },
+
+    async call(method, path, callOptions = {}) {
+      const route = routes.find((entry) => entry.method === method && entry.path === path);
+      if (route === undefined) throw new Error(`no route ${method} ${path}`);
+      const req = {
+        method,
+        path,
+        params: callOptions.params ?? {},
+        query: new URLSearchParams(callOptions.query ?? ''),
+        body: callOptions.body,
+        origin: 'local',
+        requestId: 'req-1',
+        logger: { debug: () => undefined },
+      } as unknown as RequestContext;
+      const result = (await route.handler(req, responseTools)) as HttpResult;
+      return {
+        status: result.status,
+        body: JSON.parse(result.body?.toString('utf8') ?? '{}') as Record<string, unknown>,
+      };
     },
 
     transcriptLines(sessionId) {

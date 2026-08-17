@@ -1,0 +1,37 @@
+-- 0002_usage.sql — the two `session_usage` columns runner DESIGN §7.3 and §3.5
+-- specify and foundation's `0001_init.sql` did not ship.
+--
+-- §3.5 pins the rollup as
+--
+--   session_usage(session_id PK, input_tokens, output_tokens, cache_read_tokens,
+--                 cache_creation_tokens, turns, cost_usd /* nullable, estimate
+--                 only */, updated_at)
+--
+-- and notes it is "specified by runner; shipped in foundation's 0001_init.sql".
+-- What foundation actually shipped is `total_tokens` + `events` in place of
+-- `turns` + `cost_usd` — a useful pair (a budget is checked against one number,
+-- and the event count is how a caller knows the rollup is not empty), but not
+-- the pair §7.3 needs. Rather than replace foundation's two columns, this
+-- migration adds the missing two beside them: all four are cheap, none is
+-- derivable from the others, and dropping a column out from under a
+-- foundation-shipped table would be runner reaching across the boundary §1
+-- draws.
+--
+-- `cost_usd` is **nullable on purpose** (§7.3): `result.total_cost_usd` is "a
+-- client-side computation from a price table bundled into the SDK at build
+-- time and is explicitly not billing data", and under subscription auth it
+-- corresponds to no dollar charge at all. NULL means "no estimate was reported"
+-- and is a different fact from 0.00 — which is why it is not `NOT NULL DEFAULT
+-- 0`, and why every surface that renders it is required to carry the word
+-- *estimate*.
+--
+-- `turns` counts turn `result` messages, one per turn in streaming-input mode
+-- (§2.4). It is not `sessions.turns`: that column is the session row's own
+-- count for the timeline, this one lives with the tokens those turns spent so
+-- "tokens per turn" is a single indexed read rather than a join.
+--
+-- Applied inside a transaction opened by the migration runner: no BEGIN/COMMIT
+-- and no `IF NOT EXISTS`, per `0001_runner.sql`'s note.
+
+ALTER TABLE session_usage ADD COLUMN turns    INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE session_usage ADD COLUMN cost_usd REAL;

@@ -16,11 +16,29 @@ import type { SessionStatus } from '../../storage/index.js';
 
 import { LaunchUnavailableError } from './errors.js';
 import type { LaunchChain, StartSessionRequest, StartSessionResult } from './launch.js';
+import { bandRank, type QueueEntry, type QueueState } from './scheduler.js';
 import { TERMINAL_STATUSES } from './status.js';
 import type { RunnerSessionRecord, SessionRepository } from './repository.js';
 import type { ReadForwardOptions, TranscriptPage, TranscriptReader } from './transcriptReader.js';
+import type { SessionUsageTotals, UsageRepository } from './usage.js';
 
 export type { StartSessionRequest, StartSessionResult };
+
+/** What `GET /api/sessions/:id` answers with (§11.1: "record + usage + queue position"). */
+export interface SessionDetail {
+  readonly session: RunnerSessionRecord;
+  /**
+   * The `session_usage` rollup, or `null` for a session that has spent nothing.
+   *
+   * `costUsdEstimate` carries §7.3's rule in its name: `total_cost_usd` is a
+   * client-side estimate from a price table bundled into the SDK, and under
+   * subscription auth it corresponds to no dollar charge at all. Nothing may
+   * render it as spend.
+   */
+  readonly usage: SessionUsageTotals | null;
+  /** Position in the admission order; `null` once the session has started. */
+  readonly queuePosition: number | null;
+}
 
 export interface RunnerService {
   /**
@@ -44,6 +62,22 @@ export interface RunnerService {
   awaitSettled(sessionId: string): Promise<RunnerSessionRecord>;
   /** The session row, §3.5's columns included. */
   getSession(sessionId: string): Promise<RunnerSessionRecord | undefined>;
+  /** §11.1's `GET /api/sessions/:id`: the record, its usage, its queue position. */
+  getSessionDetail(sessionId: string): Promise<SessionDetail | undefined>;
+  /** §11.2's `queueState()` — the five numbers the queue panel renders. */
+  queueState(): QueueState;
+  /** The queue panel's rows (`GET /api/runner/queue`). */
+  queueEntries(): readonly QueueEntry[];
+  /**
+   * `PUT /api/runner/capacity` (§6.1): the runtime cap, clamped to 1..8 and
+   * written to foundation's `settings` rather than to config, which is immutable
+   * per process. Returns the value actually stored.
+   *
+   * Not in §11.2's pinned list — that list predates the route, and a route that
+   * had to reach past the service to the launch chain would make the service
+   * decorative.
+   */
+  setCapacity(maxConcurrent: number): number;
   /**
    * The last `maxBytes` of a transcript, whole JSONL lines only (§11.2).
    *
@@ -60,6 +94,7 @@ export interface RunnerService {
 
 export interface RunnerServiceOptions {
   readonly sessions: SessionRepository;
+  readonly usage: UsageRepository;
   readonly transcripts: TranscriptReader;
   /**
    * M3's launch chain.
@@ -76,13 +111,26 @@ export interface RunnerServiceOptions {
 const ACTIVE_STATUSES: readonly SessionStatus[] = ['queued', 'running', 'paused'];
 
 export function createRunnerService(options: RunnerServiceOptions): RunnerService {
-  const { sessions, transcripts } = options;
+  const { sessions, transcripts, usage } = options;
 
   function launchChain(): LaunchChain {
     if (options.launch === undefined) {
       throw new LaunchUnavailableError();
     }
     return options.launch;
+  }
+
+  /** How many admissible sessions are ahead of this one (§6.2's ordering). */
+  function queuePosition(session: RunnerSessionRecord): number | null {
+    if (session.status !== 'queued') return null;
+    return (
+      sessions.list({ status: 'queued' }).filter((other) => {
+        if (other.id === session.id) return false;
+        const band = bandRank(other.priority) - bandRank(session.priority);
+        if (band !== 0) return band < 0;
+        return (other.queuedAt ?? '') <= (session.queuedAt ?? '');
+      }).length + 1
+    );
   }
 
   return {
@@ -92,6 +140,21 @@ export function createRunnerService(options: RunnerServiceOptions): RunnerServic
       Promise.resolve().then(() => launchChain().awaitSettled(sessionId)),
 
     getSession: (sessionId) => Promise.resolve(sessions.get(sessionId)),
+
+    getSessionDetail: (sessionId) =>
+      Promise.resolve().then(() => {
+        const session = sessions.get(sessionId);
+        if (session === undefined) return undefined;
+        return {
+          session,
+          usage: usage.totals(sessionId) ?? null,
+          queuePosition: queuePosition(session),
+        };
+      }),
+
+    queueState: () => launchChain().queueState(),
+    queueEntries: () => launchChain().queueEntries(),
+    setCapacity: (maxConcurrent) => launchChain().setCapacity(maxConcurrent),
 
     getTranscriptTail: (sessionId, tail = {}) =>
       Promise.resolve(

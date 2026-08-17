@@ -185,6 +185,89 @@ export function readResult(message: ResultMessage): ResultFacts {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Rate limiting (§6.4, SDK-NOTES G7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a rate-limit classification came from (§6.4, §10's `runner.ratelimited`).
+ *
+ * **Deviation from §10, raised rather than absorbed.** §10 pins the event's
+ * `source` as `'error-text' | 'rate_limit_event'`. SDK-NOTES **G7** then found
+ * `result.terminal_reason` — 19 typed members including `'blocking_limit'` and
+ * `'rapid_refill_breaker'` — and directs §6.4's classification to "read
+ * `terminal_reason` first and fall back to text". A third value is the honest
+ * way to say which of the two actually fired: folding a typed terminal into
+ * `'error-text'` would report a provenance that is not true, and provenance is
+ * the entire purpose of the field (§7.4's honesty labels).
+ */
+export type RateLimitSource = 'terminal-reason' | 'error-text' | 'rate_limit_event';
+
+/** `TerminalReason` members that mean the plan window, not the work, stopped it. */
+const RATE_LIMIT_TERMINALS: ReadonlySet<string> = new Set([
+  'blocking_limit',
+  'rapid_refill_breaker',
+]);
+
+/**
+ * The text fallback of §6.4, kept deliberately narrow.
+ *
+ * It runs only on an `error_during_execution` result, and only over the SDK's
+ * own `errors` strings — never over model output, which can discuss rate limits
+ * without being one.
+ */
+const RATE_LIMIT_TEXT = /rate[\s_-]?limit|usage limit|too many requests|\b429\b/iu;
+
+/** §6.4's classification: typed terminal first, error text second (G7). */
+export function classifyRateLimit(facts: ResultFacts): RateLimitSource | undefined {
+  if (facts.terminalReason !== null && RATE_LIMIT_TERMINALS.has(facts.terminalReason)) {
+    return 'terminal-reason';
+  }
+  if (facts.subtype === 'error_during_execution' && RATE_LIMIT_TEXT.test(facts.errors.join(' '))) {
+    return 'error-text';
+  }
+  return undefined;
+}
+
+/** What runner reads off a `rate_limit_event`, all of it optional (§7.4). */
+export interface RateLimitEventFacts {
+  readonly status: string | null;
+  readonly rateLimitType: string | null;
+  readonly utilization: number | null;
+  readonly resetsAt: Date | undefined;
+  /** True only for `status: 'rejected'` — the one value §6.4 acts on. */
+  readonly exhausted: boolean;
+}
+
+/**
+ * Parses `rate_limit_event` permissively (§7.4).
+ *
+ * SDK-NOTES §7.1 shows the message *is* declared and typed in this build, which
+ * §7.4 assumed it was not — but "whether it is ever emitted is still runtime
+ * behaviour", so the defensive read stands: anything unrecognised yields
+ * `undefined` and nothing downstream changes. §6.4 acts on the *presence* of an
+ * exhaustion, never on the numbers.
+ */
+export function readRateLimitEvent(message: SDKMessage): RateLimitEventFacts | undefined {
+  if (message.type !== 'rate_limit_event') return undefined;
+  const info: unknown = (message as { rate_limit_info?: unknown }).rate_limit_info;
+  if (typeof info !== 'object' || info === null) return undefined;
+  const record = info as Record<string, unknown>;
+  const status = typeof record['status'] === 'string' ? record['status'] : null;
+  const resets = record['resetsAt'];
+  const resetsAt =
+    typeof resets === 'number' && Number.isFinite(resets)
+      ? new Date(resets < 1e12 ? resets * 1000 : resets)
+      : undefined;
+  return {
+    status,
+    rateLimitType: typeof record['rateLimitType'] === 'string' ? record['rateLimitType'] : null,
+    utilization: typeof record['utilization'] === 'number' ? record['utilization'] : null,
+    resetsAt,
+    exhausted: status === 'rejected',
+  };
+}
+
 /** §2.2's terminal row for a `result`, and §2.3's `exit_reason` for it. */
 export interface ResultOutcome {
   readonly status: SessionStatus;

@@ -93,7 +93,19 @@ export interface AssignmentContextProvider {
  * and an archive marker, handed straight back to the compiler.
  */
 export interface RosterAgent {
-  readonly definition: { readonly id: string; readonly name?: string };
+  readonly definition: {
+    readonly id: string;
+    readonly name?: string;
+    /**
+     * The one field of roster's `defaults` block runner reads (§6.1).
+     *
+     * "Weight comes from roster's `defaults.concurrencyWeight` (roster §3,
+     * default 1) and is copied onto `sessions.weight` at enqueue". Everything
+     * else in `defaults` — model, `maxTurns`, `maxBudgetUsd` — reaches the SDK
+     * through roster's compiler and is none of runner's business (§3.3).
+     */
+    readonly defaults?: { readonly concurrencyWeight?: number } | undefined;
+  };
   /** Non-null for an agent read out of `.archive/` — refused at admission. */
   readonly archivedAt?: string | null;
 }

@@ -79,6 +79,14 @@ export interface FakeAssistantOptions {
   readonly toolUse?: { readonly id: string; readonly name: string; readonly input: unknown };
   readonly messageId?: string;
   readonly sessionId?: string;
+  readonly model?: string;
+  /** `message.message.usage` — M4's live per-message delta (§7.1). */
+  readonly usage?: {
+    readonly input?: number;
+    readonly output?: number;
+    readonly cacheRead?: number;
+    readonly cacheCreation?: number;
+  };
 }
 
 export function fakeAssistant(options: FakeAssistantOptions = {}): SDKAssistantMessage {
@@ -99,7 +107,7 @@ export function fakeAssistant(options: FakeAssistantOptions = {}): SDKAssistantM
       id: options.messageId ?? 'msg_01FAKE',
       type: 'message',
       role: 'assistant',
-      model: 'claude-sonnet-4-5',
+      model: options.model ?? 'claude-sonnet-4-5',
       content,
       container: null,
       context_management: null,
@@ -108,10 +116,10 @@ export function fakeAssistant(options: FakeAssistantOptions = {}): SDKAssistantM
       stop_reason: 'end_turn',
       stop_sequence: null,
       usage: {
-        input_tokens: 120,
-        output_tokens: 30,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 0,
+        input_tokens: options.usage?.input ?? 120,
+        output_tokens: options.usage?.output ?? 30,
+        cache_creation_input_tokens: options.usage?.cacheCreation ?? 0,
+        cache_read_input_tokens: options.usage?.cacheRead ?? 0,
         cache_creation: null,
         fallback_credit: null,
         inference_geo: null,
@@ -176,6 +184,15 @@ export function fakeReplay(text: string): SDKMessage {
   } as unknown as SDKMessage;
 }
 
+/** Per-model totals, in `ModelUsage`'s own field names (SDK-NOTES §6.1). */
+export interface FakeModelUsage {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead?: number;
+  readonly cacheCreation?: number;
+  readonly costUsd?: number;
+}
+
 export interface FakeResultOptions {
   readonly subtype?: SDKResultMessage['subtype'];
   readonly text?: string;
@@ -185,6 +202,13 @@ export interface FakeResultOptions {
   readonly permissionDenials?: SDKResultMessage['permission_denials'];
   readonly terminalReason?: SDKResultMessage['terminal_reason'];
   readonly sessionId?: string;
+  /** `result.usage` — main loop only, and genuinely per-turn (C1). */
+  readonly usage?: { readonly input: number; readonly output: number };
+  /**
+   * `result.modelUsage` — cumulative per `query()` call, the reconciliation
+   * source of §7.1. Keyed by model name.
+   */
+  readonly modelUsage?: Readonly<Record<string, FakeModelUsage>>;
 }
 
 export function fakeResult(options: FakeResultOptions = {}): SDKResultMessage {
@@ -199,8 +223,8 @@ export function fakeResult(options: FakeResultOptions = {}): SDKResultMessage {
     // present and non-null. Only the token counts matter to runner, so the rest
     // are the zero/`standard` values a real turn reports.
     usage: {
-      input_tokens: 120,
-      output_tokens: 30,
+      input_tokens: options.usage?.input ?? 120,
+      output_tokens: options.usage?.output ?? 30,
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
       cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 },
@@ -210,18 +234,25 @@ export function fakeResult(options: FakeResultOptions = {}): SDKResultMessage {
       service_tier: 'standard',
       speed: 'standard',
     },
-    modelUsage: {
-      'claude-sonnet-4-5': {
-        inputTokens: 120,
-        outputTokens: 30,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-        webSearchRequests: 0,
-        costUSD: options.costUsd ?? 0.0123,
-        contextWindow: 200_000,
-        maxOutputTokens: 64_000,
-      },
-    },
+    modelUsage: Object.fromEntries(
+      Object.entries(
+        options.modelUsage ?? {
+          'claude-sonnet-4-5': { input: 120, output: 30, costUsd: options.costUsd ?? 0.0123 },
+        },
+      ).map(([model, usage]) => [
+        model,
+        {
+          inputTokens: usage.input,
+          outputTokens: usage.output,
+          cacheReadInputTokens: usage.cacheRead ?? 0,
+          cacheCreationInputTokens: usage.cacheCreation ?? 0,
+          webSearchRequests: 0,
+          costUSD: usage.costUsd ?? options.costUsd ?? 0.0123,
+          contextWindow: 200_000,
+          maxOutputTokens: 64_000,
+        },
+      ]),
+    ),
     permission_denials: options.permissionDenials ?? [],
     stop_reason: 'end_turn',
     uuid: uuid(),
@@ -255,6 +286,24 @@ export function fakeSessionStateChanged(
     type: 'system',
     subtype: 'session_state_changed',
     state,
+    uuid: uuid(),
+    session_id: SESSION_ID,
+  } as unknown as SDKMessage;
+}
+
+/**
+ * A `rate_limit_event` (SDK-NOTES §7.1).
+ *
+ * Declared and typed in this build, though whether the CLI ever emits one is
+ * runtime behaviour — which is why runner parses it permissively and acts only
+ * on `status: 'rejected'`.
+ */
+export function fakeRateLimitEvent(
+  info: Record<string, unknown> = { status: 'rejected', rateLimitType: 'five_hour' },
+): SDKMessage {
+  return {
+    type: 'rate_limit_event',
+    rate_limit_info: info,
     uuid: uuid(),
     session_id: SESSION_ID,
   } as unknown as SDKMessage;
@@ -381,6 +430,133 @@ export function scriptedQuery(options: ScriptedQueryOptions): ScriptedQuery {
     },
     get closes() {
       return state.closes;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The gated query — M5's scheduler needs sessions that stay running
+// ---------------------------------------------------------------------------
+
+/** One live session under {@link gatedQuery}'s control. */
+export interface GatedSession {
+  readonly index: number;
+  /** The SDK session id this call reports in `system/init`. */
+  readonly sdkSessionId: string;
+  /** Yields a tail and lets the generator complete. Idempotent. */
+  finish(tail?: readonly SDKMessage[]): void;
+}
+
+export interface GatedQuery {
+  readonly query: QueryFn;
+  /** One entry per `query()` call, in call order. */
+  readonly sessions: readonly GatedSession[];
+  /**
+   * Resolves once `count` sessions have reported `system/init` **and the reader
+   * loop has processed it** — so the `queued → running` transition has already
+   * been written when the promise settles.
+   */
+  started(count: number): Promise<void>;
+  finishAll(tail?: readonly SDKMessage[]): void;
+  /**
+   * Finishes every session, now and hereafter.
+   *
+   * The drain a test needs at the end: sessions the scheduler admits *because*
+   * the ones ahead finished do not exist yet when `finishAll` is called, and a
+   * gated session nobody finishes holds the suite open until the timeout.
+   */
+  autoFinish(tail?: readonly SDKMessage[]): void;
+}
+
+/**
+ * A `query()` whose sessions stay running until the test says otherwise.
+ *
+ * `scriptedQuery` replays a fixed list and completes, which proves everything
+ * about *one* session and nothing about two. Concurrency, priority bands and the
+ * cool-down are all statements about sessions that overlap in time, so the
+ * scheduler's tests need a session they can hold open — held here by awaiting a
+ * deferred inside the generator, which is exactly where a real session waits
+ * (between `init` and its first `result`).
+ */
+export function gatedQuery(): GatedQuery {
+  const sessions: GatedSession[] = [];
+  let startedCount = 0;
+  let auto: { tail: readonly SDKMessage[] | undefined } | undefined;
+  const startWaiters: { count: number; resolve: () => void }[] = [];
+
+  function noteStarted(): void {
+    startedCount += 1;
+    for (const waiter of [...startWaiters]) {
+      if (startedCount < waiter.count) continue;
+      startWaiters.splice(startWaiters.indexOf(waiter), 1);
+      waiter.resolve();
+    }
+  }
+
+  const query: QueryFn = (args) => {
+    const index = sessions.length;
+    const sdkSessionId = `9f2a2b64-1f3e-4a6b-9a41-00000000${String(index).padStart(4, '0')}`;
+    let release: ((tail: readonly SDKMessage[]) => void) | undefined;
+    const gate = new Promise<readonly SDKMessage[]>((resolve) => {
+      release = resolve;
+    });
+    let finished = false;
+
+    const handle: GatedSession = {
+      index,
+      sdkSessionId,
+      finish(tail) {
+        if (finished) return;
+        finished = true;
+        release?.(tail ?? [fakeResult({ sessionId: sdkSessionId }), fakeSessionStateChanged()]);
+      },
+    };
+    sessions.push(handle);
+    if (auto !== undefined) handle.finish(auto.tail);
+
+    void (async () => {
+      try {
+        for await (const _message of args.prompt) {
+          // Drained for the same reason `scriptedQuery` drains it: the real
+          // wrapper pumps the input iterable lazily, and a queue nobody reads
+          // never delivers its prompt.
+        }
+      } catch {
+        // The queue never throws (§4.2).
+      }
+    })();
+
+    async function* replay(): AsyncGenerator<SDKMessage, void> {
+      yield fakeInit({ sessionId: sdkSessionId });
+      // Resuming here means the consumer has already processed `init` — which
+      // is the moment the row becomes `running`.
+      noteStarted();
+      for (const message of await gate) yield message;
+    }
+
+    const generator = replay();
+    return {
+      [Symbol.asyncIterator]: () => generator[Symbol.asyncIterator](),
+      interrupt: () => Promise.resolve(undefined),
+      close: () => Promise.resolve(),
+    };
+  };
+
+  return {
+    query,
+    sessions,
+    started(count) {
+      if (startedCount >= count) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        startWaiters.push({ count, resolve });
+      });
+    },
+    finishAll(tail) {
+      for (const session of sessions) session.finish(tail);
+    },
+    autoFinish(tail) {
+      auto = { tail };
+      for (const session of sessions) session.finish(tail);
     },
   };
 }

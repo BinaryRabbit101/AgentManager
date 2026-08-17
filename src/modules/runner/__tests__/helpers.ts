@@ -32,6 +32,7 @@ import {
   type FileIo,
   type TranscriptReader,
 } from '../transcriptReader.js';
+import { createUsageRepository, type UsageRepository } from '../usage.js';
 
 /** The repository root, which also holds the shipped `migrations/` tree. */
 export const repoRoot = findInstallRoot(dirname(fileURLToPath(import.meta.url)));
@@ -91,6 +92,7 @@ export function countingIo(inner: FileIo = nodeFileIo): CountingIo {
 export interface RunnerHarness {
   readonly storage: Storage;
   readonly sessions: SessionRepository;
+  readonly usage: UsageRepository;
   readonly transcripts: TranscriptFactory;
   readonly reader: TranscriptReader;
   readonly service: RunnerService;
@@ -133,12 +135,18 @@ export function makeHarness(options: HarnessOptions): RunnerHarness {
     maxTailBytes: config.transcript.maxTailBytes,
     ...(options.io === undefined ? {} : { io: options.io }),
   });
-  const service = createRunnerService({ sessions, transcripts: reader });
+  const usage = createUsageRepository({
+    db: storage.db,
+    assignments: storage.store.assignments,
+    clock,
+  });
+  const service = createRunnerService({ sessions, usage, transcripts: reader });
 
   let seeded = 0;
   return {
     storage,
     sessions,
+    usage,
     transcripts,
     reader,
     service,
