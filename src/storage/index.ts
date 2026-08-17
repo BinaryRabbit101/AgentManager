@@ -107,8 +107,10 @@ export {
   closeDatabase,
   isDatabaseOpen,
   openDatabase,
+  quickCheckDatabaseFile,
   OPEN_PRAGMAS,
   type OpenDatabaseOptions,
+  type QuickCheckReport,
 } from './engine.js';
 
 export {

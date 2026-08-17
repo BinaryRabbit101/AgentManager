@@ -124,6 +124,57 @@ export function openDatabase(options: OpenDatabaseOptions): Database {
   return db;
 }
 
+/** What an out-of-process `quick_check` found (M10's `agentmanager health`). */
+export interface QuickCheckReport {
+  readonly ok: boolean;
+  /** `ok`, `missing`, or the SQLite error / `quick_check` output that explains the failure. */
+  readonly detail: string;
+  /** `PRAGMA user_version`, when the file could be opened. */
+  readonly schemaVersion?: number;
+}
+
+/**
+ * Runs `PRAGMA quick_check` against a database file **read-only**, without
+ * joining this process to the single-writer registry above.
+ *
+ * `Test-AgentManagerHealth.ps1` lists `PRAGMA quick_check` among its diagnostics
+ * (§4.4), and a diagnostic is run precisely when something is wrong — possibly
+ * while the core still holds the file. `readonly` is what makes that safe: it
+ * takes no write lock, creates nothing, and cannot leave a WAL behind, so the
+ * check is a pure observation of a database somebody else may own.
+ *
+ * It reports rather than throws, because a support report that aborts at its
+ * first bad finding is the one shape of report nobody can use.
+ */
+export function quickCheckDatabaseFile(databasePath: string): QuickCheckReport {
+  if (!existsSync(databasePath)) {
+    return { ok: false, detail: 'missing' };
+  }
+
+  let db: Database;
+  try {
+    db = new SqliteDatabase(databasePath, { readonly: true, fileMustExist: true });
+  } catch (error) {
+    return { ok: false, detail: describeError(error) };
+  }
+
+  try {
+    const result = db.pragma('quick_check', { simple: true });
+    const version = db.pragma('user_version', { simple: true });
+    const schemaVersion = typeof version === 'number' ? version : undefined;
+    const ok = result === 'ok';
+    return {
+      ok,
+      detail: ok ? 'ok' : `quick_check reported ${JSON.stringify(result)}`,
+      ...(schemaVersion === undefined ? {} : { schemaVersion }),
+    };
+  } catch (error) {
+    return { ok: false, detail: describeError(error) };
+  } finally {
+    db.close();
+  }
+}
+
 function asFatal(error: unknown, databasePath: string, backupsDir: string): unknown {
   if (error instanceof DatabaseIntegrityError) return error;
   const code = sqliteCode(error);

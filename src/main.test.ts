@@ -78,12 +78,46 @@ describe('parseArgs', () => {
     expect(parseArgs(['--edition', 'work']).unknown).toEqual([]);
   });
 
-  it('collects arguments nothing recognises', () => {
-    expect(parseArgs(['--nope', 'value']).unknown).toEqual(['--nope', 'value']);
+  it('collects flags nothing recognises', () => {
+    expect(parseArgs(['--nope', '--also-nope']).unknown).toEqual(['--nope', '--also-nope']);
   });
 
-  it('treats an empty argument list as no flags', () => {
-    expect(parseArgs([])).toEqual({ version: false, help: false, config: [], unknown: [] });
+  it('treats an empty argument list as no flags and no command', () => {
+    expect(parseArgs([])).toEqual({
+      version: false,
+      help: false,
+      config: [],
+      command: [],
+      flags: new Map(),
+      unknown: [],
+    });
+  });
+
+  // --- M10: the verbs the install scripts call (DESIGN §4.4).
+  it('collects positional words as a command', () => {
+    expect(parseArgs(['secrets', 'set', 'claude.oauthToken']).command).toEqual([
+      'secrets',
+      'set',
+      'claude.oauthToken',
+    ]);
+  });
+
+  it('recognises the command flags without swallowing them as unknown', () => {
+    const parsed = parseArgs(['secrets', 'set', 'claude.oauthToken', '--stdin']);
+    expect(parsed.flags.get('--stdin')).toBe(true);
+    expect(parsed.unknown).toEqual([]);
+  });
+
+  it('reads a valued command flag in both spellings', () => {
+    expect(parseArgs(['health', '--wait', '30']).flags.get('--wait')).toBe('30');
+    expect(parseArgs(['health', '--wait=30']).flags.get('--wait')).toBe('30');
+  });
+
+  it('keeps a command and the loader flags apart', () => {
+    const parsed = parseArgs(['migrate', '--data-root', 'C:\\tmp', '--json']);
+    expect(parsed.command).toEqual(['migrate']);
+    expect(parsed.config).toEqual(['--data-root', 'C:\\tmp']);
+    expect(parsed.flags.get('--json')).toBe(true);
   });
 });
 
@@ -117,6 +151,35 @@ describe('run', () => {
     const io = capture();
     expect(run(['--nope'], io)).toBe(2);
     expect(io.errors.join('\n')).toContain('--nope');
+  });
+
+  it('lets a known command through for the dispatcher to run', () => {
+    for (const verb of ['migrate', 'health', 'secrets']) {
+      const io = capture();
+      expect(run([verb], io)).toBeNull();
+      expect(io.errors).toEqual([]);
+    }
+  });
+
+  it('rejects an unknown command with exit code 2 rather than starting the service', () => {
+    const io = capture();
+    expect(run(['migrat'], io)).toBe(2);
+    expect(io.errors.join('\n')).toContain('unknown command "migrat"');
+  });
+
+  it('rejects a command flag with no command, rather than silently starting the service', () => {
+    const io = capture();
+    expect(run(['--stdin'], io)).toBe(2);
+    expect(io.errors.join('\n')).toContain('applies to a command');
+  });
+
+  it('lists the M10 commands in the help text', () => {
+    const io = capture();
+    run(['--help'], io);
+    const help = io.lines.join('\n');
+    expect(help).toContain('secrets set <key> --stdin');
+    expect(help).toContain('migrate');
+    expect(help).toContain('health');
   });
 });
 

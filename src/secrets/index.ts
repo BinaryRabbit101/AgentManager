@@ -32,6 +32,14 @@ export type { TightenOptions } from './acl.js';
 
 export { SECRETS_FILENAME } from './envelope.js';
 export { MASTER_KEY_FILENAME } from './keyfile.js';
+
+/**
+ * Offline inspection for `agentmanager health` (M10), which must answer
+ * "which provider is in use" without constructing a store — see the file's own
+ * header for why that distinction matters.
+ */
+export { inspectSecretsDirectory } from './inspect.js';
+export type { SecretEntrySummary, SecretsDirectorySummary } from './inspect.js';
 export { DPAPI_ENTROPY } from './dpapi.js';
 export type { DpapiBinding, DpapiLoader } from './dpapi.js';
 

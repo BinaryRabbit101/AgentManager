@@ -30,10 +30,21 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
-import { argv, exit, stderr, stdout } from 'node:process';
+import { argv, exit } from 'node:process';
 
 import type { Logger } from 'pino';
 
+import {
+  COMMAND_FLAGS,
+  VALUED_COMMAND_FLAGS,
+  commandHelp,
+  createCliContext,
+  defaultIo,
+  isCommandName,
+  runCommand,
+  type CliContext,
+  type RunIo,
+} from './cli/index.js';
 import { ConfigError, loadConfig, type AppConfig, type ConfigSourceMap } from './config/index.js';
 import {
   BindInvariantError,
@@ -118,23 +129,39 @@ export interface ParsedArgs {
   readonly help: boolean;
   /** Configuration flags, passed through to the loader untouched. */
   readonly config: readonly string[];
+  /**
+   * Positional words: the verb and its arguments (`['secrets', 'set', '<key>']`).
+   *
+   * Empty means "start the service", which is what `agentmanager` with no
+   * arguments has always meant and what the scheduled task of §4.3 invokes.
+   */
+  readonly command: readonly string[];
+  /** Recognised command flags, `--stdin` / `--json` / `--wait[=<s>]` (§4.4). */
+  readonly flags: ReadonlyMap<string, string | true>;
   /** Arguments nothing recognises. */
   readonly unknown: readonly string[];
 }
 
 /**
  * Splits the argument list (excluding `node` and the script path) into the CLI's
- * own flags, the configuration loader's, and the rest.
+ * own flags, the configuration loader's, the command words, and the rest.
  *
  * The loader is not re-implemented here: `--set key=value`, `--edition` and
  * `--data-root` are recognised only well enough to know how many tokens they
  * consume, and are handed on verbatim so exactly one parser decides what they
  * mean.
+ *
+ * Positional words are collected rather than rejected, because M10 gives the
+ * binary verbs (`migrate`, `health`, `secrets set`) as well as a service mode.
+ * Whether the first word *names* a verb is {@link run}'s question, not this
+ * one's — a parser that also validated would have to know the command table.
  */
 export function parseArgs(args: readonly string[]): ParsedArgs {
   let version = false;
   let help = false;
   const config: string[] = [];
+  const command: string[] = [];
+  const flags = new Map<string, string | true>();
   const unknown: string[] = [];
 
   for (let i = 0; i < args.length; i += 1) {
@@ -163,10 +190,32 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       continue;
     }
 
+    if (COMMAND_FLAGS.has(flag)) {
+      if (eq !== -1) {
+        flags.set(flag, arg.slice(eq + 1));
+      } else if (VALUED_COMMAND_FLAGS.has(flag)) {
+        const next = args[i + 1];
+        if (next !== undefined && !next.startsWith('-')) {
+          flags.set(flag, next);
+          i += 1;
+        } else {
+          flags.set(flag, true);
+        }
+      } else {
+        flags.set(flag, true);
+      }
+      continue;
+    }
+
+    if (!arg.startsWith('-')) {
+      command.push(arg);
+      continue;
+    }
+
     unknown.push(arg);
   }
 
-  return { version, help, config, unknown };
+  return { version, help, config, command, flags, unknown };
 }
 
 /** The version string from package.json, or {@link UNKNOWN_VERSION}. */
@@ -186,7 +235,10 @@ export function helpText(): string {
     `${PROGRAM_NAME} ${readVersion()}`,
     '',
     'Usage:',
-    `  ${PROGRAM_NAME} [options]`,
+    `  ${PROGRAM_NAME} [options]              Start the core service`,
+    `  ${PROGRAM_NAME} <command> [options]`,
+    '',
+    ...commandHelp(),
     '',
     'Options:',
     '  -v, --version            Print the version and exit',
@@ -195,27 +247,22 @@ export function helpText(): string {
     '  --data-root <path>       Override the data root for this run',
     '  --set <key=value>        Override any configuration key for this run',
     '',
-    'With no options the core service starts.',
+    'With no command the core service starts.',
   ].join('\n');
 }
 
-export interface RunIo {
-  readonly out: (line: string) => void;
-  readonly err: (line: string) => void;
-}
-
-const defaultIo: RunIo = {
-  out: (line) => void stdout.write(`${line}\n`),
-  err: (line) => void stderr.write(`${line}\n`),
-};
+/** Re-exported so callers of `run`/`boot` need not know where the seam lives. */
+export type { RunIo } from './cli/index.js';
 
 /**
  * Handles the CLI-only invocations and returns the process exit code, or `null`
- * when the caller should start the service.
+ * when the caller should proceed — to a command, or to the service.
  *
  * Pure with respect to the process: everything observable goes through
  * {@link RunIo}, and nothing here touches the data root — `--version` must
- * answer on a machine with no install at all.
+ * answer on a machine with no install at all. Command *execution* is
+ * deliberately not here, because every verb is asynchronous and touches disk;
+ * this only decides that a verb was named and that its name is real.
  */
 export function run(args: readonly string[], io: RunIo = defaultIo): number | null {
   const parsed = parseArgs(args);
@@ -236,6 +283,64 @@ export function run(args: readonly string[], io: RunIo = defaultIo): number | nu
     return 2;
   }
 
+  const verb = parsed.command[0];
+  if (verb !== undefined && !isCommandName(verb)) {
+    io.err(`${PROGRAM_NAME}: unknown command "${verb}".`);
+    io.err(helpText());
+    return 2;
+  }
+
+  // A command flag with no command would silently do nothing, which is worse
+  // than saying so: `agentmanager --stdin` is a mistyped `secrets set`.
+  if (verb === undefined && parsed.flags.size > 0) {
+    io.err(
+      `${PROGRAM_NAME}: ${[...parsed.flags.keys()].join(' ')} applies to a command, but none was given.`,
+    );
+    io.err(helpText());
+    return 2;
+  }
+
+  return null;
+}
+
+export interface MainOptions {
+  readonly io?: RunIo;
+  /** Injected wholesale by the CLI tests; process-shaped defaults otherwise. */
+  readonly cli?: Partial<CliContext>;
+  readonly boot?: BootOptions;
+}
+
+/**
+ * The process entry point's whole decision, as a function.
+ *
+ * Three outcomes, in the order they are checked: a flag that answers on its own
+ * (`--version`), a verb (M10's `migrate`/`health`/`secrets`), or the service.
+ * Only the last one does not return — {@link serve} keeps the event loop alive
+ * — which is why this resolves `null` for it and an exit code for the others.
+ */
+export async function main(
+  args: readonly string[],
+  options: MainOptions = {},
+): Promise<number | null> {
+  const io = options.io ?? defaultIo;
+
+  const code = run(args, io);
+  if (code !== null) return code;
+
+  const parsed = parseArgs(args);
+  if (parsed.command.length > 0) {
+    return runCommand(
+      {
+        words: parsed.command,
+        flags: parsed.flags,
+        config: parsed.config,
+        ctx: createCliContext({ io, ...options.cli }),
+      },
+      readVersion(),
+    );
+  }
+
+  await serve(args, options.boot ?? {});
   return null;
 }
 
@@ -980,12 +1085,13 @@ function isEntryPoint(): boolean {
 
 if (isEntryPoint()) {
   const args = argv.slice(2);
-  const code = run(args);
-  if (code !== null) {
-    exit(code);
-  } else {
+  void main(args)
+    .then((code) => {
+      // `null` means the service is running and owns the event loop from here.
+      if (code !== null) exit(code);
+    })
     // `boot` has already reported and exited on failure; the rejection it
-    // rethrows is for programmatic callers.
-    void serve(args).catch(() => undefined);
-  }
+    // rethrows is for programmatic callers, and a verb's failure has already
+    // been reported by `runCommand`.
+    .catch(() => exit(MODULE_FAILURE_EXIT_CODE));
 }

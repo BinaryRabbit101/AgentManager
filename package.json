@@ -16,7 +16,9 @@
     "app",
     "config",
     "dist",
+    "launch-core.vbs",
     "migrations",
+    "scripts",
     "web"
   ],
   "scripts": {
@@ -32,6 +34,7 @@
     "test:watch": "vitest",
     "test:boundary": "vitest run --project server boundary src/lifecycle/bind.test.ts src/lifecycle/process.test.ts src/main.test.ts",
     "checks:ui": "node scripts/ui-manual-checks.mjs",
+    "checks:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Verify-Install.ps1",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "ci": "npm run lint && npm run typecheck && npm run typecheck:web && npm run build && npm run build:web && npm test"
