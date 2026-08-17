@@ -24,18 +24,28 @@ export interface EffectiveConfig {
   readonly redacted: true;
 }
 
-export type HealthStatus = 'ok' | 'degraded' | 'failed';
+export type HealthStatus = 'ok' | 'degraded' | 'failed' | 'not-started';
 
+/**
+ * `id`, not `code` — foundation's `HealthCondition` (`src/modules/types.ts`)
+ * calls it "a stable id so it can be tracked across restarts", and the whole
+ * point of M10's persistent warnings is that the same warning is recognisable
+ * across a reconnect. `web/e2e/boot.test.ts` asserts these names against a real
+ * `/api/health`, because a field name the UI guessed is a screen that renders
+ * `undefined` in production and nothing in a fixture-fed test.
+ */
 export interface HealthCondition {
+  readonly id: string;
   readonly level: 'warn' | 'error';
-  readonly code: string;
   readonly message: string;
-  readonly module?: string;
 }
 
 export interface ModuleHealth {
-  readonly name: string;
+  readonly id: string;
   readonly status: HealthStatus;
+  readonly critical?: boolean;
+  readonly message?: string;
+  readonly error?: string;
   readonly conditions?: readonly HealthCondition[];
 }
 
@@ -490,6 +500,230 @@ export interface CreateSoloResult {
   readonly warnings: readonly { readonly code: string; readonly message: string }[];
 }
 
+/** orchestrator's `AssignmentPattern`. `solo` is a real pattern, not a special case. */
+export type AssignmentPattern = 'solo' | 'pair' | 'review' | 'overseer';
+
+/** orchestrator §11.1's phase vocabulary, rendered **as the word** (§10.2). */
+export const ASSIGNMENT_PHASES = [
+  'planned',
+  'running',
+  'awaiting_user',
+  'halted',
+  'converged',
+  'closed',
+] as const;
+export type AssignmentPhase = (typeof ASSIGNMENT_PHASES)[number];
+
+export interface AssignmentScope {
+  readonly paths: readonly string[];
+  readonly description?: string;
+  readonly artifactPath?: string;
+}
+
+/** One seat. `seatOrder` 0 is the lead; the UI never reorders them. */
+export interface AssignmentMember {
+  readonly agentId: string;
+  readonly role: string;
+  readonly seatOrder: number;
+  readonly joinedAt: string | null;
+}
+
+/** `GET /api/assignments/:id` — §10.2's header, exactly as orchestrator returns it. */
+export interface AssignmentView {
+  readonly id: string;
+  readonly projectId: string;
+  readonly pattern: AssignmentPattern;
+  readonly status: 'open' | 'closed';
+  readonly phase: AssignmentPhase;
+  readonly goal: string | null;
+  readonly scope: AssignmentScope | null;
+  readonly write: boolean;
+  readonly createdBy: string;
+  readonly parentAssignmentId: string | null;
+  readonly leadAgentId: string | null;
+  readonly artifactPath: string | null;
+  /** §10.2: the budget is **tokens**, never money (orchestrator §16.8). */
+  readonly tokenBudget: number | null;
+  readonly tokensUsed: number;
+  readonly roundCap: number | null;
+  readonly roundsUsed: number;
+  readonly haltReason: string | null;
+  readonly closeReason: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string | null;
+  readonly closedAt: string | null;
+  readonly members: readonly AssignmentMember[];
+}
+
+export interface AssignmentListView {
+  readonly assignments: readonly AssignmentView[];
+}
+
+export interface ReportArtifact {
+  readonly path: string;
+  readonly kind?: string;
+}
+
+export interface BlockingIssue {
+  readonly severity: string;
+  readonly summary: string;
+}
+
+/** The critic's verdict — a chip, with the blocking issues as a severity list. */
+export interface TurnVerdict {
+  readonly decision: 'accept' | 'revise';
+  readonly blocking: readonly BlockingIssue[];
+  readonly nonBlocking: readonly string[];
+}
+
+export interface TurnReport {
+  readonly state: 'working' | 'blocked' | 'needs_review' | 'done';
+  readonly headline: string;
+  readonly detail?: string;
+  readonly artifacts: readonly ReportArtifact[];
+  readonly verdict?: TurnVerdict;
+  readonly at: string;
+}
+
+export type TurnStatus =
+  'planned' | 'running' | 'reported' | 'unstructured' | 'blocked' | 'failed' | 'orphaned';
+
+/**
+ * orchestrator §16.5's delivery ladder.
+ *
+ * Four values, not three: `undeliverable` is what an `undelivered` message
+ * becomes once the assignment is no longer open — the recipient will now never
+ * see it. Both render as "never seen by the recipient" (§10.2), because that is
+ * what they mean, and the distinction between "not yet" and "never" is carried
+ * by the word beside it.
+ */
+export type MessageDelivery = 'inlined' | 'read' | 'undelivered' | 'undeliverable';
+
+export interface ConversationTurnEntry {
+  readonly type: 'turn';
+  readonly turnId: string;
+  /** `solo` | `drafter` | `critic` — the seat, which is how §10.2 attributes. */
+  readonly seat: string;
+  readonly agentId: string;
+  readonly role: string | null;
+  readonly sessionId: string | null;
+  readonly status: TurnStatus;
+  readonly report: TurnReport | null;
+  readonly excerpt: string | null;
+  readonly startedAt: string | null;
+  readonly endedAt: string | null;
+  readonly retryOfTurnId: string | null;
+}
+
+export interface ConversationMessageEntry {
+  readonly type: 'message';
+  readonly messageId: string;
+  readonly from: string | null;
+  /** `null` is a broadcast. */
+  readonly to: string | null;
+  readonly kind: string;
+  readonly body: string | null;
+  readonly delivery: MessageDelivery;
+  readonly createdAt: string;
+}
+
+export interface ConversationQuestionEntry {
+  readonly type: 'question';
+  readonly questionId: string;
+  readonly kind: string;
+  readonly prompt: string;
+  readonly recommendations: readonly RecommendationView[];
+  readonly disagreement: boolean;
+  readonly contested: boolean;
+  readonly answer: {
+    readonly optionIds?: readonly string[];
+    readonly labels?: readonly string[];
+    readonly text?: string;
+  } | null;
+  readonly createdAt: string;
+}
+
+export type ConversationEntry =
+  ConversationTurnEntry | ConversationMessageEntry | ConversationQuestionEntry;
+
+export interface ConversationRound {
+  readonly round: number;
+  readonly entries: readonly ConversationEntry[];
+}
+
+/** `GET /api/assignments/:id/conversation` — "the ordering is the server's" (§10.1). */
+export interface ConversationView {
+  readonly assignmentId: string;
+  readonly pattern: string;
+  readonly phase: AssignmentPhase;
+  readonly status: string;
+  readonly artifactPath: string | null;
+  readonly roundsUsed: number;
+  readonly roundCap: number | null;
+  readonly tokensUsed: number;
+  readonly tokenBudget: number | null;
+  readonly closeReason: string | null;
+  readonly haltReason: string | null;
+  readonly rounds: readonly ConversationRound[];
+}
+
+/** `GET /api/patterns` (orchestrator §16.9) — what drives §10.4's dialog. */
+export interface SeatDefinition {
+  readonly key: string;
+  readonly roles: readonly string[];
+  readonly required: boolean;
+  readonly preferredTier?: ModelTier;
+  readonly write: boolean;
+}
+
+export interface SeatCandidate {
+  readonly agentId: string;
+  readonly name: string;
+  readonly roles: readonly string[];
+  /** §10.4: "showing each one's model tier and current open-assignment count". */
+  readonly openAssignments: number;
+  readonly available: boolean;
+}
+
+export interface PatternSummary {
+  readonly id: string;
+  readonly driver: 'none' | 'sequential';
+  readonly seats: readonly SeatDefinition[];
+  readonly requires: {
+    readonly artifactPath: boolean;
+    readonly roundCap: boolean;
+    readonly tokenBudget: boolean;
+  };
+  readonly defaults: { readonly roundCap: number | null; readonly tokenBudget: number | null };
+  readonly maxRoundCap: number | null;
+  readonly cardSeatOrder: readonly string[];
+  readonly candidates?: Readonly<Record<string, readonly SeatCandidate[]>>;
+}
+
+export interface PatternListView {
+  readonly patterns: readonly PatternSummary[];
+}
+
+export interface AssignmentWarning {
+  readonly code: string;
+  readonly message: string;
+}
+
+/** §10.4: a returned `gate` must never leave an "it's running" impression. */
+export interface GateSpec {
+  readonly reason: string;
+  readonly questionId?: string;
+}
+
+/** `POST /api/assignments` → 201. Note `assignmentId`, not `id`. */
+export interface CreateAssignmentResult {
+  readonly assignmentId: string;
+  readonly status: 'open' | 'closed';
+  readonly phase: AssignmentPhase;
+  readonly warnings: readonly AssignmentWarning[];
+  readonly gate?: GateSpec;
+}
+
 export type QuestionKind = 'question' | 'approval_gate' | 'budget_halt';
 export type QuestionStatus = 'open' | 'answered' | 'cancelled' | 'expired';
 
@@ -675,6 +909,185 @@ export interface WorkspaceListView {
 export interface SessionListView {
   readonly sessions: readonly SessionRecord[];
   readonly next: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Runner — the usage view (§12)
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /api/runner/usage` (runner §7.4).
+ *
+ * Every number here is **AgentManager's own** metering. There is no plan total
+ * in the payload, and §12 forbids inventing one: no percentage, no ring, no
+ * "remaining". The `disclaimer` is the API's own string and is shown in full.
+ */
+export interface UsageWindow {
+  readonly since: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly sessions: number;
+}
+
+export interface RunnerUsage {
+  readonly own: {
+    readonly window5h: UsageWindow;
+    readonly window7d: UsageWindow;
+    /** runner §7.4's honesty label, rendered as the panel's provenance line. */
+    readonly source: string;
+  };
+  readonly rateLimit: {
+    readonly state: 'ok' | 'cooling';
+    readonly lastHitAt: string | null;
+    readonly resetsAt: string | null;
+    readonly source: string;
+  };
+  readonly disclaimer: string;
+}
+
+/** `GET /api/runner/queue` — `blockedReason` on the wire (SQL calls it otherwise). */
+export interface QueueEntry {
+  readonly sessionId: string;
+  readonly assignmentId: string;
+  readonly agentId: string;
+  readonly projectId: string;
+  readonly status: 'running' | 'queued';
+  readonly priority: 'interactive' | 'normal';
+  readonly weight: number;
+  readonly queuedAt: string | null;
+  readonly blockedReason: string | null;
+  /** 1-based, `null` for a running session. */
+  readonly position: number | null;
+}
+
+export interface RunnerQueue {
+  readonly running: number;
+  readonly queued: number;
+  readonly blocked: number;
+  readonly capacity: number;
+  readonly usedWeight: number;
+  readonly cooling: boolean;
+  readonly coolingUntil: string | null;
+  readonly entries: readonly QueueEntry[];
+}
+
+/** runner §6.1: the cap is clamped to this range, server-side and here. */
+export const CAPACITY_MIN = 1;
+export const CAPACITY_MAX = 8;
+
+// ---------------------------------------------------------------------------
+// Remote — settings §13.2, and the parity rules of §13.4
+// ---------------------------------------------------------------------------
+
+/**
+ * One row of `GET /api/remote/status`'s `deniedRemotely` (remote §12.7).
+ *
+ * §13.4: the denied set is "read from the deny list enumerated in
+ * `GET /api/remote/status`, **not hardcoded**, so a future denial greys the
+ * right control automatically". Every disabled control in settings matches
+ * itself against this list by method and path.
+ */
+export interface DenyListEntry {
+  readonly method: string;
+  readonly path: string;
+  readonly source: 'declared' | 'backstop';
+  readonly reason: string;
+  readonly conditional: boolean;
+}
+
+export interface RemoteStatus {
+  readonly state: 'waiting' | 'binding' | 'listening' | 'down';
+  readonly enabled: boolean;
+  readonly boundAddress: { readonly address: string; readonly port: number } | null;
+  readonly port: number;
+  readonly magicDnsName: string | null;
+  /** Tailscale's **own** state string — §13.2 renders it verbatim. */
+  readonly tailscaleState: string | null;
+  readonly lastError: string | null;
+  readonly recentBindFailures: number;
+  readonly detectionSource: 'cli' | 'interface' | null;
+  readonly mode: string;
+  readonly clientUrl: string | null;
+  readonly activeTokenCount: number;
+  readonly deniedRemotely: readonly DenyListEntry[];
+  readonly backstopPatterns: readonly {
+    readonly methods: readonly string[];
+    readonly pattern: string;
+  }[];
+}
+
+/** A device token as the list returns it — **never** the token itself (§13.2). */
+export interface RemoteTokenView {
+  readonly id: string;
+  readonly label: string;
+  readonly device: string | null;
+  readonly prefix: string;
+  readonly createdAt: string;
+  readonly lastUsedAt: string | null;
+  readonly lastUsedPeer: string | null;
+  readonly expiresAt: string | null;
+  readonly revokedAt: string | null;
+  readonly expired: boolean;
+}
+
+export interface RemoteTokenListView {
+  readonly tokens: readonly RemoteTokenView[];
+}
+
+/** `POST /api/remote/tokens` → 201. The **only** time `token` ever exists. */
+export interface MintedToken {
+  readonly id: string;
+  readonly label: string;
+  readonly device: string | null;
+  readonly token: string;
+  readonly prefix: string;
+  readonly createdAt: string;
+  readonly expiresAt: string | null;
+  /** `http://<magicdns>:<port>/#t=<token>` — what the QR encodes (§3.2). */
+  readonly qrUrl: string | null;
+}
+
+/** `GET /api/remote/agents` — `expiresAt` is required, never optional (§13.2). */
+export interface RemoteGrantView {
+  readonly agentId: string;
+  readonly agentName: string | null;
+  readonly enabled: boolean;
+  readonly grantedAt: string;
+  readonly expiresAt: string;
+  readonly grantedVia: 'local' | 'remote';
+  readonly tokenId: string | null;
+}
+
+export interface RemoteAgentListView {
+  readonly agents: readonly RemoteGrantView[];
+}
+
+/** remote §4.4: a credential that expires silently is worse than one that does not. */
+export const TOKEN_EXPIRY_BANNER_DAYS = 14;
+
+// ---------------------------------------------------------------------------
+// Logs (§13.3)
+// ---------------------------------------------------------------------------
+
+export const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
+
+export interface LogRecord {
+  readonly ts: string;
+  readonly level: LogLevel;
+  readonly component?: string;
+  readonly msg?: string;
+  readonly sessionId?: string;
+  readonly requestId?: string;
+}
+
+export interface LogsView {
+  readonly records: readonly LogRecord[];
+  readonly count: number;
+  readonly source: 'ring' | 'files';
+  readonly level: LogLevel;
+  readonly ringSize: number;
+  readonly ringCapacity: number;
 }
 
 // ---------------------------------------------------------------------------

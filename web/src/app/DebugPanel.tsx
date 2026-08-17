@@ -31,7 +31,7 @@ export function DebugPanel(): ReactElement {
         <dd>{health.status}</dd>
         <dt>Modules</dt>
         <dd data-testid="debug-modules">
-          {health.modules.map((module) => `${module.name}:${module.status}`).join(' ')}
+          {health.modules.map((module) => `${module.id}:${module.status}`).join(' ')}
         </dd>
         <dt>Event filter</dt>
         <dd data-testid="debug-stream-url">{events.streamUrl()}</dd>
@@ -39,10 +39,10 @@ export function DebugPanel(): ReactElement {
 
       {health.conditions.map((condition) => (
         <p
-          key={`${condition.code}-${condition.module ?? ''}`}
+          key={condition.id}
           className="notice"
           data-tone={condition.level === 'error' ? 'danger' : 'warn'}
-          data-condition-code={condition.code}
+          data-condition-code={condition.id}
         >
           {condition.message}
         </p>

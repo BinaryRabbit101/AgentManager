@@ -29,6 +29,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
+import { useFocusTrap } from '../a11y/focusTrap';
 import { useProject, useProjects, useRoster, useWorkItems } from '../api/queries';
 import type { ApiFailure } from '../api/result';
 import {
@@ -44,6 +45,7 @@ import {
   useServices,
 } from '../app/AppContext';
 import { workItemPromptSeed } from '../projects/workItems';
+import { isRemoteClient } from '../remote/access';
 import { useAppStore, type LaunchIntent } from '../state/store';
 
 import {
@@ -51,6 +53,11 @@ import {
   fetchPermissionPreview,
   type PermissionPreview,
 } from './permissionPreview';
+
+/** An agent's name for a prompt, falling back to its id (§5.2's deleted-agent rule). */
+function nameFor(agents: readonly AgentView[], agentId: string): string {
+  return agents.find((one) => one.definition.id === agentId)?.definition.name ?? agentId;
+}
 
 /** §6: "Role defaults to `implementer` where the agent declares it, else `capabilities.roles[0]`." */
 export function defaultRole(agent: AgentView | undefined): string | undefined {
@@ -111,9 +118,12 @@ export function LaunchFlow({ intent, onClose }: LaunchFlowProps): ReactElement {
   const [promptSeeded, setPromptSeeded] = useState(false);
   const [role, setRole] = useState<string | undefined>(undefined);
   const [write, setWrite] = useState(false);
+  const [allowRemote, setAllowRemote] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<ApiFailure | undefined>();
   const [preview, setPreview] = useState<PermissionPreview | undefined>();
+  /** The agents a `409` named, or `undefined` while none has been refused. */
+  const [grantPrompt, setGrantPrompt] = useState<readonly string[] | undefined>();
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
@@ -130,6 +140,10 @@ export function LaunchFlow({ intent, onClose }: LaunchFlowProps): ReactElement {
   useEffect(() => {
     promptRef.current?.focus();
   }, []);
+
+  // §15: focus is trapped here and restored to whatever opened the flow — the
+  // card's grip, the card menu, or the project's Launch an agent… button.
+  useFocusTrap(dialogRef);
 
   /**
    * §5.3: a dropped work item seeds its `title` into the prompt.
@@ -159,7 +173,20 @@ export function LaunchFlow({ intent, onClose }: LaunchFlowProps): ReactElement {
     setPreview(await fetchPermissionPreview(client, agentId, projectId));
   }
 
-  async function submit(): Promise<void> {
+  /**
+   * §6's submit, and §13.4's one extra tap.
+   *
+   * A `409 remote_access_required` is **not an error** (remote §12.5): the
+   * sheet swaps to "Allow Priya to be started remotely?", one tap grants, and
+   * the original request is retried automatically. `confirmRemoteAccess: true`
+   * is remote §6.3's atomic form — grant and start in one call — so the retry
+   * is one request rather than a grant followed by a race.
+   *
+   * The prompt is raised **once**, from the `409` body's list, however many
+   * agents it names: `ApiFailure.agentIds` is always a list and the body always
+   * carries every ungranted agent, so a two-seat launch cannot ask twice.
+   */
+  async function submit(confirmRemoteAccess = false): Promise<void> {
     if (agentId === null || projectId === null || prompt.trim() === '' || busy) return;
     setBusy(true);
     setFailure(undefined);
@@ -175,9 +202,14 @@ export function LaunchFlow({ intent, onClose }: LaunchFlowProps): ReactElement {
         // linked item to `in_progress` server-side — the UI never sets a status
         // it does not own (§4).
         ...(selectedItems.length === 0 ? {} : { workItemIds: selectedItems }),
+        ...(confirmRemoteAccess ? { confirmRemoteAccess: true } : {}),
       },
     });
     setBusy(false);
+    if (result.kind === 'grant-required') {
+      setGrantPrompt(result.agentIds.length === 0 ? [agentId] : result.agentIds);
+      return;
+    }
     if (result.kind === 'ok') {
       // `['projects']` covers the list, the one project, its activity and its
       // work items — the last of which just changed status server-side.
@@ -401,13 +433,57 @@ export function LaunchFlow({ intent, onClose }: LaunchFlowProps): ReactElement {
 
       {hasRemote ? (
         // §6's remote toggle. The remote module is feature-detected, never
-        // 404-probed (§3.5, §13.5), so this is absent until the element ships
-        // and absent in the work edition for the same reason.
+        // 404-probed (§3.5, §13.5), so this is absent in the work edition.
+        //
+        // At the desk it pre-authorises by calling `PUT /api/remote/agents/:id/
+        // access`; over the tailnet it rides the launch as `confirmRemoteAccess`
+        // instead, which is the same grant made atomically (remote §6.3).
         <label className="launch__toggle">
-          <input type="checkbox" />
+          <input
+            type="checkbox"
+            checked={allowRemote}
+            data-control="allow-remote"
+            onChange={(event) => {
+              setAllowRemote(event.target.checked);
+              if (agentId === null || !event.target.checked || isRemoteClient(client)) return;
+              void client.request(`/remote/agents/${encodeURIComponent(agentId)}/access`, {
+                method: 'PUT',
+                body: { enabled: true },
+              });
+            }}
+          />
           Allow remote starts for {agent?.definition.name ?? 'this agent'}
         </label>
       ) : null}
+
+      {/*
+        §13.4: "May need one extra tap: `409` → grant prompt → automatic retry.
+        **Never presented as an error.**" So this is not the failure notice —
+        it is a question, asked once, listing every agent the server named.
+      */}
+      {grantPrompt === undefined ? null : (
+        <div className="notice" data-tone="info" data-grant-prompt="true" role="note">
+          <p>
+            {grantPrompt.length === 1
+              ? `Allow ${nameFor(agents, grantPrompt[0] ?? '')} to be started remotely?`
+              : `Allow ${grantPrompt
+                  .map((one) => nameFor(agents, one))
+                  .join(' and ')} to be started remotely?`}
+          </p>
+          <button
+            type="button"
+            className="button"
+            data-variant="primary"
+            disabled={busy}
+            onClick={() => {
+              setGrantPrompt(undefined);
+              void submit(true);
+            }}
+          >
+            Allow and start
+          </button>
+        </div>
+      )}
 
       {failure === undefined ? null : (
         <p className="notice" data-tone="danger" role="alert" data-error-code={failure.code ?? ''}>

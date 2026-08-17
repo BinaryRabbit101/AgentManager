@@ -83,8 +83,21 @@ describe('what a drop means (§5.3’s table)', () => {
     expect(dropOutcome('priya', lpm).kind).toBe('launch');
   });
 
-  it('another agent card is a board reorder', () => {
+  /**
+   * §5.3's rows 3 and 4 describe the same pointer gesture, and Reorder mode is
+   * what tells them apart (see `dropOutcome`'s comment). Both are asserted here
+   * because the ambiguity is the interesting part, not the two outcomes.
+   */
+  it('another agent card opens the pair dialog', () => {
     expect(dropOutcome('priya', sam)).toEqual({
+      kind: 'pair',
+      agentId: 'priya',
+      withAgentId: 'sam',
+    });
+  });
+
+  it('…and reorders the board instead while Reorder mode is on', () => {
+    expect(dropOutcome('priya', sam, true)).toEqual({
       kind: 'reorder',
       agentId: 'priya',
       overAgentId: 'sam',
@@ -129,8 +142,9 @@ describe('the live region says the same sentence the floating label does (§5.3,
     expect(announcement).toContain('archived');
   });
 
-  it('describes a reorder target as a move, not as a launch', () => {
-    expect(overTarget('Priya', sam)).toBe("Move Priya to Sam's place.");
+  it('describes an agent target as a pair, and as a move while reordering', () => {
+    expect(overTarget('Priya', sam)).toBe('Start a pair: Priya drafting, Sam reviewing.');
+    expect(overTarget('Priya', sam, true)).toBe("Move Priya to Sam's place.");
     expect(overTarget('Priya', priya)).toContain('back in its own place');
   });
 

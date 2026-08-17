@@ -45,6 +45,7 @@ export function Board(): ReactElement {
   const reorderMode = useAppStore((store) => store.reorderMode);
   const setReorderMode = useAppStore((store) => store.setReorderMode);
   const openLaunch = useAppStore((store) => store.openLaunch);
+  const openPair = useAppStore((store) => store.openPair);
   const pushToast = useAppStore((store) => store.pushToast);
 
   const agents = roster.data?.agents ?? [];
@@ -105,6 +106,11 @@ export function Board(): ReactElement {
           // §5.3: "Nothing is started by the drop itself."
           openLaunch({ agentId: outcome.agentId, projectId: outcome.projectId, origin: 'drag' });
           return;
+        case 'pair':
+          // §5.3 row 3: the dragged card takes the drafting seat, the card it
+          // was dropped on takes the critic seat. Nothing starts here either.
+          openPair({ agentId: outcome.agentId, withAgentId: outcome.withAgentId });
+          return;
         case 'reorder':
           reorderTo(outcome.agentId, outcome.overAgentId, true);
           return;
@@ -115,7 +121,7 @@ export function Board(): ReactElement {
           return;
       }
     },
-    [openLaunch, pushToast, reorderTo],
+    [openLaunch, openPair, pushToast, reorderTo],
   );
 
   const move = useCallback(
@@ -135,7 +141,12 @@ export function Board(): ReactElement {
   }, [client, fullOrder, pushToast, queryClient, setReorderMode]);
 
   return (
-    <BoardDndContext agentTargets={agentTargets} projectTargets={projectTargets} onDrop={onDrop}>
+    <BoardDndContext
+      agentTargets={agentTargets}
+      projectTargets={projectTargets}
+      reordering={reorderMode}
+      onDrop={onDrop}
+    >
       <div className="board">
         <section aria-labelledby="board-heading">
           <h2 id="board-heading" className="visually-hidden">

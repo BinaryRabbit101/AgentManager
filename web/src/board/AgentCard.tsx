@@ -16,8 +16,11 @@ import { CSS } from '@dnd-kit/utilities';
 import type { ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 
+import { useRemoteAgents } from '../api/queries';
 import type { AgentView, Diagnostic } from '../api/types';
+import { useHasModule, useServices } from '../app/AppContext';
 import { Icon } from '../icons/Sprite';
+import { grantExpiryLabel } from '../remote/access';
 import { useAgentFleetStatus } from '../state/store';
 
 import { AgentCardMenu } from './AgentCardMenu';
@@ -46,7 +49,13 @@ export function AgentCard({
   reorder,
 }: AgentCardProps): ReactElement {
   const { definition, uiState } = agent;
+  const { client } = useServices();
   const status = useAgentFleetStatus(definition.id);
+  // One query for the whole board, shared through the cache: the grant list is
+  // small, it is invalidated by `remote.agent.access.*` (§3.4), and asking per
+  // card would be N requests for one fact.
+  const grants = useRemoteAgents(client, useHasModule('remote'));
+  const grant = grants.data?.agents.find((one) => one.agentId === definition.id);
   const archived = agent.archivedAt !== null;
   const overseer = definition.capabilities?.overseer === true;
   const allDiagnostics = [...agent.diagnostics, ...diagnostics];
@@ -144,6 +153,22 @@ export function AgentCard({
 
       <div className="agent-card__badges">
         {archived ? <span className="badge">archived</span> : null}
+        {/*
+          remote §12.4 / §13.2: the same grant appears on the card, and its
+          **expiry** with it — "a grant with an invisible deadline is a grant the
+          user will be surprised by". Live on `remote.agent.access.*`, which
+          §3.4 already invalidates.
+        */}
+        {grant === undefined ? null : (
+          <span
+            className="badge"
+            data-tone="info"
+            data-remote-grant={definition.id}
+            data-grant-expires={grant.expiresAt}
+          >
+            remote · {grantExpiryLabel(grant, Date.now())}
+          </span>
+        )}
         {agent.needsCredentials === true ? (
           <span className="badge" data-tone="warn">
             <Icon name="key" />

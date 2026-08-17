@@ -60,6 +60,30 @@ export interface LaunchIntent {
   readonly workItemIds?: readonly string[];
 }
 
+/**
+ * What the pattern create dialog was opened with (§5.3 row 3, §10.4).
+ *
+ * The same shape for both ways in — the agent→agent drag and the card `⋯` →
+ * **Start a pair…** — because §5.4's rule that every drag has a non-drag
+ * equivalent is only true if both equivalents end in the same dialog with the
+ * same pre-fill.
+ */
+export interface PairIntent {
+  /** The dragged card — the drafting seat. */
+  readonly agentId: string | null;
+  /** The card it was dropped on — the critic seat. `null` from the menu. */
+  readonly withAgentId: string | null;
+  readonly projectId?: string | null;
+  readonly patternId?: string;
+}
+
+/** `runner.ratelimited`'s payload, kept for §12's cool-down strip. */
+export interface RateLimitNotice {
+  readonly until: string;
+  readonly source: string;
+  readonly hint: string;
+}
+
 /** A transient message — the rollback path of §5.3 and nothing more. */
 export interface Toast {
   readonly id: string;
@@ -85,6 +109,8 @@ export interface AppState {
   /** §5.4's explicit Reorder mode — the pointer-free path to board order. */
   readonly reorderMode: boolean;
   readonly launch: LaunchIntent | null;
+  /** §10.4’s dialog, open or not — the agent→agent gesture’s destination. */
+  readonly pair: PairIntent | null;
   readonly toasts: readonly Toast[];
   /**
    * Open questions, for the rail badge (§2.2).
@@ -94,6 +120,14 @@ export interface AppState {
    * `assignment.question.raised` / `.answered` (§3.4).
    */
   readonly openQuestions: number | null;
+  /**
+   * The live cool-down (§12 panel 2).
+   *
+   * `runner.ratelimited` is the **only** carrier of `source` and `hint` — the
+   * queue route knows the deadline but not where it came from — so the frame is
+   * kept rather than discarded, and cleared when the queue says cooling ended.
+   */
+  readonly rateLimit: RateLimitNotice | null;
 
   /*
    * Declared as function *properties* rather than as methods, deliberately.
@@ -113,10 +147,39 @@ export interface AppState {
   readonly setReorderMode: (on: boolean) => void;
   readonly openLaunch: (intent: LaunchIntent) => void;
   readonly closeLaunch: () => void;
+  readonly openPair: (intent: PairIntent) => void;
+  readonly closePair: () => void;
   readonly pushToast: (message: string, tone?: Toast['tone']) => void;
   readonly dismissToast: (id: string) => void;
   readonly setOpenQuestions: (count: number | null) => void;
   readonly reset: () => void;
+}
+
+/**
+ * `runner.ratelimited` raises the strip; `runner.queue.changed` lowers it.
+ *
+ * Two events rather than a timer, because the deadline can move: runner extends
+ * `coolingUntil` on a second hit, and the scheduler is what knows when
+ * admissions actually resume.
+ */
+export function applyRateLimitEvent(
+  current: RateLimitNotice | null,
+  frame: EventFrame,
+): RateLimitNotice | null {
+  if (frame.type === 'runner.ratelimited') {
+    const payload = frame.payload as Partial<RateLimitNotice> | null;
+    if (payload === null || typeof payload !== 'object') return current;
+    return {
+      until: typeof payload.until === 'string' ? payload.until : '',
+      source: typeof payload.source === 'string' ? payload.source : 'observed',
+      hint: typeof payload.hint === 'string' ? payload.hint : '',
+    };
+  }
+  if (frame.type === 'runner.queue.changed') {
+    const payload = frame.payload as { cooling?: unknown } | null;
+    if (payload !== null && typeof payload === 'object' && payload.cooling === false) return null;
+  }
+  return current;
 }
 
 let toastSeq = 0;
@@ -133,8 +196,10 @@ export const useAppStore = create<AppState>((set) => ({
   quickAddOpen: false,
   reorderMode: false,
   launch: null,
+  pair: null,
   toasts: [],
   openQuestions: null,
+  rateLimit: null,
 
   setTheme: (theme) => set({ theme }),
   setConnection: (connection) => set({ connection }),
@@ -142,6 +207,7 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       fleet: applySessionEvent(state.fleet, frame),
       clones: applyCloneEvent(state.clones, frame),
+      rateLimit: applyRateLimitEvent(state.rateLimit, frame),
     })),
   dismissClone: (projectId) =>
     set((state) => {
@@ -154,6 +220,8 @@ export const useAppStore = create<AppState>((set) => ({
   setReorderMode: (reorderMode) => set({ reorderMode }),
   openLaunch: (launch) => set({ launch }),
   closeLaunch: () => set({ launch: null }),
+  openPair: (pair) => set({ pair }),
+  closePair: () => set({ pair: null }),
   pushToast: (message, tone = 'danger') => {
     toastSeq += 1;
     const toast: Toast = { id: `toast-${String(toastSeq)}`, message, tone };
@@ -171,8 +239,10 @@ export const useAppStore = create<AppState>((set) => ({
       quickAddOpen: false,
       reorderMode: false,
       launch: null,
+      pair: null,
       toasts: [],
       openQuestions: null,
+      rateLimit: null,
     }),
 }));
 

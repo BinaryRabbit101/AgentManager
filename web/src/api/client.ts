@@ -283,8 +283,30 @@ function detailsOf(body: ErrorBody): Readonly<Record<string, unknown>> {
   return rest;
 }
 
-/** remote §6.2's `409` body lists every agent the caller lacks a grant for. */
+/**
+ * remote §6.2's `409` body lists every agent the caller lacks a grant for.
+ *
+ * The wire field is **`agents`**, and its elements are `{ agentId, agentName }`
+ * objects rather than bare ids — remote's middleware builds it that way so a
+ * grant prompt can name the agent without a roster round-trip, and it is always
+ * present, even for a one-agent launch, so there is one shape to handle. The
+ * names ride along in `details.agents`; this returns the ids, which is what the
+ * retry needs. A plain `agentIds` array is accepted too, because a refusal the
+ * client cannot read is a prompt that never appears.
+ */
 function agentIdsOf(body: ErrorBody): readonly string[] {
+  const agents = body['agents'];
+  if (Array.isArray(agents)) {
+    return agents
+      .map((entry) =>
+        typeof entry === 'string'
+          ? entry
+          : typeof entry === 'object' && entry !== null
+            ? (entry as Record<string, unknown>)['agentId']
+            : undefined,
+      )
+      .filter((value): value is string => typeof value === 'string');
+  }
   const raw = body['agentIds'];
   if (!Array.isArray(raw)) return [];
   return raw.filter((value): value is string => typeof value === 'string');

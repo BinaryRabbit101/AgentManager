@@ -50,6 +50,8 @@ export interface DropTarget {
 /** What a completed drag asks the app to do. Nothing here performs it. */
 export type DropOutcome =
   | { readonly kind: 'launch'; readonly agentId: string; readonly projectId: string }
+  /** §5.3 row 3: the pair create dialog, drafting seat × critic seat (§10.4). */
+  | { readonly kind: 'pair'; readonly agentId: string; readonly withAgentId: string }
   /** §5.3 row 2: the launch flow with the item attached. */
   | {
       readonly kind: 'launch-work-item';
@@ -125,12 +127,30 @@ export function stepRing(length: number, index: number, delta: number): number {
 /**
  * What dropping `agentId` on `target` means (§5.3's table).
  *
- * Dropping an agent on **another agent card** is a board reorder: dnd-kit's
- * sortable context owns that element, and §5.3's third row — the pair create
- * dialog — lands with the assignment view (M9), where §5.3 already says "until
- * then the target is inert".
+ * ## The one ambiguity in §5.3's table, and how it is resolved
+ *
+ * Two of its four rows describe the *same* pointer gesture. "Another agent
+ * card" opens the **pair create dialog**; "the board grid itself" is a
+ * **reorder** — but dnd-kit's sortable context reports the card you are over,
+ * not the gap between cards, so a drop is over an agent card in both cases.
+ * Until M9 the target was inert (§5.3 says so in as many words) and the code
+ * read every agent→agent drop as a reorder; with the assignment view landed,
+ * both meanings are live and something has to tell them apart.
+ *
+ * **Reorder mode is what tells them apart**, and it is not a new invention:
+ * §5.4 already lists "Reorder mode" as *the* non-drag path to board order, and
+ * gives the pair gesture its own row. So inside Reorder mode an agent→agent
+ * drop reorders, and outside it the same drop opens the pair dialog. Each
+ * gesture keeps its own keyboard path — which is what IMPLEMENTATION §11 then
+ * requires, listing "agent→agent" and "board reorder" as two of the four drags
+ * that each need one.
  */
-export function dropOutcome(agentId: string, target: DropTarget | undefined): DropOutcome {
+export function dropOutcome(
+  agentId: string,
+  target: DropTarget | undefined,
+  /** `true` while the board is in §5.4's explicit Reorder mode. */
+  reordering = false,
+): DropOutcome {
   if (target === undefined) return { kind: 'none' };
   if (target.kind === 'project') {
     if (target.refusal !== undefined) {
@@ -150,7 +170,8 @@ export function dropOutcome(agentId: string, target: DropTarget | undefined): Dr
     };
   }
   if (target.id === agentId) return { kind: 'none' };
-  return { kind: 'reorder', agentId, overAgentId: target.id };
+  if (reordering) return { kind: 'reorder', agentId, overAgentId: target.id };
+  return { kind: 'pair', agentId, withAgentId: target.id };
 }
 
 // ---------------------------------------------------------------------------
@@ -167,12 +188,17 @@ export function pickedUp(agentName: string): string {
  * and the same sentence the live region reads on every target change, so the
  * pointer user and the screen-reader user are told the same thing.
  */
-export function overTarget(agentName: string, target: DropTarget | undefined): string {
+export function overTarget(
+  agentName: string,
+  target: DropTarget | undefined,
+  reordering = false,
+): string {
   if (target === undefined) return `${agentName} is over no target.`;
   if (target.kind === 'agent') {
-    return target.label === agentName
-      ? `${agentName} is back in its own place.`
-      : `Move ${agentName} to ${target.label}'s place.`;
+    if (target.label === agentName) return `${agentName} is back in its own place.`;
+    return reordering
+      ? `Move ${agentName} to ${target.label}'s place.`
+      : `Start a pair: ${agentName} drafting, ${target.label} reviewing.`;
   }
   if (target.refusal !== undefined) {
     return `${target.label} can't be launched on: ${target.refusal}.`;
@@ -189,6 +215,8 @@ export function droppedOn(agentName: string, outcome: DropOutcome, targetLabel?:
       return `Opening the launch flow for ${agentName} on ${targetLabel ?? 'the project'}. Nothing has started yet.`;
     case 'launch-work-item':
       return `Opening the launch flow for ${agentName} on “${targetLabel ?? 'the work item'}”. Nothing has started yet.`;
+    case 'pair':
+      return `Opening the pair dialog for ${agentName} with ${targetLabel ?? 'the other agent'}. Nothing has started yet.`;
     case 'reorder':
       return `Moved ${agentName} to ${targetLabel ?? 'a new position'}.`;
     case 'refused':

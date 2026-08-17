@@ -359,7 +359,7 @@ describe('the degraded states of §3.5', () => {
       ...BOOT_FACTS,
       health: {
         ...BOOT_FACTS.health,
-        modules: BOOT_FACTS.health.modules.filter((one) => one.name !== 'orchestrator'),
+        modules: BOOT_FACTS.health.modules.filter((one) => one.id !== 'orchestrator'),
       },
     };
     mount(<App />, { respond: fixture.respond, boot });
@@ -386,7 +386,7 @@ describe('the degraded states of §3.5', () => {
       ...BOOT_FACTS,
       health: {
         ...BOOT_FACTS.health,
-        modules: [...BOOT_FACTS.health.modules, { name: 'remote', status: 'ok' as const }],
+        modules: [...BOOT_FACTS.health.modules, { id: 'remote', status: 'ok' as const }],
       },
     };
     mount(<App />, { respond: fixture.respond, boot });
@@ -395,6 +395,86 @@ describe('the degraded states of §3.5', () => {
     await waitFor(() =>
       expect(within(dialog).getByText(/Allow remote starts for Priya/u)).toBeInTheDocument(),
     );
+  });
+});
+
+/**
+ * IMPLEMENTATION §10: "A remote launch of an ungranted agent shows the grant
+ * prompt and retries automatically — tested against **`POST /api/assignments/
+ * solo`**, the path the UI actually uses."
+ */
+describe('the grant prompt and its automatic retry (§6, §13.4)', () => {
+  const REMOTE_BOOT = {
+    ...BOOT_FACTS,
+    health: {
+      ...BOOT_FACTS.health,
+      modules: [...BOOT_FACTS.health.modules, { id: 'remote', status: 'ok' as const }],
+    },
+  };
+
+  it('asks once, then retries the original request with the atomic grant', async () => {
+    let refused = true;
+    const posts: unknown[] = [];
+    const base = serving();
+    const respond: Responder = (url, init) => {
+      const path = url.split('?')[0] ?? url;
+      if (path === '/api/assignments/solo' && init.method === 'POST') {
+        const body = JSON.parse(init.body as string) as Record<string, unknown>;
+        posts.push(body);
+        if (refused && body['confirmRemoteAccess'] !== true) {
+          refused = false;
+          return json(
+            {
+              error: 'remote_access_required',
+              message: 'These agents have not been allowed to be started remotely yet.',
+              agents: [{ agentId: 'priya', agentName: 'Priya' }],
+            },
+            409,
+          );
+        }
+        return json({ assignmentId: 'as1', sessionId: 'se1', warnings: [] }, 201);
+      }
+      return base.respond(url, init);
+    };
+
+    mount(<App />, { respond, boot: REMOTE_BOOT, token: 'a-device-token' });
+    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    const dialog = await flow();
+
+    const user = userEvent.setup();
+    await user.type(promptOf(dialog), 'Fix the billing migration{Enter}');
+
+    // Not an error — a question (§13.4: "Never presented as an error").
+    const prompt = await screen.findByText(/Allow Priya to be started remotely\?/u);
+    expect(prompt.closest('[data-grant-prompt="true"]')).not.toBeNull();
+    expect(within(dialog).queryByRole('alert')).toBeNull();
+    expect(posts).toHaveLength(1);
+
+    await user.click(screen.getByRole('button', { name: 'Allow and start' }));
+
+    // The same request, once more, with the grant made in the same call.
+    await waitFor(() => expect(posts).toHaveLength(2));
+    const retry = posts[1] as Record<string, unknown>;
+    expect(retry['confirmRemoteAccess']).toBe(true);
+    expect(retry['prompt']).toBe('Fix the billing migration');
+    expect(retry['agentId']).toBe('priya');
+    // And the session opened, so the extra tap cost the user nothing else.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Session' })).toBeInTheDocument(),
+    );
+  });
+
+  it('pre-authorises from the desk instead, through remote’s grant route (§6)', async () => {
+    const fixture = serving();
+    mount(<App />, { respond: fixture.respond, boot: REMOTE_BOOT });
+    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    const dialog = await flow();
+
+    const user = userEvent.setup();
+    await user.click(await within(dialog).findByLabelText(/Allow remote starts for Priya/u));
+    await waitFor(() => expect(fixture.posts).toContain('/api/remote/agents/priya/access'));
+    // Nothing was launched by ticking a box.
+    expect(fixture.posts).not.toContain('/api/assignments/solo');
   });
 });
 

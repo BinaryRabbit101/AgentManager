@@ -6,10 +6,12 @@
  * table: **Launch on…**, which opens the same launch flow the drop opens, with
  * the project picker unset instead of pre-filled.
  *
- * §5.2 lists six more entries. **Edit**, **Duplicate** and **Export** arrive with
- * M8, which is what they open; **Start a pair…** (M9) and **Allow remote
- * starts** (M10) are still absent rather than stubbed, because a menu item that
- * opens nothing is worse than one that is not there yet.
+ * §5.2's other entries: **Edit**, **Duplicate** and **Export** (M8), and
+ * **Start a pair…** (M9) — §5.4's pointer-free equivalent of dropping one card
+ * on another, opening the same dialog the drop opens. Remote starts are granted
+ * from the launch flow's toggle and from settings (§13.2), not from here: a
+ * grant is a decision about an agent, and the card carries its *state* as a
+ * badge rather than a second control that could disagree with the first.
  *
  * Duplicate posts and then navigates rather than opening a dialog: roster's
  * `POST /agents/:id/duplicate` mints the second folder and returns the
@@ -18,7 +20,7 @@
  */
 
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { queryKeys } from '../api/queries';
@@ -36,6 +38,7 @@ export interface AgentCardMenuProps {
 export function AgentCardMenu({ agentId, agentName, archived }: AgentCardMenuProps): ReactElement {
   const [open, setOpen] = useState(false);
   const openLaunch = useAppStore((store) => store.openLaunch);
+  const openPair = useAppStore((store) => store.openPair);
   const pushToast = useAppStore((store) => store.pushToast);
   const { client } = useServices();
   const queryClient = useQueryClient();
@@ -43,7 +46,7 @@ export function AgentCardMenu({ agentId, agentName, archived }: AgentCardMenuPro
   const hostRef = useRef<HTMLDivElement>(null);
 
   async function duplicate(): Promise<void> {
-    setOpen(false);
+    close();
     const result = await client.request<AgentView>(
       `/roster/agents/${encodeURIComponent(agentId)}/duplicate`,
       { method: 'POST', body: {} },
@@ -56,22 +59,38 @@ export function AgentCardMenu({ agentId, agentName, archived }: AgentCardMenuPro
     navigate(`/agents/${encodeURIComponent(result.value.definition.id)}`);
   }
 
-  // §15: `Esc` closes it and focus returns to the trigger that opened it.
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  /**
+   * §15, and the reason it matters beyond the menu itself.
+   *
+   * Focus moves **into** the menu when it opens, and back to the `⋯` when it
+   * closes — by `Esc` or by picking something. The second half is what makes a
+   * dialog opened from here restorable: `useFocusTrap` remembers whatever had
+   * focus when the dialog mounted, and a menu item that has already unmounted
+   * is not somewhere focus can go back to.
+   */
+  const close = useCallback((): void => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  }, []);
+
   useEffect(() => {
     if (!open) return undefined;
+    hostRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return;
-      setOpen(false);
-      hostRef.current?.querySelector<HTMLElement>('button')?.focus();
+      close();
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [open]);
+  }, [close, open]);
 
   return (
     <div className="card-menu" ref={hostRef}>
       <button
         type="button"
+        ref={triggerRef}
         className="card-menu__trigger"
         aria-haspopup="menu"
         aria-expanded={open}
@@ -88,7 +107,7 @@ export function AgentCardMenu({ agentId, agentName, archived }: AgentCardMenuPro
               role="menuitem"
               disabled={archived}
               onClick={() => {
-                setOpen(false);
+                close();
                 openLaunch({ agentId, projectId: null, origin: 'agent-menu' });
               }}
             >
@@ -96,11 +115,29 @@ export function AgentCardMenu({ agentId, agentName, archived }: AgentCardMenuPro
             </button>
           </li>
           <li role="none">
+            {/*
+              §5.4's agent→agent row: the pointer-free equivalent of dropping
+              one card on another. It opens the *same* dialog the drop opens,
+              with this card in the drafting seat and the critic seat to pick.
+            */}
+            <button
+              type="button"
+              role="menuitem"
+              disabled={archived}
+              onClick={() => {
+                close();
+                openPair({ agentId, withAgentId: null });
+              }}
+            >
+              Start a pair…
+            </button>
+          </li>
+          <li role="none">
             <button
               type="button"
               role="menuitem"
               onClick={() => {
-                setOpen(false);
+                close();
                 navigate(`/agents/${encodeURIComponent(agentId)}`);
               }}
             >

@@ -27,6 +27,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
+import { useFocusTrap } from '../a11y/focusTrap';
 import { useBridge, useServices } from '../app/AppContext';
 import { queryKeys } from '../api/queries';
 import type { ApiFailure } from '../api/result';
@@ -58,6 +59,9 @@ export function QuickAddDialog({ onClose, onCreated }: QuickAddDialogProps): Rea
   useEffect(() => {
     dialogRef.current?.querySelector<HTMLElement>('input')?.focus();
   }, []);
+
+  // …and stays inside it, and returns to the Add project button on close.
+  useFocusTrap(dialogRef);
 
   /**
    * The **one** call site behind the Browse button (§1.5 #5, §8.1).

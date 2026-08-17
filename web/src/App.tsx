@@ -12,10 +12,13 @@ import { Route, Routes } from 'react-router-dom';
 
 import { AgentDetail } from './agents/AgentDetail';
 import { AgentWizard } from './agents/AgentWizard';
+import { AssignmentPage } from './assignments/AssignmentPage';
+import { PatternCreateHost } from './assignments/PatternCreateDialog';
 import { Board } from './board/Board';
 import { AppFrame } from './app/AppFrame';
 import { DebugPanel } from './app/DebugPanel';
-import { Placeholder } from './app/Placeholder';
+import { SettingsPage } from './settings/SettingsPage';
+import { UsageView } from './usage/UsageView';
 import { Toasts } from './app/Toasts';
 import { useBridge, useServices } from './app/AppContext';
 import { useDesktopBridge } from './app/useDesktopBridge';
@@ -46,23 +49,12 @@ export function App(): ReactElement {
           <Route path="/agents/:id" element={<AgentDetail />} />
           <Route path="/projects/:id" element={<ProjectPage />} />
           <Route path="/sessions/:id" element={<SessionView />} />
-          <Route
-            path="/assignments/:id"
-            element={
-              <Placeholder title="Assignment" milestone="M9" what="The collaboration view" />
-            }
-          />
+          <Route path="/assignments/:id" element={<AssignmentPage />} />
           <Route path="/questions" element={<QuestionInbox />} />
           {/* The ntfy deep-link target (§2.1, orchestrator §10). */}
           <Route path="/questions/:id" element={<QuestionInbox />} />
-          <Route
-            path="/usage"
-            element={<Placeholder title="Usage" milestone="M10" what="The usage view" />}
-          />
-          <Route
-            path="/settings"
-            element={<Placeholder title="Settings" milestone="M10" what="Settings" />}
-          />
+          <Route path="/usage" element={<UsageView />} />
+          <Route path="/settings" element={<SettingsPage />} />
           {/*
             The SPA's own 404. Foundation's history fallback hands every unknown
             non-API path to index.html, so this is where a mistyped URL lands —
@@ -85,6 +77,10 @@ export function App(): ReactElement {
           from a project card would otherwise cause (§5.4, §6).
         */}
         <LaunchFlowHost />
+        {/* §10.4's dialog, mounted beside the launch flow and for the same
+            reason: it is opened from the board and from a card menu, and must
+            survive the navigation either would otherwise cause. */}
+        <PatternCreateHost />
         <Toasts />
       </AppFrame>
     </>

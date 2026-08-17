@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * The ui M1–M8 acceptance criteria that cannot be automated in this repository,
+ * The ui M1–M11 acceptance criteria that cannot be automated in this repository,
  * as a runnable checklist.
  *
  * `npm run checks:ui` prints it. Everything **not** listed here is automated —
@@ -23,6 +23,19 @@
  * Playwright was considered and not used: it needs a browser download this
  * environment cannot rely on, and a suite that silently skips is worse than a
  * checklist that has to be read.
+ *
+ * M11 is the accessibility gate, and its entries below are deliberately few.
+ * Everything in §11 that a machine can decide **is** decided by a machine:
+ * `web/src/a11y/axe.test.tsx` (ten routes × two themes),
+ * `web/src/a11y/contrast.test.ts` (every token pair, both themes, ratios
+ * recorded in the token file), `web/src/a11y/keyboard.test.tsx` (reachability,
+ * focus rings, focus traps, `Esc`, restoration), `web/src/a11y/drag.test.tsx`
+ * (four gestures × keyboard and pointer-free), `web/src/a11y/liveRegions.test.tsx`
+ * (what is announced and what must never be), `web/src/a11y/responsive.test.ts`
+ * (the CSP and the properties that prevent horizontal scroll) and
+ * `web/src/a11y/crossDelivery.test.tsx` (Electron vs the tailnet browser). What
+ * is left here needs a real screen reader, a real rendering engine, or a real
+ * phone — three things this repository does not have.
  */
 
 const CHECKS = [
@@ -303,16 +316,110 @@ const CHECKS = [
       'Any run over a minute is a milestone failure — say whether it was the model or the form.',
     ],
   },
+  {
+    id: 'M9-above-the-fold',
+    criterion:
+      'Phase, rounds used/cap and tokens used/budget are visible without scrolling on desktop and above the fold on phone.',
+    reference: 'ui DESIGN §10.2, IMPLEMENTATION §9',
+    why: 'A claim about pixels at four viewport sizes. jsdom has no layout.',
+    automated:
+      'web/src/assignments/AssignmentPage.test.tsx — that all three facts render inside the header, that the header is the first element on the screen, and that collaboration.css pins it with position: sticky.',
+    steps: [
+      'Open a running pair assignment at 1280px and scroll the conversation to the last round.',
+      'The header stays put and still reads the phase, the round pips and the token bar.',
+      'Repeat at 390 × 844: the same three facts are visible before any scrolling.',
+      'Repeat at 200% zoom: the header may take more height, but it must still be scrollable past — a fixed header that eats the viewport is a failure.',
+    ],
+  },
+  {
+    id: 'M10-pair-a-real-phone',
+    criterion:
+      'Scanning the QR from a phone browser pairs it: the token is read from location.hash, stripped before first render, stored, and the app loads authenticated.',
+    reference: 'ui DESIGN §3.2, §13.2, IMPLEMENTATION §10',
+    why: 'A real camera, a real tailnet and a real second device. The remote listener binds a Tailscale address and refuses loopback peers by design (remote §9.2 #6), so no test here can drive it.',
+    automated:
+      'web/src/remote/qr.test.ts — the encoder, verified by decoding its own matrix back. web/src/api/pairing.test.ts — the fragment is claimed and stripped, before React mounts. web/e2e/pairing.test.ts — the real core mints a real token, the list never carries the plaintext, and the deny list the settings screen greys controls from is the real one. web/src/app/shell.test.tsx — a 401 renders the pairing screen.',
+    steps: [
+      'At the desk: Settings → Remote access → Create device token. The plaintext and a QR appear.',
+      'Scan the QR with the phone camera and open it in the phone browser, on the tailnet.',
+      'Before touching anything, look at the address bar: the #t=… fragment must already be gone.',
+      'The board loads. Check the Network panel: every /api call carries Authorization: Bearer.',
+      'Dismiss the token panel at the desk and confirm the plaintext never reappears anywhere.',
+      'Revoke that token from the phone. The phone drops to the pairing screen on its next request.',
+    ],
+  },
+  {
+    id: 'M10-tailnet-denials',
+    criterion:
+      'Over the tailnet, Create token / Enable remote access / Restart listener / Stop background service are visible and disabled with their reasons, and never produce a raw 403.',
+    reference: 'ui DESIGN §13.4, IMPLEMENTATION §10',
+    why: 'The screen half is automated; what needs eyes is that the four disabled controls read as an explained boundary rather than as a broken page.',
+    automated:
+      'web/src/settings/SettingsPage.test.tsx — all four visible, disabled, with the server’s own reason both in the title and on the page; and all four live at the desk. web/src/remote/access.test.ts — the denied set is read from the status payload, so a new denial greys the right control by itself.',
+    steps: [
+      'Open Settings from the phone. Read the four disabled controls and their reasons aloud.',
+      'Confirm none of them is hidden, and that no request is sent when they are tapped.',
+      'Lower the concurrency cap from the phone (it works), then try to raise it (disabled, with the reason).',
+      'Do all four at the desk and confirm each is live.',
+    ],
+  },
+  {
+    id: 'M11-screen-reader',
+    criterion:
+      'A screen reader announces status transitions, arriving questions and drag events — and does not announce streaming assistant text.',
+    reference: 'ui DESIGN §15, IMPLEMENTATION §11',
+    why: 'The last genuinely un-automatable criterion in the element: what a real screen reader chooses to read cannot be derived from the DOM. What the DOM offers it is fully asserted.',
+    automated:
+      'web/src/a11y/liveRegions.test.tsx — one polite region for the whole app, the exact sentences for status transitions and arriving questions, silence for every session.delta/message/tool/usage frame, the transcript at aria-live="off", and assertive reserved for dnd-kit. web/src/a11y/drag.test.tsx — every drag gesture’s announcement, through the real sensor.',
+    steps: [
+      'Turn on Narrator (Win+Ctrl+Enter) or NVDA and open the board.',
+      'Start a session elsewhere and let it finish: "<agent>’s session finished" is read once.',
+      'Make an agent ask something: "A question is waiting for you" is read once.',
+      'Tab to a card, press Space, arrow across the targets: each target change is read.',
+      'Open a session that is streaming: the transcript must stay silent while text arrives. Any reading of assistant tokens is a milestone failure.',
+      'Answer the question and confirm the badge change is not announced twice.',
+    ],
+  },
+  {
+    id: 'M11-zoom-and-390',
+    criterion:
+      'No horizontal page scroll at 390px or at 200% zoom on any route; code and diff blocks scroll inside their own containers.',
+    reference: 'ui DESIGN §2.3, §15, IMPLEMENTATION §11',
+    why: 'A measurement that needs a layout engine at four widths and two zoom levels.',
+    automated:
+      'web/src/a11y/responsive.test.ts — no fixed pixel width on any container, flexible grid tracks, every wide thing inside an overflow-x container, a viewport meta that permits zoom, and the breakpoints of §2.2/§2.3.',
+    steps: [
+      'For each of the ten routes, at 390 / 768 / 1280 / 1920: confirm document.scrollingElement.scrollWidth equals its clientWidth.',
+      'Repeat every route at 200% browser zoom.',
+      'On the session view, find a wide Bash result and a diff: each scrolls inside its own box while the page does not.',
+      'On the usage screen, the queue table scrolls inside its panel.',
+    ],
+  },
+  {
+    id: 'M11-cross-delivery-by-eye',
+    criterion:
+      'The same dist/ in Electron and in the remote browser produces the same behaviour on board, launch, session, inbox, project and usage.',
+    reference: 'ui DESIGN §13.4, IMPLEMENTATION §11',
+    why: 'The behavioural half is automated against both client shapes; what needs a person is the visual diff of two real windows.',
+    automated:
+      'web/src/a11y/crossDelivery.test.tsx — five screens compared heading-for-heading, landmark-for-landmark and control-for-control between the Electron bridge and a bearer-holding browser, plus §13.4’s differences each asserted explicitly (the bearer, the denied controls, the folder picker, the identical inbox).',
+    steps: [
+      'Build once. Open the Electron window and a phone browser on the same core.',
+      'Walk the six screens side by side and note every difference.',
+      'Each difference must be on §13.4’s list: entry/pairing, the bearer, denied controls, the launch grant prompt, the token expiry banner, notification wording, the phone layout.',
+      'Anything else is a milestone failure — write down which screen and which control.',
+    ],
+  },
 ];
 
 const bold = (text) => `[1m${text}[0m`;
 const dim = (text) => `[2m${text}[0m`;
 
-console.log(bold('\nui M1–M8 — manual acceptance checks'));
+console.log(bold('\nui M1–M11 — manual acceptance checks'));
 console.log(
   dim(
     `${String(CHECKS.length)} criteria that need a real browser, a real process kill, a real phone, or a stopwatch.\n` +
-      'Everything else in ui IMPLEMENTATION §1–§8 is covered by `npm test`.\n',
+      'Everything else in ui IMPLEMENTATION §1–§11 is covered by `npm test`.\n',
   ),
 );
 

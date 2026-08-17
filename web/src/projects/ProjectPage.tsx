@@ -41,6 +41,7 @@ import {
   useWorkItems,
   useWorkspaces,
 } from '../api/queries';
+import { ConfirmDialog } from '../a11y/ConfirmDialog';
 import { failureOf } from '../api/result';
 import {
   envEntryView,
@@ -315,7 +316,7 @@ function ReviewNeeded({ projectId }: { readonly projectId: string }): ReactEleme
       </ul>
 
       {confirming === undefined ? null : (
-        <div className="dialog" role="dialog" aria-modal="true" aria-label="Clean up worktree">
+        <ConfirmDialog label="Clean up worktree" onClose={() => setConfirming(undefined)}>
           {/* Named, always: projects never discards agent output on its own, so
               the user has to be able to see which branch they are throwing out. */}
           <p>
@@ -334,7 +335,7 @@ function ReviewNeeded({ projectId }: { readonly projectId: string }): ReactEleme
           >
             Remove {confirming.branch ?? 'the worktree'}
           </button>
-        </div>
+        </ConfirmDialog>
       )}
     </section>
   );

@@ -15,7 +15,7 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
-import { anAgent, aProject, json, mount, type Responder } from '../../test/harness';
+import { anAgent, aProject, BOOT_FACTS, json, mount, type Responder } from '../../test/harness';
 import { App } from '../App';
 import type { AgentView, Project } from '../api/types';
 
@@ -411,5 +411,76 @@ describe('the projects rail (§5.1)', () => {
       ).toBeInTheDocument(),
     );
     expect(screen.getByRole('button', { name: /Add project/u })).toBeInTheDocument();
+  });
+});
+
+/**
+ * IMPLEMENTATION §10: "Per-agent grants show `expiresAt` on **both** the
+ * settings screen and the board card, and update live on
+ * `remote.agent.access.*`." The settings half is in
+ * `settings/SettingsPage.test.tsx`; this is the card half.
+ */
+describe('the remote grant badge on the card (§13.2, remote §12.4)', () => {
+  const REMOTE_BOOT = {
+    ...BOOT_FACTS,
+    health: {
+      ...BOOT_FACTS.health,
+      modules: [...BOOT_FACTS.health.modules, { id: 'remote', status: 'ok' as const }],
+    },
+  };
+
+  function withGrants(grants: readonly unknown[]): Responder {
+    const base = serving({ agents: [anAgent({ id: 'priya', name: 'Priya' })] });
+    return (url, init) => {
+      const path = url.split('?')[0] ?? url;
+      if (path === '/api/remote/agents') return json({ agents: grants });
+      return base.respond(url, init);
+    };
+  }
+
+  it('shows the expiry, and repaints when a grant event arrives', async () => {
+    const mounted = mount(<App />, {
+      respond: withGrants([
+        {
+          agentId: 'priya',
+          agentName: 'Priya',
+          enabled: true,
+          grantedAt: '2026-08-17T09:00:00.000Z',
+          expiresAt: new Date(Date.now() + 2 * 86_400_000 + 3_600_000).toISOString(),
+          grantedVia: 'local',
+          tokenId: 'tok_1',
+        },
+      ]),
+      boot: REMOTE_BOOT,
+    });
+
+    const badge = await waitFor(() => {
+      const found = document.querySelector('[data-remote-grant="priya"]');
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(badge.textContent).toContain('expires in 2 days');
+    expect(badge.getAttribute('data-grant-expires')).not.toBe('');
+
+    // The list is invalidated by the grant events (§3.4), so a revoke elsewhere
+    // repaints the card rather than leaving a stale promise on it.
+    const before = mounted.calls.filter((call) => call.startsWith('/api/remote/agents')).length;
+    mounted.stream.emit({
+      type: 'remote.agent.access.revoked',
+      id: 'evt_grant',
+      ids: { agentId: 'priya' },
+    });
+    await waitFor(() =>
+      expect(
+        mounted.calls.filter((call) => call.startsWith('/api/remote/agents')).length,
+      ).toBeGreaterThan(before),
+    );
+  });
+
+  it('asks nothing of the remote module when it is not loaded (§3.5)', async () => {
+    const mounted = mount(<App />, { respond: withGrants([]) });
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Priya' })).toBeInTheDocument());
+    expect(mounted.calls.filter((call) => call.startsWith('/api/remote'))).toEqual([]);
+    expect(document.querySelector('[data-remote-grant]')).toBeNull();
   });
 });

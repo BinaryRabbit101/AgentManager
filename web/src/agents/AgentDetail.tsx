@@ -28,6 +28,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState, type ReactElement } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
+import { ConfirmDialog } from '../a11y/ConfirmDialog';
 import { queryKeys, useAgent, useAgentSessions, useProjects } from '../api/queries';
 import { failureOf, type ApiFailure } from '../api/result';
 import type { AgentView, RemoveAgentResult } from '../api/types';
@@ -206,7 +207,7 @@ export function AgentDetail(): ReactElement {
       )}
 
       {confirmArchive ? (
-        <div className="dialog" role="dialog" aria-modal="true" aria-label="Archive agent">
+        <ConfirmDialog label="Archive agent" onClose={() => setConfirmArchive(false)}>
           <p>
             Archive <strong>{view.definition.name}</strong>? Its history and transcripts are kept,
             and its id is never reused.
@@ -248,7 +249,7 @@ export function AgentDetail(): ReactElement {
               only be archived.
             </p>
           )}
-        </div>
+        </ConfirmDialog>
       ) : null}
 
       <PermissionPreviewPanel agentId={id} />

@@ -12,8 +12,17 @@ import type { ApiClient } from './client';
 import { unwrap } from './result';
 import type {
   AgentView,
+  AssignmentListView,
+  AssignmentView,
   BrowseListing,
+  ConversationView,
   EffectiveConfig,
+  PatternListView,
+  RemoteAgentListView,
+  RemoteStatus,
+  RemoteTokenListView,
+  RunnerQueue,
+  RunnerUsage,
   FleetStatus,
   Health,
   ProjectActivityPage,
@@ -46,6 +55,15 @@ export const queryKeys = {
   agentSessions: (id: string) => ['sessions', { agentId: id }] as const,
   questions: (status: QuestionStatus) => ['questions', { status }] as const,
   question: (id: string) => ['questions', 'one', id] as const,
+  assignments: (status: string) => ['assignments', { status }] as const,
+  assignment: (id: string) => ['assignments', 'one', id] as const,
+  conversation: (id: string) => ['assignments', 'one', id, 'conversation'] as const,
+  patterns: ['assignments', 'patterns'] as const,
+  runnerUsage: ['runner', 'usage'] as const,
+  runnerQueue: ['runner', 'queue'] as const,
+  remoteStatus: ['remote', 'status'] as const,
+  remoteTokens: ['remote', 'tokens'] as const,
+  remoteAgents: ['remote', 'agents'] as const,
 };
 
 /** §16: generous, because invalidation is event-driven rather than temporal. */
@@ -229,6 +247,125 @@ export function useAgentSessions(client: ApiClient, id: string): UseQueryResult<
     queryKey: queryKeys.agentSessions(id),
     queryFn: async () =>
       unwrap(await client.request<SessionListView>('/sessions', { query: { agentId: id } })),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/** `GET /api/assignments/:id` — §10.2's header. The same route for a solo one. */
+export function useAssignment(client: ApiClient, id: string): UseQueryResult<AssignmentView> {
+  return useQuery({
+    queryKey: queryKeys.assignment(id),
+    queryFn: async () =>
+      unwrap(await client.request<AssignmentView>(`/assignments/${encodeURIComponent(id)}`)),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/**
+ * `GET /api/assignments/:id/conversation` — rounds → entries (§10.1).
+ *
+ * "The UI performs no merge of its own: the ordering is the server's." So this
+ * is one request and the component renders what comes back in the order it
+ * comes back — there is no second query to join a turn to its report.
+ */
+export function useConversation(client: ApiClient, id: string): UseQueryResult<ConversationView> {
+  return useQuery({
+    queryKey: queryKeys.conversation(id),
+    queryFn: async () =>
+      unwrap(
+        await client.request<ConversationView>(
+          `/assignments/${encodeURIComponent(id)}/conversation`,
+        ),
+      ),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/** `GET /api/assignments?status=open` — §12's third panel, in tokens. */
+export function useAssignments(
+  client: ApiClient,
+  status: 'open' | 'closed' = 'open',
+): UseQueryResult<AssignmentListView> {
+  return useQuery({
+    queryKey: queryKeys.assignments(status),
+    queryFn: async () =>
+      unwrap(await client.request<AssignmentListView>('/assignments', { query: { status } })),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/** `GET /api/patterns` — §10.4's dialog is driven "entirely" by this. */
+export function usePatterns(client: ApiClient, enabled = true): UseQueryResult<PatternListView> {
+  return useQuery({
+    queryKey: queryKeys.patterns,
+    enabled,
+    queryFn: async () => unwrap(await client.request<PatternListView>('/patterns')),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/**
+ * `GET /api/runner/usage` — §12's first panel.
+ *
+ * Runner's own IMPLEMENTATION M11 owns this route; until it lands the request
+ * 404s and the panel says so in one sentence rather than rendering zeros that
+ * would read as "you have used nothing" (§12's honesty contract). `retry: false`
+ * is inherited, so the absent case costs one request per mount and no more.
+ */
+export function useRunnerUsage(client: ApiClient): UseQueryResult<RunnerUsage> {
+  return useQuery({
+    queryKey: queryKeys.runnerUsage,
+    queryFn: async () => unwrap(await client.request<RunnerUsage>('/runner/usage')),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/** `GET /api/runner/queue` — §12's second panel, live on `runner.queue.changed`. */
+export function useRunnerQueue(client: ApiClient): UseQueryResult<RunnerQueue> {
+  return useQuery({
+    queryKey: queryKeys.runnerQueue,
+    queryFn: async () => unwrap(await client.request<RunnerQueue>('/runner/queue')),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/**
+ * `GET /api/remote/status` — §13.2, and the source of §13.4's deny list.
+ *
+ * `enabled` is the feature detection of §3.5: in the work edition the module is
+ * not loaded and its routes do not exist, so the query is never made. It is not
+ * a 404 probe — the decision is read from the module list at boot.
+ */
+export function useRemoteStatus(client: ApiClient, enabled: boolean): UseQueryResult<RemoteStatus> {
+  return useQuery({
+    queryKey: queryKeys.remoteStatus,
+    enabled,
+    queryFn: async () => unwrap(await client.request<RemoteStatus>('/remote/status')),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+export function useRemoteTokens(
+  client: ApiClient,
+  enabled: boolean,
+): UseQueryResult<RemoteTokenListView> {
+  return useQuery({
+    queryKey: queryKeys.remoteTokens,
+    enabled,
+    queryFn: async () => unwrap(await client.request<RemoteTokenListView>('/remote/tokens')),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/** `GET /api/remote/agents` — the per-agent grants of §13.2, with `expiresAt`. */
+export function useRemoteAgents(
+  client: ApiClient,
+  enabled: boolean,
+): UseQueryResult<RemoteAgentListView> {
+  return useQuery({
+    queryKey: queryKeys.remoteAgents,
+    enabled,
+    queryFn: async () => unwrap(await client.request<RemoteAgentListView>('/remote/agents')),
     staleTime: DEFAULT_STALE_TIME_MS,
   });
 }

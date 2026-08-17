@@ -27,6 +27,15 @@ export interface InvalidationPlan {
   /** True for `project.clone.*` — §8.1's progress row, folded in the store. */
   readonly cloneProgress: boolean;
   /**
+   * True for `runner.ratelimited` and `runner.queue.changed` — §12's cool-down.
+   *
+   * Folded into the store as well as invalidating the queue, because
+   * `runner.ratelimited` is the **only** carrier of the cool-down's `source` and
+   * `hint`: the queue route knows the deadline but not where it came from, so a
+   * refetch alone would lose half the sentence §12 requires.
+   */
+  readonly schedulerState: boolean;
+  /**
    * `+1` when a question was raised, `-1` when one was answered, `0` otherwise.
    *
    * §2.2's badge count is `GET /api/orchestrator/status`'s `questions.open`, and
@@ -44,6 +53,7 @@ const EMPTY: InvalidationPlan = {
   sessionLifecycle: false,
   perSessionDetail: false,
   cloneProgress: false,
+  schedulerState: false,
   questionDelta: 0,
 };
 
@@ -124,7 +134,11 @@ export function plan(frame: EventFrame): InvalidationPlan {
   }
 
   if (type.startsWith('runner.')) {
-    return { ...EMPTY, invalidate: [['runner']] };
+    return {
+      ...EMPTY,
+      invalidate: [['runner']],
+      schedulerState: type === 'runner.ratelimited' || type === 'runner.queue.changed',
+    };
   }
 
   if (type.startsWith('remote.')) {

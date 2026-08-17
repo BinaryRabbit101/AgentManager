@@ -73,10 +73,25 @@ describe('the boot sequence (§3.5, IMPLEMENTATION §1)', () => {
   });
 
   it('surfaces the server’s own refusal message rather than paraphrasing it', async () => {
-    bootWith(() => json({ error: 'unauthorized', message: 'That token is no longer valid.' }, 401));
+    bootWith(() =>
+      json({ error: 'project_not_found', message: 'That project is not registered.' }, 404),
+    );
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('That token is no longer valid.');
-    expect(alert).toHaveTextContent('unauthorized');
+    expect(alert).toHaveTextContent('That project is not registered.');
+  });
+
+  /**
+   * §3.2: "The pairing screen is reached **only** by a `401`." Until M10 a `401`
+   * fell through to the diagnostic screen, which told an unpaired phone that the
+   * core was unreachable — it is not; it is refusing this device. The client has
+   * already cleared the stored token by the time we get here (§3.1), so there is
+   * nothing to retry and the honest screen is the one that pairs.
+   */
+  it('shows the pairing screen on a 401 rather than the diagnostic screen', async () => {
+    bootWith(() => json({ error: 'unauthorized', message: 'That token is no longer valid.' }, 401));
+    expect(await screen.findByRole('heading', { name: 'Pair this device' })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Pair' })).toBeDisabled();
   });
 
   it('retries on demand and renders once the core answers', async () => {
@@ -132,7 +147,7 @@ describe('the frame and the debug panel (§2.2, IMPLEMENTATION §1)', () => {
           conditions: [
             {
               level: 'warn',
-              code: 'anthropic_api_key_present',
+              id: 'secrets.anthropicApiKeyOverridesSubscription',
               message: 'ANTHROPIC_API_KEY is set and overrides subscription auth.',
             },
           ],
@@ -140,7 +155,10 @@ describe('the frame and the debug panel (§2.2, IMPLEMENTATION §1)', () => {
       },
     });
     const warning = screen.getByText('ANTHROPIC_API_KEY is set and overrides subscription auth.');
-    expect(warning).toHaveAttribute('data-condition-code', 'anthropic_api_key_present');
+    expect(warning).toHaveAttribute(
+      'data-condition-code',
+      'secrets.anthropicApiKeyOverridesSubscription',
+    );
     // No dismiss control: it is a fact about the machine, not an event.
     expect(within(screen.getByTestId('debug-panel')).queryByRole('button')).toBeNull();
     await waitFor(() => expect(screen.getByRole('complementary')).toBeInTheDocument());

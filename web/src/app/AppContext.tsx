@@ -83,7 +83,7 @@ export function useEdition(): 'home' | 'work' {
 }
 
 export function useModules(): readonly string[] {
-  return useServices().boot.health.modules.map((module) => module.name);
+  return useServices().boot.health.modules.map((module) => module.id);
 }
 
 /**

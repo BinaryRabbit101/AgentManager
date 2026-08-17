@@ -133,7 +133,8 @@ describe('the keyboard path to the launch flow (§5.4, IMPLEMENTATION §3)', () 
     // Ring: [Priya, Sam, littlepocketmuseum]. Two presses reach the project, and
     // each target change is announced.
     await user.keyboard('{ArrowDown}');
-    expect(announcement()).toContain("Move Priya to Sam's place.");
+    // Outside Reorder mode, passing over another card is the pair gesture.
+    expect(announcement()).toContain('Start a pair: Priya drafting, Sam reviewing.');
     await user.keyboard('{ArrowDown}');
     expect(announcement()).toContain('Launch Priya on littlepocketmuseum.');
 
@@ -228,7 +229,52 @@ describe('a project that cannot be launched against (§5.3, IMPLEMENTATION §3)'
   });
 });
 
+/**
+ * The two meanings of an agent→agent drop (§5.3 rows 3 and 4).
+ *
+ * Both are live from M9: outside Reorder mode the drop opens §10.4's pair
+ * dialog, inside it the drop reorders the board. Each keeps its own keyboard
+ * path, which is what IMPLEMENTATION §11 then requires of both.
+ */
+describe('agent → agent: the pair gesture (§5.3 row 3, §10.4)', () => {
+  it('opens the pair dialog with both seats pre-filled, and starts nothing', async () => {
+    const fixture = serving({ agents: [PRIYA, SAM], projects: [LPM] });
+    mount(<App />, { respond: fixture.respond });
+    await ready();
+
+    const user = userEvent.setup();
+    grip('Priya').focus();
+    await user.keyboard(' ');
+    await user.keyboard('{ArrowDown}');
+    // The live region says what the drop will do, not what it used to do.
+    expect(announcement()).toContain('Start a pair: Priya drafting, Sam reviewing.');
+    await user.keyboard(' ');
+
+    await screen.findByRole('dialog', { name: 'Start a pair' });
+    expect(announcement()).toContain('Nothing has started yet');
+    // Nothing was written: this gesture is not a reorder any more.
+    expect(fixture.puts).toEqual([]);
+    expect(cardNames()).toEqual(['priya', 'sam']);
+  });
+
+  it('has a pointer-free equivalent on the card menu (§5.4)', async () => {
+    const fixture = serving({ agents: [PRIYA, SAM], projects: [LPM] });
+    mount(<App />, { respond: fixture.respond });
+    await ready();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Actions for Priya' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Start a pair…' }));
+    await screen.findByRole('dialog', { name: 'Start a pair' });
+  });
+});
+
 describe('board reorder by keyboard, persisted as one whole-list write (§5.3)', () => {
+  /** §5.4's Reorder mode is what makes a drag mean "reorder" (see `dnd.ts`). */
+  async function enterReorderMode(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+    await user.click(screen.getByRole('button', { name: 'Reorder' }));
+  }
+
   it('drops onto another card, moves it, and PUTs the whole order once', async () => {
     const fixture = serving({ agents: [PRIYA, SAM], projects: [LPM] });
     mount(<App />, { respond: fixture.respond });
@@ -236,9 +282,11 @@ describe('board reorder by keyboard, persisted as one whole-list write (§5.3)',
     expect(cardNames()).toEqual(['priya', 'sam']);
 
     const user = userEvent.setup();
+    await enterReorderMode(user);
     grip('Priya').focus();
     await user.keyboard(' ');
     await user.keyboard('{ArrowDown}');
+    expect(announcement()).toContain("Move Priya to Sam's place.");
     await user.keyboard(' ');
 
     await waitFor(() => expect(fixture.puts).toHaveLength(1));
@@ -259,6 +307,7 @@ describe('board reorder by keyboard, persisted as one whole-list write (§5.3)',
     await ready();
 
     const user = userEvent.setup();
+    await enterReorderMode(user);
     grip('Priya').focus();
     await user.keyboard(' ');
     await user.keyboard('{ArrowDown}');

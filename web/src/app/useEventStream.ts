@@ -27,7 +27,9 @@ export function useEventStream(events: EventStream, avatars: AvatarCache): void 
 
     const offEvent = events.on((frame) => {
       const outcome = plan(frame);
-      if (outcome.sessionLifecycle || outcome.cloneProgress) ingest(frame);
+      if (outcome.sessionLifecycle || outcome.cloneProgress || outcome.schedulerState) {
+        ingest(frame);
+      }
       if (outcome.questionDelta !== 0) {
         // §11.1: "bump/clear the badge". The count lives in the store rather than
         // in a query, because a raised question must show within a second and a

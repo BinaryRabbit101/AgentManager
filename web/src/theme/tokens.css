@@ -26,55 +26,55 @@
   --surface: #faf8f5; /* base */
   --surface-raised: #ffffff;
   --surface-sunken: #f1ede7;
-  --text: #1d1a16; /* 15.8:1 on --surface */
-  --text-muted: #5f584f; /* 6.9:1 on --surface */
+  --text: #1d1a16; /* 16.4:1 */
+  --text-muted: #5f584f; /* 6.6:1 */
   --border: #e0d9d0;
-  --border-strong: #c8bfb3;
-  --accent: #8a4b1f; /* 6.4:1 on --surface */
+  --border-strong: #938d84; /* 3.1:1 */
+  --accent: #8a4b1f; /* 6.4:1 */
   --accent-soft: #f3e5d8;
-  --accent-contrast: #ffffff;
-  --danger: #a02a1f; /* 6.6:1 */
-  --warn: #7a5200; /* 5.6:1 */
-  --ok: #1f6b3a; /* 5.4:1 */
-  --focus-ring: #1f5fa8;
+  --accent-contrast: #ffffff; /* 6.8:1 */
+  --danger: #a02a1f; /* 7.0:1 */
+  --warn: #7a5200; /* 6.5:1 */
+  --ok: #1f6b3a; /* 6.1:1 */
+  --focus-ring: #1f5fa8; /* 6.1:1 */
 
   /* Status ramp — one per word of orchestrator §16.6's vocabulary. */
-  --status-idle: #6b6259;
-  --status-queued: #5a4a9c;
-  --status-working: #1f6b3a;
-  --status-awaiting_user: #7a5200;
-  --status-paused: #4a5b78;
-  --status-halted: #a02a1f;
+  --status-idle: #6b6259; /* 5.6:1 */
+  --status-queued: #5a4a9c; /* 6.8:1 */
+  --status-working: #1f6b3a; /* 6.1:1 */
+  --status-awaiting_user: #7a5200; /* 6.5:1 */
+  --status-paused: #4a5b78; /* 6.5:1 */
+  --status-halted: #a02a1f; /* 7.0:1 */
 
   /* Specialty ramp — the closed roster enum, colour plus the word, never colour alone. */
-  --specialty-bug-patching: #a3401f;
-  --specialty-feature-implementation: #1f5f7a;
-  --specialty-code-review: #5a4a9c;
-  --specialty-testing: #1f6b3a;
-  --specialty-documentation: #7a5200;
-  --specialty-research: #2f5d8c;
-  --specialty-email-response: #8a3d6b;
-  --specialty-overseer: #6b4a1f;
-  --specialty-general: #5f584f;
+  --specialty-bug-patching: #a3401f; /* 6.0:1 */
+  --specialty-feature-implementation: #1f5f7a; /* 6.7:1 */
+  --specialty-code-review: #5a4a9c; /* 6.8:1 */
+  --specialty-testing: #1f6b3a; /* 6.1:1 */
+  --specialty-documentation: #7a5200; /* 6.5:1 */
+  --specialty-research: #2f5d8c; /* 6.5:1 */
+  --specialty-email-response: #8a3d6b; /* 6.7:1 */
+  --specialty-overseer: #6b4a1f; /* 7.5:1 */
+  --specialty-general: #5f584f; /* 6.6:1 */
 
   /* §9.1's ANSI-SGR formatter, per theme: a hue that reads on white rarely
      reads on charcoal, and captured `Bash` output must stay legible in both. */
-  --ansi-black: #3a352e;
-  --ansi-red: #a02a1f;
-  --ansi-green: #1f6b3a;
-  --ansi-yellow: #7a5200;
-  --ansi-blue: #2f5d8c;
-  --ansi-magenta: #8a3d6b;
-  --ansi-cyan: #1f6070;
-  --ansi-white: #5f584f;
-  --ansi-bright-black: #6b6259;
-  --ansi-bright-red: #c04030;
-  --ansi-bright-green: #2a8a4c;
-  --ansi-bright-yellow: #9a6a00;
-  --ansi-bright-blue: #3f74ab;
-  --ansi-bright-magenta: #a94f83;
-  --ansi-bright-cyan: #2a7d90;
-  --ansi-bright-white: #1d1a16;
+  --ansi-black: #3a352e; /* 11.5:1 */
+  --ansi-red: #a02a1f; /* 7.0:1 */
+  --ansi-green: #1f6b3a; /* 6.1:1 */
+  --ansi-yellow: #7a5200; /* 6.5:1 */
+  --ansi-blue: #2f5d8c; /* 6.5:1 */
+  --ansi-magenta: #8a3d6b; /* 6.7:1 */
+  --ansi-cyan: #1f6070; /* 6.7:1 */
+  --ansi-white: #5f584f; /* 6.6:1 */
+  --ansi-bright-black: #6b6259; /* 5.6:1 */
+  --ansi-bright-red: #c04030; /* 4.9:1 */
+  --ansi-bright-green: #267e45; /* 4.8:1 */
+  --ansi-bright-yellow: #956700; /* 4.7:1 */
+  --ansi-bright-blue: #3f74ab; /* 4.6:1 */
+  --ansi-bright-magenta: #a94f83; /* 4.8:1 */
+  --ansi-bright-cyan: #29798c; /* 4.7:1 */
+  --ansi-bright-white: #1d1a16; /* 16.4:1 */
 
   --radius: 10px;
   --radius-sm: 6px;
@@ -94,34 +94,34 @@
     --surface: #1b1a18; /* soft charcoal, not black */
     --surface-raised: #24231f;
     --surface-sunken: #131211;
-    --text: #f2eee7; /* 14.6:1 on --surface */
-    --text-muted: #a9a196; /* 6.4:1 on --surface */
+    --text: #f2eee7; /* 13.6:1 */
+    --text-muted: #a9a196; /* 6.2:1 */
     --border: #35332e;
-    --border-strong: #4b473f;
-    --accent: #e0a06a; /* 8.1:1 on --surface */
+    --border-strong: #6e6a64; /* 3.2:1 */
+    --accent: #e0a06a; /* 7.0:1 */
     --accent-soft: #3a2f24;
-    --accent-contrast: #1b1a18;
-    --danger: #f08a7d; /* 8.0:1 */
-    --warn: #e3b95c; /* 9.9:1 */
-    --ok: #71c98d; /* 9.4:1 */
-    --focus-ring: #8ab6ef;
+    --accent-contrast: #1b1a18; /* 7.8:1 */
+    --danger: #f08a7d; /* 6.5:1 */
+    --warn: #e3b95c; /* 8.5:1 */
+    --ok: #71c98d; /* 7.8:1 */
+    --focus-ring: #8ab6ef; /* 7.5:1 */
 
-    --status-idle: #a9a196;
-    --status-queued: #b0a3e8;
-    --status-working: #71c98d;
-    --status-awaiting_user: #e3b95c;
-    --status-paused: #9db2d4;
-    --status-halted: #f08a7d;
+    --status-idle: #a9a196; /* 6.2:1 */
+    --status-queued: #b0a3e8; /* 6.9:1 */
+    --status-working: #71c98d; /* 7.8:1 */
+    --status-awaiting_user: #e3b95c; /* 8.5:1 */
+    --status-paused: #9db2d4; /* 7.3:1 */
+    --status-halted: #f08a7d; /* 6.5:1 */
 
-    --specialty-bug-patching: #eb9a7c;
-    --specialty-feature-implementation: #7cc3dd;
-    --specialty-code-review: #b0a3e8;
-    --specialty-testing: #71c98d;
-    --specialty-documentation: #e3b95c;
-    --specialty-research: #93b9e8;
-    --specialty-email-response: #e59ac6;
-    --specialty-overseer: #d3b184;
-    --specialty-general: #a9a196;
+    --specialty-bug-patching: #eb9a7c; /* 7.1:1 */
+    --specialty-feature-implementation: #7cc3dd; /* 8.0:1 */
+    --specialty-code-review: #b0a3e8; /* 6.9:1 */
+    --specialty-testing: #71c98d; /* 7.8:1 */
+    --specialty-documentation: #e3b95c; /* 8.5:1 */
+    --specialty-research: #93b9e8; /* 7.7:1 */
+    --specialty-email-response: #e59ac6; /* 7.3:1 */
+    --specialty-overseer: #d3b184; /* 7.8:1 */
+    --specialty-general: #a9a196; /* 6.2:1 */
 
     --shadow-card: 0 1px 2px rgb(0 0 0 / 40%);
     --shadow-raised: 0 6px 20px rgb(0 0 0 / 55%);
@@ -132,51 +132,51 @@
   --surface: #1b1a18;
   --surface-raised: #24231f;
   --surface-sunken: #131211;
-  --text: #f2eee7;
-  --text-muted: #a9a196;
+  --text: #f2eee7; /* 13.6:1 */
+  --text-muted: #a9a196; /* 6.2:1 */
   --border: #35332e;
-  --border-strong: #4b473f;
-  --accent: #e0a06a;
+  --border-strong: #6e6a64; /* 3.2:1 */
+  --accent: #e0a06a; /* 7.0:1 */
   --accent-soft: #3a2f24;
-  --accent-contrast: #1b1a18;
-  --danger: #f08a7d;
-  --warn: #e3b95c;
-  --ok: #71c98d;
-  --focus-ring: #8ab6ef;
+  --accent-contrast: #1b1a18; /* 7.8:1 */
+  --danger: #f08a7d; /* 6.5:1 */
+  --warn: #e3b95c; /* 8.5:1 */
+  --ok: #71c98d; /* 7.8:1 */
+  --focus-ring: #8ab6ef; /* 7.5:1 */
 
-  --status-idle: #a9a196;
-  --status-queued: #b0a3e8;
-  --status-working: #71c98d;
-  --status-awaiting_user: #e3b95c;
-  --status-paused: #9db2d4;
-  --status-halted: #f08a7d;
+  --status-idle: #a9a196; /* 6.2:1 */
+  --status-queued: #b0a3e8; /* 6.9:1 */
+  --status-working: #71c98d; /* 7.8:1 */
+  --status-awaiting_user: #e3b95c; /* 8.5:1 */
+  --status-paused: #9db2d4; /* 7.3:1 */
+  --status-halted: #f08a7d; /* 6.5:1 */
 
-  --specialty-bug-patching: #eb9a7c;
-  --specialty-feature-implementation: #7cc3dd;
-  --specialty-code-review: #b0a3e8;
-  --specialty-testing: #71c98d;
-  --specialty-documentation: #e3b95c;
-  --specialty-research: #93b9e8;
-  --specialty-email-response: #e59ac6;
-  --specialty-overseer: #d3b184;
-  --specialty-general: #a9a196;
+  --specialty-bug-patching: #eb9a7c; /* 7.1:1 */
+  --specialty-feature-implementation: #7cc3dd; /* 8.0:1 */
+  --specialty-code-review: #b0a3e8; /* 6.9:1 */
+  --specialty-testing: #71c98d; /* 7.8:1 */
+  --specialty-documentation: #e3b95c; /* 8.5:1 */
+  --specialty-research: #93b9e8; /* 7.7:1 */
+  --specialty-email-response: #e59ac6; /* 7.3:1 */
+  --specialty-overseer: #d3b184; /* 7.8:1 */
+  --specialty-general: #a9a196; /* 6.2:1 */
 
-  --ansi-black: #55504a;
-  --ansi-red: #f08a7d;
-  --ansi-green: #71c98d;
-  --ansi-yellow: #e3b95c;
-  --ansi-blue: #8ab6ef;
-  --ansi-magenta: #dd9bc6;
-  --ansi-cyan: #7cc3dd;
-  --ansi-white: #d6cfc5;
-  --ansi-bright-black: #a9a196;
-  --ansi-bright-red: #ffa79a;
-  --ansi-bright-green: #94dfab;
-  --ansi-bright-yellow: #f5d284;
-  --ansi-bright-blue: #a9cbfa;
-  --ansi-bright-magenta: #f0b6dc;
-  --ansi-bright-cyan: #9dd8ef;
-  --ansi-bright-white: #f2eee7;
+  --ansi-black: #908d89; /* 4.8:1 */
+  --ansi-red: #f08a7d; /* 6.5:1 */
+  --ansi-green: #71c98d; /* 7.8:1 */
+  --ansi-yellow: #e3b95c; /* 8.5:1 */
+  --ansi-blue: #8ab6ef; /* 7.5:1 */
+  --ansi-magenta: #dd9bc6; /* 7.2:1 */
+  --ansi-cyan: #7cc3dd; /* 8.0:1 */
+  --ansi-white: #d6cfc5; /* 10.2:1 */
+  --ansi-bright-black: #a9a196; /* 6.2:1 */
+  --ansi-bright-red: #ffa79a; /* 8.4:1 */
+  --ansi-bright-green: #94dfab; /* 10.0:1 */
+  --ansi-bright-yellow: #f5d284; /* 10.8:1 */
+  --ansi-bright-blue: #a9cbfa; /* 9.4:1 */
+  --ansi-bright-magenta: #f0b6dc; /* 9.3:1 */
+  --ansi-bright-cyan: #9dd8ef; /* 10.1:1 */
+  --ansi-bright-white: #f2eee7; /* 13.6:1 */
 
   --shadow-card: 0 1px 2px rgb(0 0 0 / 40%);
   --shadow-raised: 0 6px 20px rgb(0 0 0 / 55%);

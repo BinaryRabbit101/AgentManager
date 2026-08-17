@@ -185,10 +185,11 @@ export const BOOT_FACTS: BootFacts = {
     edition: 'home',
     uptime: 1,
     modules: [
-      { name: 'storage', status: 'ok' },
-      { name: 'roster', status: 'ok' },
-      { name: 'projects', status: 'ok' },
-      { name: 'orchestrator', status: 'ok' },
+      { id: 'storage', status: 'ok' },
+      { id: 'roster', status: 'ok' },
+      { id: 'projects', status: 'ok' },
+      { id: 'runner', status: 'ok' },
+      { id: 'orchestrator', status: 'ok' },
     ],
     conditions: [],
   } satisfies Health,
@@ -228,6 +229,14 @@ export interface MountOptions {
   readonly route?: string;
   /** The Electron preload bridge (§1.5); absent means the browser build. */
   readonly bridge?: DesktopBridge;
+  /**
+   * A held bearer — which is exactly what "this client is remote" means (§3.1).
+   *
+   * Seeded before the first render rather than set afterwards, because half of
+   * §13.4's parity rules are read at render time and a token that arrives later
+   * is a different client than the one the screen drew.
+   */
+  readonly token?: string;
 }
 
 export interface Mounted extends RenderResult {
@@ -248,12 +257,18 @@ export function mount(ui: ReactElement, options: MountOptions = {}): Mounted {
   const stream = options.stream ?? fakeStream();
   const sessionStream = options.sessionStream ?? fakeStream();
 
+  let token: string | null = options.token ?? null;
   const client = new ApiClient({
     fetch: ((input: string, init: RequestInit) => {
       calls.push(input);
       return Promise.resolve(respond(input, init));
     }) as unknown as typeof globalThis.fetch,
-    tokens: { get: () => null, set: () => undefined },
+    tokens: {
+      get: () => token,
+      set: (next) => {
+        token = next;
+      },
+    },
   });
   const avatars = new AvatarCache(client);
   const events = new EventStream({ client, transport: stream.transport });

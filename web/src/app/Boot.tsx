@@ -17,12 +17,15 @@ import type { ApiClient } from '../api/client';
 import { fetchBootFacts } from '../api/queries';
 import { failureOf } from '../api/result';
 import type { ApiFailure } from '../api/result';
+import { PairingScreen } from '../remote/PairingScreen';
 
 import type { BootFacts } from './AppContext';
 
 type BootPhase =
   | { readonly kind: 'loading' }
   | { readonly kind: 'ready'; readonly facts: BootFacts }
+  /** §3.2: reached **only** by a `401`, and never at loopback or in Electron. */
+  | { readonly kind: 'pairing' }
   | { readonly kind: 'failed'; readonly failure: ApiFailure };
 
 export interface BootGateProps {
@@ -42,6 +45,12 @@ export function BootGate({ client, children }: BootGateProps): ReactElement {
       },
       (error: unknown) => {
         if (cancelled.current) return;
+        // §3.1: a `401` has already cleared the stored token. There is nothing
+        // to retry and nothing to diagnose — the device is simply not paired.
+        if (failureOf(error)?.kind === 'unauthorized') {
+          setPhase({ kind: 'pairing' });
+          return;
+        }
         setPhase({
           kind: 'failed',
           failure: failureOf(error) ?? {
@@ -63,6 +72,7 @@ export function BootGate({ client, children }: BootGateProps): ReactElement {
   }, [run]);
 
   if (phase.kind === 'ready') return <>{children(phase.facts)}</>;
+  if (phase.kind === 'pairing') return <PairingScreen client={client} onPaired={run} />;
   if (phase.kind === 'failed') return <BootDiagnostic failure={phase.failure} onRetry={run} />;
   return (
     <div className="boot-screen" role="status" aria-live="polite">

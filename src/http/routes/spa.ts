@@ -111,6 +111,51 @@ function readFile(path: string): Buffer | undefined {
   }
 }
 
+/**
+ * The security headers the bundle is served with (remote DESIGN §9.2 #9).
+ *
+ * > "Plus `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, **a
+ * > strict CSP with no third-party origins**, and `Cache-Control: no-store` on
+ * > every `/api` response."
+ *
+ * On **both** listeners, not only the remote one: the policy describes what the
+ * page is allowed to fetch, and the page is the same page in Electron and in the
+ * tailnet browser (D3). ui DESIGN §1.4 already forbids every external reference
+ * at build time — no CDN, no webfont, no remote image — so this is that rule
+ * made enforceable by the browser rather than only by review.
+ *
+ * `'unsafe-inline'` appears **nowhere**: `web/index.html` loads the theme stamp
+ * as a same-origin `<script src>` for exactly this reason, and Vite emits no
+ * inline script. `style-src` allows `'unsafe-inline'` only for the *style
+ * attribute*, which React sets for the specialty colour and the drag transform;
+ * `style-src-attr` is the narrow permission for that and no stylesheet may be
+ * inline. `connect-src 'self'` keeps `fetch`, WebSocket and SSE on the core's
+ * own origin, which is what "functions fully with all non-core network access
+ * blocked" means from the page's side.
+ */
+export const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "style-src-attr 'unsafe-inline'",
+  // Avatars and downloads are fetched to object URLs (§3.1), which are blobs.
+  "img-src 'self' blob: data:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "media-src 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join('; ');
+
+/** Applied to the HTML shell and to every asset the bundle loads. */
+export const SECURITY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  'content-security-policy': CONTENT_SECURITY_POLICY,
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+});
+
 export function createSpaRoutes(deps: HttpDeps): RouteDefinition[] {
   const root = deps.webRoot;
 
@@ -119,7 +164,7 @@ export function createSpaRoutes(deps: HttpDeps): RouteDefinition[] {
     return res.bytes(file ?? Buffer.from(PLACEHOLDER_INDEX_HTML, 'utf8'), CONTENT_TYPES['.html']!, {
       // The shell must never be cached: it is what names the current asset
       // hashes, and a stale one points at files a redeploy has removed.
-      headers: { 'cache-control': 'no-cache' },
+      headers: { 'cache-control': 'no-cache', ...SECURITY_HEADERS },
     });
   };
 
@@ -151,6 +196,7 @@ export function createSpaRoutes(deps: HttpDeps): RouteDefinition[] {
                   'cache-control': req.path.startsWith('/assets/')
                     ? 'public, max-age=31536000, immutable'
                     : 'no-cache',
+                  ...SECURITY_HEADERS,
                 },
               });
             }

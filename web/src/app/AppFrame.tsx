@@ -15,6 +15,7 @@
 import type { ReactElement, ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 
+import { Announcer } from '../a11y/Announcer';
 import { Icon, type IconName } from '../icons/Sprite';
 import { useAppStore } from '../state/store';
 
@@ -69,6 +70,9 @@ export function AppFrame({ children }: AppFrameProps): ReactElement {
         </ul>
       </nav>
       <main className="frame__main">{children}</main>
+      {/* §15's polite region: status transitions and arriving questions, and
+          nothing that streams. One region for the whole app. */}
+      <Announcer />
     </div>
   );
 }

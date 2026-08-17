@@ -71,6 +71,15 @@ export interface BoardDndContextProps {
    * make the live region announce "picked up the agent".
    */
   readonly dragSources?: readonly DropTarget[];
+  /**
+   * §5.4's explicit Reorder mode.
+   *
+   * It is what tells the two meanings of an agent→agent drop apart (see
+   * `dnd.ts`'s `dropOutcome`), so it has to reach the drop handler *and* the
+   * announcements — a live region that says "move Priya to Sam's place" while
+   * the drop is about to open the pair dialog is worse than no announcement.
+   */
+  readonly reordering?: boolean;
   readonly onDrop: (outcome: DropOutcome) => void;
   readonly children: ReactNode;
 }
@@ -82,6 +91,7 @@ export function BoardDndContext({
   projectTargets,
   workItemTargets = NO_TARGETS,
   dragSources = NO_TARGETS,
+  reordering = false,
   onDrop,
   children,
 }: BoardDndContextProps): ReactElement {
@@ -160,15 +170,15 @@ export function BoardDndContext({
     () => ({
       onDragStart: ({ active }) => pickedUp(labelOf(active.id)?.label ?? 'the agent'),
       onDragOver: ({ active, over }) =>
-        overTarget(labelOf(active.id)?.label ?? 'the agent', labelOf(over?.id)),
+        overTarget(labelOf(active.id)?.label ?? 'the agent', labelOf(over?.id), reordering),
       onDragEnd: ({ active, over }) => {
         const target = labelOf(over?.id);
         const name = labelOf(active.id)?.label ?? 'the agent';
-        return droppedOn(name, dropOutcome(String(active.id), target), target?.label);
+        return droppedOn(name, dropOutcome(String(active.id), target, reordering), target?.label);
       },
       onDragCancel: ({ active }) => cancelled(labelOf(active.id)?.label ?? 'the agent'),
     }),
-    [labelOf],
+    [labelOf, reordering],
   );
 
   return (
@@ -195,7 +205,7 @@ export function BoardDndContext({
       onDragEnd={({ active, over }) => {
         setActiveId(null);
         setOverId(null);
-        onDrop(dropOutcome(String(active.id), labelOf(over?.id)));
+        onDrop(dropOutcome(String(active.id), labelOf(over?.id), reordering));
       }}
     >
       <SortableContext
@@ -218,7 +228,7 @@ export function BoardDndContext({
             className="drag-preview"
             data-refused={labelOf(overId)?.refusal === undefined ? 'false' : 'true'}
           >
-            {overTarget(activeLabel, labelOf(overId))}
+            {overTarget(activeLabel, labelOf(overId), reordering)}
           </div>
         )}
       </DragOverlay>
