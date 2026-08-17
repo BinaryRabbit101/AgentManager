@@ -32,7 +32,7 @@
     "typecheck:web": "tsc -p web/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:boundary": "vitest run --project server boundary src/lifecycle/bind.test.ts src/lifecycle/process.test.ts src/main.test.ts",
+    "test:boundary": "vitest run --project server boundary src/lifecycle/bind.test.ts src/lifecycle/process.test.ts src/main.test.ts src/modules/runner/boundaries.test.ts",
     "checks:ui": "node scripts/ui-manual-checks.mjs",
     "checks:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Verify-Install.ps1",
     "lint": "eslint . && prettier --check .",

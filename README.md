@@ -43,6 +43,7 @@ npm run test:boundary
 It proves, over real boots and real sockets:
 
 - the **work edition** boots with zero non-loopback listeners, never evaluates the remote module file, and carries no `/api/remote/*` route on the live route table;
+- the work edition's **module inventory** is exactly the list foundation [DESIGN.md](docs/foundation/DESIGN.md) §6.2 composes — an exact set, so a module *appearing* fails as loudly as one disappearing — and the home edition's inventory differs from it by exactly one id, `remote`, across the module graph, `/api/health`, the route table's owners and the service registry;
 - **work edition + `modules.remote.enabled: true`** fails config validation and never starts;
 - a **forced non-loopback listener** — including one a harness module opens directly — is fatal in both editions;
 - **home edition with remote disabled** is the work edition, listener for listener;
@@ -51,9 +52,22 @@ It proves, over real boots and real sockets:
 - no response or error body carries token material;
 - statically: no `listen(` call in the tree omits an address, no wildcard bind literal exists in shipped code, and no feature module imports another directly.
 
-The script deliberately runs more than the three `boundary*` files: it also pulls in `src/lifecycle/bind.test.ts` (every branch of the §6.3 assertion), `src/lifecycle/process.test.ts` (the spawned bundle's fatal-bind cases) and `src/main.test.ts` (the composition root's edition gate), because the gate is the *set* of proofs that pin D5/D6 rather than one file.
+The script deliberately runs more than the `boundary*` files: it also pulls in `src/lifecycle/bind.test.ts` (every branch of the §6.3 assertion), `src/lifecycle/process.test.ts` (the spawned bundle's fatal-bind cases), `src/main.test.ts` (the composition root's edition gate) and `src/modules/runner/boundaries.test.ts` (the element-scoped import and SQL checks), because the gate is the *set* of proofs that pin D5/D6 rather than one file.
 
 `npm run ci` runs all of it as part of `npm test`, so the gate cannot be skipped by running the normal command; `npm run test:boundary` is the fast path when reviewing a change to a bind path.
+
+#### The module-boundary rule
+
+Foundation [DESIGN.md](docs/foundation/DESIGN.md) §6.1 — *"feature modules never import each other directly"* — is enforced by ESLint, not only by a test: [eslint.config.js](eslint.config.js) configures `no-restricted-imports` per feature module, so a forbidden import fails in the editor and in `npm run lint` before it reaches CI. `src/modules/boundaryImports.test.ts` lints fixtures for every feature against every sibling, so the rule is proven to *fire* rather than merely to be present, and scans the tree for the two forms ESLint's rule cannot see (`await import(…)` and `require(…)`).
+
+The exception surface is exactly two tiers, and nothing else:
+
+| Tier | Applies to | Rule |
+|---|---|---|
+| 1 | Shipped source | **No** import of a sibling feature module, in any form — not even type-only. What an element needs from another it declares locally (`orchestrator/ports.ts`, `runner/contracts.ts`) and adapts from whatever `ctx.require(<service>)` returns. |
+| 2 | `*.test.ts`, `__tests__/`, `__fixtures__/`, `__spike__/` | A sibling's **pure units** are allowed, because a cross-element *agreement* test has to see both sides. A sibling's **wiring** — `index`/`module`/`service`/`routes` — is not: constructing a sibling module is the lifecycle coupling tier 1 forbids. A test needing two real modules boots them through `src/main.ts`. |
+
+`src/main.ts` is deliberately outside both: the composition root is the one file whose job is knowing how the elements fit together.
 
 Source layout mirrors the foundation design ([docs/foundation/DESIGN.md](docs/foundation/DESIGN.md)):
 
