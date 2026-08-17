@@ -45,9 +45,13 @@ let temp: TempDir;
 let service: BootedService | undefined;
 let base: string;
 
-/** A module that is deliberately unhealthy, so aggregation has something to report. */
+/**
+ * A module that is deliberately unhealthy, so aggregation has something to
+ * report. It borrowed the `orchestrator` id while that element did not exist;
+ * now that it does, the fixture has its own.
+ */
 const degradedModule: Module = {
-  id: 'orchestrator',
+  id: 'fixture-degraded',
   dependsOn: [],
   init(ctx) {
     ctx.registerHealthCheck(
@@ -175,12 +179,13 @@ describe('api/health', () => {
       'projects',
       'runner',
       'orchestrator',
+      'fixture-degraded',
     ]);
 
-    const orchestrator = answer.body.modules.find((module) => module.id === 'orchestrator');
-    expect(orchestrator?.status).toBe('degraded');
+    const degraded = answer.body.modules.find((module) => module.id === 'fixture-degraded');
+    expect(degraded?.status).toBe('degraded');
     // Both the module's own `health()` and its registered check are folded in.
-    expect(orchestrator?.conditions.map((condition) => condition.id).sort()).toEqual([
+    expect(degraded?.conditions.map((condition) => condition.id).sort()).toEqual([
       'fixture.check',
       'fixture.module',
     ]);

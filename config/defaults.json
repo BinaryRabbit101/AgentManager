@@ -83,8 +83,52 @@
     "transcriptCapMb": 500
   },
   "orchestrator": {
+    "patterns": {
+      "pair": {
+        "roundCap": 3,
+        "maxRoundCap": 6,
+        "stanceSolicitation": true,
+        "requireArtifact": true
+      }
+    },
+    "budgets": {
+      "defaultPairTokens": 400000,
+      "turnEstimateTokens": 25000,
+      "overdraftTokens": 25000,
+      "raiseMaxFactor": 2
+    },
+    "assignment": {
+      "maxAgeHours": 24,
+      "maxConcurrentPerAgent": 2,
+      "maxNestingDepth": 1
+    },
+    "questions": {
+      "joinWindowMs": 120000
+    },
+    "mailbox": {
+      "inlineMax": 10,
+      "inlineMaxBytes": 8192
+    },
+    "prompt": {
+      "maxBytes": 16384,
+      "excerptBytes": 2048,
+      "outputCaptureBytes": 32768
+    },
+    "breakers": {
+      "denialsPerSession": 5,
+      "consecutiveFailures": 2,
+      "identicalTurns": 2,
+      "messagesPerTurn": 20,
+      "maxAssignmentsPerSession": 5,
+      "maxDecisionsPerSession": 3
+    },
     "notify": {
-      "enabled": false
+      "enabled": false,
+      "channel": "ntfy",
+      "afterMs": 60000,
+      "maxPerHour": 6,
+      "minLevel": "blocking",
+      "topicSecretRef": "notify.ntfy.topicUrl"
     }
   }
 }

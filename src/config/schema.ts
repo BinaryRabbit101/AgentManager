@@ -14,6 +14,10 @@
  */
 import { z } from 'zod';
 
+import {
+  ORCHESTRATOR_CONFIG_DEFAULTS,
+  orchestratorConfigSchema,
+} from '../modules/orchestrator/config.js';
 import { RUNNER_CONFIG_DEFAULTS, runnerConfigSchema } from '../modules/runner/config.js';
 
 import { ConfigSchemaRegistry } from './registry.js';
@@ -100,12 +104,14 @@ export const foundationConfigShape = {
     transcriptCapMb: z.number().positive(),
   }),
   /**
-   * Contributed by the orchestrator element (DESIGN §2.3, third edition lever).
-   * Registered by foundation until that module exists.
+   * Contributed by the orchestrator element (orchestrator DESIGN §12). Its
+   * `notify.enabled` key is foundation §2.3's third edition lever and keeps
+   * exactly the meaning and default it had while foundation shipped it alone;
+   * the shape itself lives in `src/modules/orchestrator/config.ts` so the
+   * element owns it, and is registered from here for the same reason `runner`
+   * is — one namespace, one contribution.
    */
-  orchestrator: z.strictObject({
-    notify: z.strictObject({ enabled: z.boolean() }),
-  }),
+  orchestrator: orchestratorConfigSchema,
 } as const;
 
 /**
@@ -148,7 +154,7 @@ const foundationDefaults: { readonly [K in keyof typeof foundationConfigShape]: 
     transcriptDays: 90,
     transcriptCapMb: 500,
   },
-  orchestrator: { notify: { enabled: false } },
+  orchestrator: ORCHESTRATOR_CONFIG_DEFAULTS,
 };
 
 /**

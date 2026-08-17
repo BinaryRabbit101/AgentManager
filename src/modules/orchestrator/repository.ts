@@ -1,0 +1,342 @@
+/**
+ * `AssignmentRepository` — foundation's `assignments` / `assignment_members`
+ * repositories plus the columns `migrations/orchestrator/0001_orchestrator.sql`
+ * adds (IMPLEMENTATION M1-1). **No other element writes these tables.**
+ *
+ * ## Why this composes rather than replaces
+ *
+ * Foundation ships `store.assignments` and owns the two-state `status` fact every
+ * element joins on (§2.2, §17 R7). This repository does not re-implement it: it
+ * *delegates* the base columns to `store.assignments` and composes SQL only
+ * against the columns this element's own migration added. That keeps exactly one
+ * writer of `status`, `tokens_used` and `rounds_used` — runner's metering rolls
+ * onto `tokens_used` through foundation's repository in the same transaction as
+ * the usage write (§7.1), and a second writer here would race it.
+ *
+ * The database handle is a constructor argument for the reason projects and
+ * runner take one (foundation §1.3): an element's own migration gives it its own
+ * columns, and foundation provides no accessor for them.
+ *
+ * ## `updated_at`
+ *
+ * Written on every mutation this repository makes, because `assignments_open`
+ * indexes `(project_id, status, updated_at)` and a NULL there would sort a live
+ * assignment behind every stale one. Foundation's own `create`/`close` do not
+ * know the column exists, so the wrappers below set it.
+ */
+import type {
+  AssignmentPattern,
+  AssignmentRole,
+  AssignmentStatus,
+  AssignmentsRepository,
+  Clock,
+  Database,
+} from '../../storage/index.js';
+import { isoTimestamp } from '../../storage/index.js';
+
+import type { AssignmentPhase, AssignmentScope, CreatedBy } from './types.js';
+
+/** One row, base columns and orchestrator's own, flattened. */
+export interface AssignmentRow {
+  readonly id: string;
+  readonly projectId: string;
+  readonly pattern: AssignmentPattern;
+  readonly status: AssignmentStatus;
+  readonly goal: string | null;
+  readonly scopeJson: string | null;
+  readonly tokenBudget: number | null;
+  readonly tokensUsed: number;
+  readonly roundCap: number | null;
+  readonly roundsUsed: number;
+  readonly createdAt: string;
+  readonly closedAt: string | null;
+  readonly closeReason: string | null;
+  // --- orchestrator's own columns ---
+  readonly createdBy: string;
+  readonly parentAssignmentId: string | null;
+  readonly leadAgentId: string | null;
+  readonly write: boolean;
+  readonly artifactPath: string | null;
+  readonly patternConfigJson: string;
+  readonly phase: AssignmentPhase;
+  readonly haltReason: string | null;
+  readonly updatedAt: string | null;
+}
+
+export interface MemberRow {
+  readonly assignmentId: string;
+  readonly agentId: string;
+  readonly role: AssignmentRole;
+  readonly seatOrder: number;
+  readonly joinedAt: string | null;
+}
+
+export interface CreateAssignmentRow {
+  readonly projectId: string;
+  readonly pattern: AssignmentPattern;
+  readonly goal?: string | undefined;
+  readonly scope?: AssignmentScope | undefined;
+  readonly write: boolean;
+  readonly phase: AssignmentPhase;
+  readonly createdBy: CreatedBy;
+  readonly parentAssignmentId?: string | undefined;
+  readonly leadAgentId?: string | undefined;
+  readonly artifactPath?: string | undefined;
+  readonly patternConfig?: Readonly<Record<string, unknown>> | undefined;
+  readonly tokenBudget: number | null;
+  readonly roundCap: number | null;
+  readonly members: readonly {
+    readonly agentId: string;
+    readonly role: AssignmentRole;
+    readonly seatOrder: number;
+  }[];
+}
+
+export interface ListRowsQuery {
+  readonly projectId?: string | undefined;
+  readonly status?: AssignmentStatus | undefined;
+  readonly phase?: AssignmentPhase | undefined;
+  readonly agentId?: string | undefined;
+  readonly limit?: number | undefined;
+}
+
+export interface AssignmentRepository {
+  /** Creates the assignment and its members in one transaction. */
+  create(input: CreateAssignmentRow): AssignmentRow;
+  get(id: string): AssignmentRow | undefined;
+  list(query?: ListRowsQuery): readonly AssignmentRow[];
+  listMembers(assignmentId: string): readonly MemberRow[];
+  /** How many **open** assignments this agent holds a seat in (§9-7). */
+  countOpenForAgent(agentId: string): number;
+  /** Σ of the `token_budget`s of a parent's still-open children (§9-8). */
+  openChildBudgetTotal(parentAssignmentId: string): number;
+  /** Sets `phase`, and `halt_reason` when one is given. */
+  setPhase(id: string, phase: AssignmentPhase, haltReason?: string | null): AssignmentRow;
+  /** The base-column patch of `PATCH /api/assignments/:id` (§11.1). */
+  update(
+    id: string,
+    patch: {
+      readonly tokenBudget?: number | null;
+      readonly roundCap?: number | null;
+      readonly goal?: string;
+    },
+  ): AssignmentRow;
+  /**
+   * `status: 'closed'` + `closed_at` + `close_reason`, and the phase §2.2
+   * prescribes — `converged` keeps its own phase, everything else becomes
+   * `closed`.
+   */
+  close(id: string, reason: string): AssignmentRow;
+}
+
+interface RawRow {
+  readonly created_by: string;
+  readonly parent_assignment_id: string | null;
+  readonly lead_agent_id: string | null;
+  readonly write: number;
+  readonly artifact_path: string | null;
+  readonly pattern_config_json: string;
+  readonly phase: AssignmentPhase;
+  readonly halt_reason: string | null;
+  readonly updated_at: string | null;
+}
+
+interface RawMemberRow {
+  readonly assignment_id: string;
+  readonly agent_id: string;
+  readonly role: AssignmentRole;
+  readonly seat_order: number;
+  readonly joined_at: string | null;
+}
+
+export interface AssignmentRepositoryOptions {
+  readonly db: Database;
+  /** Foundation's repository — the sole writer of the base columns. */
+  readonly assignments: AssignmentsRepository;
+  readonly clock: Clock;
+}
+
+export function createAssignmentRepository(
+  options: AssignmentRepositoryOptions,
+): AssignmentRepository {
+  const { db, assignments, clock } = options;
+
+  const ownColumns =
+    'created_by, parent_assignment_id, lead_agent_id, write, artifact_path, ' +
+    'pattern_config_json, phase, halt_reason, updated_at';
+
+  const selectOwn = db.prepare<[string], RawRow>(
+    `SELECT ${ownColumns} FROM assignments WHERE id = ?`,
+  );
+  const applyOwn = db.prepare<
+    [string, string | null, string | null, number, string | null, string, string, string, string]
+  >(
+    'UPDATE assignments SET created_by = ?, parent_assignment_id = ?, lead_agent_id = ?, ' +
+      'write = ?, artifact_path = ?, pattern_config_json = ?, phase = ?, updated_at = ? ' +
+      'WHERE id = ?',
+  );
+  const setPhaseStatement = db.prepare<[string, string | null, string, string]>(
+    'UPDATE assignments SET phase = ?, halt_reason = ?, updated_at = ? WHERE id = ?',
+  );
+  const touch = db.prepare<[string, string]>('UPDATE assignments SET updated_at = ? WHERE id = ?');
+  const applySeat = db.prepare<[number, string, string, string]>(
+    'UPDATE assignment_members SET seat_order = ?, joined_at = ? ' +
+      'WHERE assignment_id = ? AND agent_id = ?',
+  );
+  const selectMembers = db.prepare<[string], RawMemberRow>(
+    'SELECT assignment_id, agent_id, role, seat_order, joined_at FROM assignment_members ' +
+      'WHERE assignment_id = ? ORDER BY seat_order, agent_id',
+  );
+  const countOpen = db.prepare<[string], { n: number }>(
+    'SELECT COUNT(*) AS n FROM assignment_members m JOIN assignments a ON a.id = m.assignment_id ' +
+      "WHERE m.agent_id = ? AND a.status = 'open'",
+  );
+  const childTotal = db.prepare<[string], { total: number | null }>(
+    'SELECT SUM(token_budget) AS total FROM assignments ' +
+      "WHERE parent_assignment_id = ? AND status = 'open'",
+  );
+  // The unfiltered listing: no base-repository read covers "every project", and
+  // `GET /api/assignments` with no filters is the fleet view's first call.
+  const allIds = db.prepare<[], { id: string }>(
+    'SELECT id FROM assignments ORDER BY created_at DESC, id DESC',
+  );
+  const allIdsByStatus = db.prepare<[string], { id: string }>(
+    'SELECT id FROM assignments WHERE status = ? ORDER BY created_at DESC, id DESC',
+  );
+
+  function hydrate(id: string): AssignmentRow {
+    const base = assignments.get(id);
+    const own = selectOwn.get(id);
+    if (base === undefined || own === undefined) {
+      throw new Error(`Internal error: assignment ${id} vanished between two reads.`);
+    }
+    return {
+      id: base.id,
+      projectId: base.projectId,
+      pattern: base.pattern,
+      status: base.status,
+      goal: base.goal,
+      scopeJson: base.scopeJson,
+      tokenBudget: base.tokenBudget,
+      tokensUsed: base.tokensUsed,
+      roundCap: base.roundCap,
+      roundsUsed: base.roundsUsed,
+      createdAt: base.createdAt,
+      closedAt: base.closedAt,
+      closeReason: base.closeReason,
+      createdBy: own.created_by,
+      parentAssignmentId: own.parent_assignment_id,
+      leadAgentId: own.lead_agent_id,
+      write: own.write !== 0,
+      artifactPath: own.artifact_path,
+      patternConfigJson: own.pattern_config_json,
+      phase: own.phase,
+      haltReason: own.halt_reason,
+      updatedAt: own.updated_at,
+    };
+  }
+
+  const createTransaction = db.transaction((input: CreateAssignmentRow): string => {
+    const now = isoTimestamp(clock());
+    const created = assignments.create({
+      projectId: input.projectId,
+      pattern: input.pattern,
+      ...(input.goal === undefined ? {} : { goal: input.goal }),
+      ...(input.scope === undefined ? {} : { scopeJson: JSON.stringify(input.scope) }),
+      status: 'open',
+      tokenBudget: input.tokenBudget,
+      roundCap: input.roundCap,
+      createdAt: now,
+      members: input.members.map((member) => ({ agentId: member.agentId, role: member.role })),
+    });
+
+    applyOwn.run(
+      input.createdBy,
+      input.parentAssignmentId ?? null,
+      input.leadAgentId ?? null,
+      input.write ? 1 : 0,
+      input.artifactPath ?? null,
+      JSON.stringify(input.patternConfig ?? {}),
+      input.phase,
+      now,
+      created.id,
+    );
+
+    // Seat order is the pattern definition's, not insertion order (§2.4).
+    for (const member of input.members) {
+      applySeat.run(member.seatOrder, now, created.id, member.agentId);
+    }
+    return created.id;
+  });
+
+  return {
+    create: (input) => hydrate(createTransaction(input)),
+
+    get(id) {
+      const base = assignments.get(id);
+      return base === undefined ? undefined : hydrate(id);
+    },
+
+    list(query = {}) {
+      const rows =
+        query.agentId !== undefined
+          ? assignments.listByAgent(
+              query.agentId,
+              query.status === undefined ? {} : { status: query.status },
+            )
+          : query.projectId !== undefined
+            ? assignments.listByProject(
+                query.projectId,
+                query.status === undefined ? {} : { status: query.status },
+              )
+            : query.status === undefined
+              ? allIds.all()
+              : allIdsByStatus.all(query.status);
+
+      const hydrated = rows.map((row) => hydrate(row.id));
+      const filtered =
+        query.phase === undefined ? hydrated : hydrated.filter((row) => row.phase === query.phase);
+      // Cross-cutting filters that the base repository's per-index reads cannot
+      // express, applied after hydration rather than by a second query.
+      const byProject =
+        query.projectId === undefined || query.agentId === undefined
+          ? filtered
+          : filtered.filter((row) => row.projectId === query.projectId);
+      return query.limit === undefined ? byProject : byProject.slice(0, query.limit);
+    },
+
+    listMembers: (assignmentId) =>
+      selectMembers.all(assignmentId).map((row) => ({
+        assignmentId: row.assignment_id,
+        agentId: row.agent_id,
+        role: row.role,
+        seatOrder: row.seat_order,
+        joinedAt: row.joined_at,
+      })),
+
+    countOpenForAgent: (agentId) => countOpen.get(agentId)?.n ?? 0,
+
+    openChildBudgetTotal: (parentAssignmentId) => childTotal.get(parentAssignmentId)?.total ?? 0,
+
+    setPhase(id, phase, haltReason) {
+      setPhaseStatement.run(phase, haltReason ?? null, isoTimestamp(clock()), id);
+      return hydrate(id);
+    },
+
+    update(id, patch) {
+      assignments.update(id, patch);
+      touch.run(isoTimestamp(clock()), id);
+      return hydrate(id);
+    },
+
+    close(id, reason) {
+      const at = isoTimestamp(clock());
+      assignments.close(id, { reason, at });
+      // §2.2's one exception: a `converged` close sets `phase: converged`, not
+      // `phase: closed`. Everything else about the close is identical, and
+      // `status` is `closed` either way — which is all runner reads.
+      setPhaseStatement.run(reason === 'converged' ? 'converged' : 'closed', null, at, id);
+      return hydrate(id);
+    },
+  };
+}

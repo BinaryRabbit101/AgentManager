@@ -62,6 +62,7 @@ import {
   type HttpService,
 } from './http/index.js';
 import { createLogging, type Logging } from './logging/index.js';
+import { createOrchestratorModule } from './modules/orchestrator/index.js';
 import { createProjectsModule } from './modules/projects/index.js';
 import { createRosterModule } from './modules/roster/index.js';
 import { createRunnerModule } from './modules/runner/index.js';
@@ -355,6 +356,14 @@ async function buildModuleList(options: {
     createProjectsModule(options.storage),
     createRunnerModule(options.storage),
   ];
+
+  // §6.2's gate, and the one this module is *designed* to be absent behind:
+  // runner's §11.3 already says what a missing `orchestrator` means for it
+  // (degraded questions, no launch path) and roster drops its
+  // `mcp__agentmanager__*` rules with a diagnostic. Unlike `remote` this is a
+  // static import — the module ships in both editions and the flag is an
+  // operator's switch, not an edition invariant.
+  if (config.modules.orchestrator.enabled) modules.push(createOrchestratorModule(options.storage));
 
   if (config.edition === 'home' && config.modules.remote.enabled) {
     const loaded = (await import('./modules/remote/index.js')) as { default: Module };

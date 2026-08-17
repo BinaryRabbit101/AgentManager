@@ -185,8 +185,10 @@ describe('boot', () => {
 
     expect(service.config.edition).toBe('work');
     expect(service.paths.dataRoot).toBe(resolve(dataRoot));
-    // §6.2's list order: `[storage, secrets, http, roster, projects, runner]`,
-    // as far as the elements that exist.
+    // §6.2's list order: `[storage, secrets, http, roster, projects, runner,
+    // orchestrator]`, as far as the elements that exist. `orchestrator` is last
+    // because it is pushed behind `modules.orchestrator.enabled`, which the
+    // shipped defaults leave on.
     expect(service.runtime.order).toEqual([
       'storage',
       'secrets',
@@ -194,6 +196,7 @@ describe('boot', () => {
       'roster',
       'projects',
       'runner',
+      'orchestrator',
     ]);
     expect(service.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(service.storage.schemaVersion).toBeGreaterThanOrEqual(1);
@@ -221,6 +224,7 @@ describe('boot', () => {
       'roster',
       'projects',
       'runner',
+      'orchestrator',
     ]);
     // §6.2 names exactly these as critical; a feature module that fails must
     // leave the service reachable rather than end the process.
@@ -302,10 +306,10 @@ describe('boot', () => {
     const service = await bootTest({
       additionalModules: [
         {
-          id: 'orchestrator',
+          id: 'fixture-noncritical',
           dependsOn: [],
           init: () => {
-            throw new Error('orchestrator is broken');
+            throw new Error('the fixture module is broken');
           },
         },
       ],
@@ -316,9 +320,9 @@ describe('boot', () => {
 
     const health = await service.health();
     expect(health.status).toBe('degraded');
-    const broken = health.modules.find((module) => module.id === 'orchestrator');
+    const broken = health.modules.find((module) => module.id === 'fixture-noncritical');
     expect(broken?.status).toBe('failed');
-    expect(broken?.error).toContain('orchestrator is broken');
+    expect(broken?.error).toContain('the fixture module is broken');
     // The rest of the service is untouched: storage still answers.
     expect(health.modules.find((module) => module.id === 'storage')?.status).toBe('ok');
   });
@@ -410,9 +414,10 @@ describe('boot', () => {
     // order storage applies `migrations/<moduleId>/` in.
     const service = await bootTest({
       additionalModules: [
-        // `roster`, `projects` and `runner` are real modules in the list now, so
-        // the fixture is the one element that has not landed yet.
-        { id: 'orchestrator', dependsOn: ['runner'], init: () => ({}) },
+        // Every element in the v1 list is now a real module, so the fixture is
+        // a stand-in for the next one — and it deliberately ships no migration
+        // directory, which is the negative half of this assertion.
+        { id: 'fixture-element', dependsOn: ['orchestrator'], init: () => ({}) },
       ],
     });
 
@@ -424,15 +429,17 @@ describe('boot', () => {
       'projects',
       'runner',
       'orchestrator',
+      'fixture-element',
     ]);
     // Foundation's set first, then every module that actually ships one — which
-    // in this build is `roster`, `projects` and `runner` (the fixture has no
-    // directory).
+    // in this build is `roster`, `projects`, `runner` and `orchestrator` (the
+    // fixture has no directory).
     expect(Object.keys(service.storage.setVersions)).toEqual([
       'foundation',
       'roster',
       'projects',
       'runner',
+      'orchestrator',
     ]);
   });
 });
