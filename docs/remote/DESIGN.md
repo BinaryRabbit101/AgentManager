@@ -7,6 +7,17 @@ Conforms to [architecture.md](../architecture.md) D1–D6 and consumes
 [foundation/DESIGN.md](../foundation/DESIGN.md) without inventing parallel mechanisms. Runner's
 [§15.3 contracts](../runner/DESIGN.md) are treated as binding.
 
+> **Amended 2026-08-17 — D5 proxy mode.** Tailscale only ever lives on the household proxy host
+> (the mini-pc), never on the core's machine, so `remote.bind` gains a second mode alongside
+> `"tailscale"`: **`"proxy"`** — bind one configured LAN address (`remote.proxy.bind`) and accept
+> TCP connections only from the declared peer(s) (`remote.proxy.allowedPeers`, the mini-pc's IP);
+> everything else about this element — bearer tokens, rate limiting, route policy, per-agent
+> grants, origin marking, the §6.3 published claim — is identical in both modes and the peer check
+> runs *before* bearer auth. `X-Forwarded-For` is never trusted for authorization. M1–M3's
+> IP-literal rejection stands for `remote.bind` itself (the mode is a keyword, the address lives
+> under `remote.proxy.*`). Implementation of the mode is a post-M6 follow-up; the work edition
+> still never starts any listener of any mode.
+
 **The one-sentence shape of this element**: remote is a *transport*, not a policy layer. It adds a
 second socket, an authentication check, an origin marker, and a per-agent consent gate. It adds no
 routes that only exist remotely, no permission behaviour, and no second implementation of anything.

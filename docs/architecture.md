@@ -30,6 +30,8 @@ AgentManager itself routes work between roster agents (like munder-difflin's "Mi
 
 The remote listener binds **only** to the Tailscale interface — never LAN or public. Requests additionally require a bearer token. Remote access auto-enables when an agent is started remotely; the security design must also define when it turns back off.
 
+*Amended 2026-08-17 (owner decision): Tailscale only ever lives on the household's proxy host (the mini-pc), never on the core's machine.* The remote listener therefore supports two bind modes, both bearer-authenticated and both absent from the work edition: **`tailscale`** (the original — bind the local Tailscale interface; retained for installs where the tailnet reaches the machine) and **`proxy`** — bind a single configured LAN address and accept TCP connections **only from the declared proxy peer's IP** (the mini-pc, whose nginx + `tailscale serve` provide tailnet-only exposure and TLS). In proxy mode the tailnet-membership gate moves to the proxy host; the listener's peer-IP allowlist plus the bearer token are the core's own controls. The proxy→core LAN hop is plain HTTP in v1 (bearer tokens transit the home LAN); TLS on that hop is a deliberate deferral, not an oversight.
+
 ## D6 — Two editions, one codebase
 
 - **Home**: full app with remote listener.
