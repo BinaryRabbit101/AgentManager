@@ -31,6 +31,8 @@ const SDK_IMPORTERS: readonly string[] = [
   'sessionOptions.ts', // the `Options` type, re-exported as ClaudeAgentSdkOptions
   'compileSession.ts', // constructs it
   'compileSession.test.ts', // type-level validation + the gated runtime smoke test
+  'draft.ts', // M8: the one `query()` call roster makes (§12.2, §13)
+  'draft.live.test.ts', // the token-gated live drafting check
 ];
 
 describe('SDK boundary', () => {

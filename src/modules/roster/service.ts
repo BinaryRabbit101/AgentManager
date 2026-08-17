@@ -30,7 +30,7 @@
  * history, and persisting it would put a row in `events` per drag, which is the
  * very cost §2.2 moved board order out of git to avoid.
  */
-import type { SecretResolver } from '../../secrets/index.js';
+import { Secret, type SecretResolver } from '../../secrets/index.js';
 import type { AgentsRepository, SessionsRepository } from '../../storage/index.js';
 import { isoTimestamp, type Clock } from '../../storage/time.js';
 import type { EventBus } from '../types.js';
@@ -42,13 +42,29 @@ import {
   type AvatarImage,
   type AvatarUpload,
 } from './avatar.js';
-import type { Diagnostic } from './contracts.js';
+import { compileSession } from './compileSession.js';
+import type { Diagnostic, EffectivePermissions } from './contracts.js';
+import {
+  draftFromDescription,
+  draftRequestSchema,
+  type DraftQueryFn,
+  type DraftResponse,
+} from './draft.js';
+import { projectRosterForOverseer, type OverseerRosterEntry } from './overseer.js';
+import type { PermissionPolicy, RawPermissionSet } from './permissions.js';
+import type { ProjectContext, SessionToolsetProvider } from './sessionOptions.js';
 import { duplicateAgentId, duplicateDefinition } from './duplicate.js';
 import { RosterValidationError } from './errors.js';
 import { agentIdProblem } from './ids.js';
 import { integrationCredentialStatus, type IntegrationCredentialStatus } from './integrations.js';
 import { parseAgentDefinition } from './parse.js';
-import { AGENT_SCHEMA_VERSION, immutableFieldViolations, type AgentDefinition } from './schema.js';
+import {
+  AGENT_SCHEMA_VERSION,
+  ROLES,
+  immutableFieldViolations,
+  type AgentDefinition,
+  type Role,
+} from './schema.js';
 import {
   AgentArchivedError,
   AgentIdTakenError,
@@ -106,6 +122,35 @@ export interface RosterListView {
   readonly agents: readonly AgentView[];
   /** Library-wide, including agents that failed to load and so are not listed. */
   readonly diagnostics: readonly Diagnostic[];
+}
+
+/**
+ * `POST /agents/:id/validate` (§9.1) — the launch flow's permission preview.
+ *
+ * The field names are the ui's: its one accessor reads `effective` and
+ * `diagnostics` and nothing else (`web/src/launch/permissionPreview.ts`), so
+ * those two are the contract and everything beside them is additive.
+ *
+ * §9.1's reason for the endpoint, restated because it is the whole design:
+ * "before launching, show the user the *effective* permission set for this agent
+ * on this project, including any elevation. Permission composition that the user
+ * cannot see is permission composition they will not trust."
+ */
+export interface ValidateResult {
+  readonly agentId: string;
+  readonly projectId: string | null;
+  /** Exactly what the runner would receive for this pair (§6.2, §13). */
+  readonly effective: EffectivePermissions;
+  readonly diagnostics: readonly Diagnostic[];
+  /** The elevation the project *declared*, whether or not it was applied — the
+   *  banner half of ui §6, which must never be silently dropped. */
+  readonly declaredElevation: { readonly allow: readonly string[]; readonly reason: string } | null;
+  /** Foundation's `policy.allowPermissionElevation`, so the preview can say why
+   *  a declared elevation was not applied (work edition). */
+  readonly allowPermissionElevation: boolean;
+  /** True when the assignment layer was assumed rather than supplied — a
+   *  preview is not a launch and there is no assignment yet. */
+  readonly assumedWriteAccess: boolean;
 }
 
 /** What `DELETE /agents/:id` answers with. */
@@ -173,6 +218,27 @@ export interface RosterService {
   reload(): RegistryChange;
   /** Rereads named folders — the watcher's normal case. */
   reloadFolders(folders: readonly string[]): RegistryChange;
+  /**
+   * `POST /draft` (§12, M8) — draft-from-description.
+   *
+   * Stateless: nothing is written, nothing is cached, and no id is minted. The
+   * wizard edits what comes back and saves it through {@link RosterService.create}
+   * like any other agent.
+   */
+  draft(body: unknown): Promise<DraftResponse>;
+  /** `POST /agents/:id/validate` (§9.1) — the dry-run compile behind the launch
+   *  flow's permission preview. */
+  validate(id: string, body: unknown): Promise<ValidateResult>;
+  /**
+   * §11's read-only roster projection: "names, specialties, tags, capabilities —
+   * never permissions or integrations".
+   *
+   * Exposed on the service because the reader is orchestrator's `list_roster`
+   * tool, which reaches roster through `ctx.require('roster')` and must not have
+   * to build the projection itself — two implementations of "what an overseer
+   * may see" is one implementation too many.
+   */
+  overseerRoster(): readonly OverseerRosterEntry[];
   /** The in-memory registry, for M4's compiler and the module's health check. */
   readonly registry: RosterRegistry;
   /** Diagnostics raised by bootstrap, which precede the registry itself. */
@@ -197,7 +263,54 @@ export interface RosterServiceOptions {
    * honest answer, since nothing can resolve it.
    */
   readonly secrets?: SecretResolver;
+  /**
+   * Foundation's `policy` namespace (§6.2's two out-of-band inputs).
+   *
+   * Needed by `POST /agents/:id/validate`, which must compose exactly what the
+   * runner would — and the runner is given the same namespace. Defaults to the
+   * permissive pair so a test harness that does not care need not state it.
+   */
+  readonly policy?: PermissionPolicy;
+  /**
+   * The projects service, structurally, resolved lazily.
+   *
+   * Lazily because module init order puts projects after roster, and
+   * structurally because feature modules never import each other (foundation
+   * §6.1). Absent — or throwing, which is how projects reports an unknown id —
+   * means the preview composes the roster baseline alone and says so.
+   */
+  readonly projects?: () => ProjectDefaultsProvider | undefined;
+  /** §13's orchestration row, so the preview shows the §11 grant the launch
+   *  will actually carry. */
+  readonly toolset?: SessionToolsetProvider | undefined;
+  /** §12's one `query()` call. Absent in a build with no SDK wired, in which
+   *  case `POST /draft` refuses rather than pretending. */
+  readonly draftQuery?: DraftQueryFn | undefined;
+  readonly log?: (message: string, detail?: Record<string, unknown>) => void;
 }
+
+/**
+ * As much of projects' service as the permission preview reads (§9.1).
+ *
+ * `get` throws `ProjectNotFoundError` for an unknown id — projects' own
+ * behaviour, caught here and turned into roster's typed 404 rather than a 500.
+ */
+export interface ProjectDefaultsProvider {
+  get(projectId: string): {
+    readonly id: string;
+    readonly localPath?: string | undefined;
+    readonly defaults?:
+      | {
+          readonly permissions?: RawPermissionSet | undefined;
+          readonly permissionElevation?:
+            { readonly allow: readonly string[]; readonly reason: string } | undefined;
+        }
+      | undefined;
+  };
+}
+
+/** The permissive pair, matching foundation's own config defaults. */
+const OPEN_POLICY: PermissionPolicy = { allowPermissionElevation: true, globalDeny: [] };
 
 // ---------------------------------------------------------------------------
 
@@ -649,6 +762,127 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
       return placeholderAvatar(agent.definition);
     },
 
+    async draft(body) {
+      const parsed = draftRequestSchema.safeParse(body);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        throw new InvalidRosterRequestError(
+          `The draft request is not usable: ${issue?.message ?? 'send {"description": "…"}'}`,
+          issue?.path.join('.') || 'description',
+        );
+      }
+      if (options.draftQuery === undefined) {
+        throw new RosterServiceError(
+          'draft_unavailable',
+          'Drafting is not available in this build: the roster service was created without an ' +
+            'SDK query seam (DESIGN §12.2).',
+          503,
+        );
+      }
+      return draftFromDescription(parsed.data, {
+        query: options.draftQuery,
+        ...(options.log === undefined ? {} : { log: options.log }),
+      });
+    },
+
+    async validate(id, body) {
+      const agent = requireLive(id);
+      const record = asRecord(body) ?? {};
+
+      const projectId = record['projectId'];
+      if (projectId !== undefined && typeof projectId !== 'string') {
+        throw new InvalidRosterRequestError('"projectId" must be a string.', 'projectId');
+      }
+      const write = record['write'];
+      if (write !== undefined && typeof write !== 'boolean') {
+        throw new InvalidRosterRequestError('"write" must be true or false.', 'write');
+      }
+      const role = record['role'];
+      if (
+        role !== undefined &&
+        (typeof role !== 'string' || !(ROLES as readonly string[]).includes(role))
+      ) {
+        throw new InvalidRosterRequestError(`"role" must be one of ${ROLES.join(', ')}.`, 'role');
+      }
+
+      // The project layer, as *stored* — a preview happens before any workspace
+      // lease exists, so this deliberately does not go through
+      // `getEffectiveLaunchContext`, which needs one. Permissions are the same
+      // either way: projects stores them uncomposed and roster composes them.
+      let project: ProjectContext | undefined;
+      let declaredElevation: ValidateResult['declaredElevation'] = null;
+      if (projectId !== undefined) {
+        const provider = options.projects?.();
+        if (provider === undefined) {
+          throw new RosterServiceError(
+            'projects_unavailable',
+            'This build has no projects module, so an agent cannot be validated against a ' +
+              'project id.',
+            503,
+            { projectId },
+          );
+        }
+        let stored;
+        try {
+          stored = provider.get(projectId);
+        } catch {
+          throw new RosterServiceError(
+            'project_not_found',
+            `There is no project "${projectId}".`,
+            404,
+            { projectId },
+          );
+        }
+        const elevation = stored.defaults?.permissionElevation;
+        declaredElevation =
+          elevation === undefined
+            ? null
+            : { allow: [...elevation.allow], reason: elevation.reason };
+        project = {
+          projectId: stored.id,
+          cwd: stored.localPath ?? '',
+          ...(stored.defaults?.permissions === undefined
+            ? {}
+            : { permissionOverride: stored.defaults.permissions }),
+          ...(elevation === undefined ? {} : { elevation }),
+        };
+      }
+
+      const policy = options.policy ?? OPEN_POLICY;
+      const compiled = await compileSession({
+        agent,
+        ...(project === undefined ? {} : { project }),
+        assignment: {
+          // A preview has no assignment yet (§9.1: it happens *before* a
+          // launch), so the layer is the permissive one: `write: true` and no
+          // scope rules. Stated on the result as `assumedWriteAccess` rather
+          // than hidden, because a preview that silently assumed the *narrower*
+          // layer would show an owner a set no session will ever run under.
+          id: 'roster-validate',
+          write: write ?? true,
+          ...(role === undefined ? {} : { role: role as Role }),
+        },
+        policy,
+        // Nothing is launched, so nothing inherits this process's environment.
+        baseEnv: {},
+        secrets: previewSecrets(options.secrets),
+        ...(options.toolset === undefined ? {} : { toolset: options.toolset }),
+      });
+
+      return {
+        agentId: agent.definition.id,
+        projectId: projectId ?? null,
+        effective: compiled.effective,
+        diagnostics: [...agent.diagnostics, ...compiled.diagnostics],
+        declaredElevation,
+        allowPermissionElevation: policy.allowPermissionElevation,
+        assumedWriteAccess: write === undefined,
+      };
+    },
+
+    overseerRoster: () =>
+      projectRosterForOverseer(registry.list().map((agent) => agent.definition)),
+
     load() {
       const result = registry.reloadAll();
       settle('loaded', result.agentIds);
@@ -716,6 +950,30 @@ function splitBody(body: unknown): {
   const rest = { ...record };
   delete rest['personaText'];
   return { record: rest, personaText };
+}
+
+/**
+ * The resolver the **preview** compiles with.
+ *
+ * A dry run must not fail because a credential is missing: §10 makes an
+ * unresolved `secretRef` fail a *launch* loudly, which is right — a session
+ * whose tools will silently 401 must not start — but the permission preview
+ * exists precisely so an owner can look before launching, and refusing to show
+ * it because a token is absent would hide the composition at the moment it is
+ * most wanted. So a missing ref resolves to a placeholder here and the launch
+ * path keeps its refusal untouched. The value never leaves this function: the
+ * preview returns `effective` and `diagnostics`, and discards the options.
+ *
+ * `needsCredentials` on `GET /agents` is where an owner learns the ref is
+ * missing (§10) — that badge is not weakened by this.
+ */
+function previewSecrets(secrets: SecretResolver | undefined): SecretResolver {
+  return {
+    async get(key: string) {
+      const found = await secrets?.get(key);
+      return found ?? new Secret(`unresolved:${key}`);
+    },
+  };
 }
 
 /** The declared type for a stored avatar, from its name. `avatar.png` is the

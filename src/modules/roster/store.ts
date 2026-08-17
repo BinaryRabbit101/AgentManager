@@ -49,6 +49,7 @@ import type { Diagnostic } from './contracts.js';
 import { RosterValidationError } from './errors.js';
 import { validateIntegrationAllowRules } from './integrations.js';
 import { parseAgentDefinitionJson, serialiseAgentDefinition } from './parse.js';
+import { readRoleAddenda, type RoleAddenda } from './roleAddenda.js';
 import type { AgentDefinition, AgentId } from './schema.js';
 import { LibraryWriteError } from './serviceErrors.js';
 import { listSkillNames, validateSkills } from './skills.js';
@@ -71,8 +72,10 @@ export const PLUGIN_MANIFEST_DIRNAME = '.claude-plugin';
 export const PLUGIN_MANIFEST_FILENAME = 'plugin.json';
 /** The one name an uploaded avatar is ever stored under (§9.5). */
 export const AVATAR_FILENAME = 'avatar.png';
-/** Optional per-collaboration-role persona addenda (§4). */
-export const ROLES_DIRNAME = 'roles';
+/** Optional per-collaboration-role persona addenda (§4) — defined in
+ *  `roleAddenda.ts` with the reader, re-exported so the layout reads as one
+ *  list. */
+export { ROLES_DIRNAME } from './roleAddenda.js';
 /** Per-agent skills, in plugin layout (§7) — defined in `skills.ts`, which this
  *  module imports, and re-exported so the layout reads as one list. */
 export { SKILLS_DIRNAME } from './skills.js';
@@ -215,6 +218,15 @@ export interface ResolvedAgent {
    * nor the API has to touch the disk to know what an agent actually carries.
    */
   readonly skills: readonly string[];
+  /**
+   * `roles/<role>.md` bodies by role (§4, M7), read here so `compileSession`
+   * stays a pure function of its inputs (§13).
+   *
+   * This is the field that makes {@link ResolvedAgent} satisfy the compiler's
+   * `CompilableAgent` completely: the compiler picks the assignment's role out
+   * of it and appends nothing when there is no entry.
+   */
+  readonly roleAddenda: RoleAddenda;
   /** sha-256 over the authored bytes — what makes a reload a no-op (§2.3). */
   readonly contentHash: string;
   /** ISO timestamp when this was read out of `.archive/`, else `null` (§9.3). */
@@ -414,6 +426,10 @@ export function createRosterStore(options: RosterStoreOptions): RosterStore {
     // (a write re-reads the folder) and on an external edit alike.
     diagnostics.push(...validateIntegrationAllowRules(definition));
 
+    // §4's second system-prompt slot, read alongside the persona because the
+    // compiler must not touch the disk (§13, `roleAddenda.ts`).
+    const roleAddenda = readRoleAddenda(dir);
+
     return {
       ok: true,
       agent: {
@@ -421,7 +437,8 @@ export function createRosterStore(options: RosterStoreOptions): RosterStore {
         persona,
         dir,
         skills,
-        contentHash: contentHash(text, persona, avatarBytes),
+        roleAddenda,
+        contentHash: contentHash(text, persona, roleAddenda, avatarBytes),
         archivedAt,
         diagnostics,
       },
@@ -690,12 +707,26 @@ export function ensurePluginManifest(
  * so including it would make a manifest repair look like an agent change and
  * emit a `roster.changed` nobody made.
  */
-function contentHash(definitionText: string, persona: string, avatar?: Uint8Array): string {
+function contentHash(
+  definitionText: string,
+  persona: string,
+  roleAddenda: RoleAddenda,
+  avatar?: Uint8Array,
+): string {
   const hash = createHash('sha256');
   hash.update(definitionText, 'utf8');
   hash.update('\0');
   hash.update(persona, 'utf8');
   hash.update('\0');
+  // Role addenda are authored bytes like the persona (§4), so an edit to
+  // `roles/skeptic.md` has to make a reload a real change rather than a no-op
+  // (§2.3). Sorted, so the hash does not depend on directory order.
+  for (const role of Object.keys(roleAddenda).sort()) {
+    hash.update(role, 'utf8');
+    hash.update('\0');
+    hash.update(roleAddenda[role as keyof RoleAddenda] ?? '', 'utf8');
+    hash.update('\0');
+  }
   if (avatar !== undefined) hash.update(avatar);
   return hash.digest('hex');
 }

@@ -134,7 +134,7 @@ describe('module registration', () => {
     expect(booted.runtime.registry.require<RosterService>(ROSTER_SERVICE)).toBeDefined();
   });
 
-  it('registers exactly the M3 route surface, all reachable remotely', async () => {
+  it('registers exactly the M3+M8 route surface, all reachable remotely', async () => {
     const booted = await bootCore();
     const mine = booted.runtime.routes.routes.filter(
       (route) => route.moduleId === ROSTER_MODULE_ID,
@@ -150,13 +150,32 @@ describe('module registration', () => {
       'PATCH /api/roster/agents/:id/ui-state',
       'POST /api/roster/agents',
       'POST /api/roster/agents/:id/duplicate',
+      'POST /api/roster/agents/:id/validate',
+      'POST /api/roster/draft',
       'PUT /api/roster/agents/:id/avatar',
       'PUT /api/roster/board-order',
     ]);
-    // The endpoints of later milestones are absent rather than stubbed.
-    expect(mine.some((route) => route.path.includes('draft'))).toBe(false);
+    // M9's pack endpoints are still absent rather than stubbed.
+    expect(mine.some((route) => route.path.includes('export'))).toBe(false);
     expect(mine.some((route) => route.path.includes('import'))).toBe(false);
     expect(mine.every((route) => route.remote === 'allow')).toBe(true);
+  });
+
+  it('mounts /validate, so the ui launch flow stops degrading on a 404 (roster §9.1)', async () => {
+    const booted = await bootCore();
+    writeMailbox(booted);
+
+    const answer = await call<{ effective?: { mode?: string }; diagnostics?: unknown[] }>(
+      'POST',
+      '/api/roster/agents/marcus-inbox/validate',
+      {},
+    );
+
+    // Not a 404: the exact status `web/src/launch/permissionPreview.ts` treats
+    // as "the route does not exist yet" and replaces the panel for.
+    expect(answer.status).toBe(200);
+    expect(answer.body.effective?.mode).toBeDefined();
+    expect(Array.isArray(answer.body.diagnostics)).toBe(true);
   });
 
   it('applies its element migration under module "roster", once', async () => {

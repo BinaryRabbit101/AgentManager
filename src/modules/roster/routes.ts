@@ -14,11 +14,20 @@
  * DELETE /api/roster/agents/:id/avatar      back to initials
  * PATCH  /api/roster/agents/:id/ui-state    { pinned }
  * PUT    /api/roster/board-order            { order: string[] }
+ * POST   /api/roster/draft                  draft-from-description (§12, M8)
+ * POST   /api/roster/agents/:id/validate    dry-run compile (§9.1)
  * ```
  *
- * `/draft`, `/export`, `/import` and `/validate` are deliberately absent rather
- * than stubbed — they are M8, M9 and M9 respectively, and a route that answers
- * 501 is a promise this milestone did not make.
+ * `/export` and `/import` are deliberately absent rather than stubbed — they
+ * are M9, and a route that answers 501 is a promise this milestone did not
+ * make.
+ *
+ * `/validate` is listed in §9.1 beside them but lands here rather than with the
+ * pack format: the ui's launch flow is already written against it and degrades
+ * by *probing for a 404* (`web/src/launch/permissionPreview.ts`), which is the
+ * one shape of feature detection that element's own rules forbid — so the route
+ * existing is what retires the exception. Its body is `{ effective,
+ * diagnostics, … }`, and the first two are what that accessor reads.
  *
  * Every failure is a typed refusal translated in one place: a
  * {@link RosterServiceError} carries its own status and code, a
@@ -236,6 +245,26 @@ export function createRosterRoutes(deps: RosterRoutesDeps): RouteDefinition[] {
       description: 'Sets the board-owned fields that are not definition fields ({ pinned }).',
       handler: (req, res) =>
         answering(logger, req, res, () => res.json(service.patchUiState(id(req), req.body))),
+    },
+
+    {
+      method: 'POST',
+      path: `${ROSTER_API_PREFIX}/draft`,
+      description:
+        'Drafts an agent definition from a description (§12). Stateless: nothing is stored.',
+      handler: (req, res) =>
+        answeringAsync(logger, req, res, async () => res.json(await service.draft(req.body))),
+    },
+
+    {
+      method: 'POST',
+      path: `${ROSTER_API_PREFIX}/agents/:id/validate`,
+      description:
+        'Dry-run compile against a project id: the effective permissions this pair would launch with.',
+      handler: (req, res) =>
+        answeringAsync(logger, req, res, async () =>
+          res.json(await service.validate(id(req), req.body ?? {})),
+        ),
     },
 
     {

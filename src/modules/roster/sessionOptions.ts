@@ -18,7 +18,7 @@
  *   {@link CompileSessionInput.agentEnv} takes an already-resolved record and
  *   the composition root owes it. *Flagged for foundation.*
  */
-import type { Options } from '@anthropic-ai/claude-agent-sdk';
+import type { McpSdkServerConfigWithInstance, Options } from '@anthropic-ai/claude-agent-sdk';
 
 import type { SecretResolver } from '../../secrets/index.js';
 
@@ -48,10 +48,21 @@ export interface CompilableAgent {
   readonly definition: AgentDefinition;
   /** `persona.md`, verbatim. Empty when the agent has no persona file. */
   readonly persona: string;
-  /** `roles/<role>.md` bodies by role; only the assignment's role is read. */
+  /** `roles/<role>.md` bodies by role; only the assignment's role is read.
+   *  Read by the store at load (M7, `roleAddenda.ts`). */
   readonly roleAddenda?: Readonly<Partial<Record<Role, string>>> | undefined;
   /** Absolute path to the agent folder — §7.1's `plugins: [{ type: 'local' }]` root. */
   readonly directory?: string | undefined;
+  /**
+   * The store's name for the same folder.
+   *
+   * `ResolvedAgent` (store.ts, M2) calls it `dir`; this type was written before
+   * M2 landed and called it `directory`. Both are read, `directory` first, so a
+   * `ResolvedAgent` handed straight to the compiler — which is what the runner's
+   * launch chain does — actually mounts its plugin folder instead of silently
+   * compiling with none. *Consolidate on one name when the two types merge.*
+   */
+  readonly dir?: string | undefined;
   /**
    * The skill folder names actually present under `<directory>/skills/`, as the
    * store read them (§7.2's launch-time half of the exact-name check).
@@ -104,6 +115,45 @@ export interface AssignmentContext {
   readonly roundsUsed?: number | undefined;
 }
 
+// ---------------------------------------------------------------------------
+// The orchestration toolset (§11, §13; orchestrator R1)
+// ---------------------------------------------------------------------------
+
+/**
+ * What `orchestrator.getSessionToolset(...)` answers with, as far as roster
+ * reads it.
+ *
+ * Structural, not imported: feature modules never import each other (foundation
+ * §6.1), and orchestrator's `SessionToolset` satisfies this by shape. Roster
+ * needs exactly two things from it — the SDK server config to mount, and the
+ * tool names it actually exposes, so §11's grant can say so when the two differ.
+ */
+export interface SessionToolsetHandle {
+  /** The value placed at `options.mcpServers.agentmanager` (R1). */
+  readonly server: McpSdkServerConfigWithInstance;
+  /** Which of §11's six this instance exposes, when it says. */
+  readonly toolNames?: readonly string[] | undefined;
+}
+
+/**
+ * `ctx.require('orchestrator')?.getSessionToolset` (§13's mapping table).
+ *
+ * **A new instance per call.** Orchestrator SDK-NOTES G2: a `createSdkMcpServer`
+ * instance is single-use — `Protocol.connect()` throws on a second transport and
+ * the SDK swallows the rejection — so a reused one yields "a session that
+ * believes it has the toolset and gets no answers". The compiler therefore calls
+ * this exactly once per compile and never caches what comes back.
+ *
+ * `undefined` — the provider absent, or returning nothing — is the
+ * orchestrator-disabled case §11 describes, and is not an error.
+ */
+export type SessionToolsetProvider = (launch: {
+  readonly assignmentId: string;
+  readonly agentId: string;
+  readonly role?: Role | undefined;
+  readonly isOverseer?: boolean | undefined;
+}) => SessionToolsetHandle | undefined;
+
 export interface CompileSessionInput {
   readonly agent: CompilableAgent;
   readonly project?: ProjectContext | undefined;
@@ -121,6 +171,15 @@ export interface CompileSessionInput {
   /** The §3.2 read-only face. `.reveal()` is called here and in runner's
    *  `attachAuthEnv()` — nowhere else in the system. */
   readonly secrets: SecretResolver;
+  /**
+   * §13's orchestration row (orchestrator R1). Supplied by the roster *module*,
+   * which is the thing that holds a `ModuleContext` — the compiler itself is a
+   * pure function and does not reach into the service registry.
+   *
+   * Absent means the orchestrator module is not in this build: §11's rules are
+   * dropped and `mcpServers.agentmanager` is simply not emitted.
+   */
+  readonly toolset?: SessionToolsetProvider | undefined;
 }
 
 // ---------------------------------------------------------------------------

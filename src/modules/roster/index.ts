@@ -7,11 +7,12 @@
  * behind this same barrel, so consumers never learn a second import path.
  *
  * The SDK (`@anthropic-ai/claude-agent-sdk`, pinned by M0 —
- * `docs/roster/SDK-NOTES.md`) is reached from exactly two modules behind this
- * barrel: `sessionOptions.ts`, for the `Options` type, and `compileSession.ts`,
- * which constructs it. That pair is "the only place SDK option shapes appear"
- * (§13); every other module here, the schema included, still has no import of
- * it.
+ * `docs/roster/SDK-NOTES.md`) is reached from exactly three modules behind this
+ * barrel: `sessionOptions.ts`, for the `Options` type, `compileSession.ts`,
+ * which constructs it, and — since M8 — `draft.ts`, which holds the one
+ * `query()` call roster makes (§12.2, §13: "Roster never calls `query()` except
+ * for the drafting call in §12"). Every other module here, the schema included,
+ * still has no import of it.
  */
 
 export {
@@ -219,6 +220,70 @@ export type {
 
 export { DEFAULT_MAX_BUDGET_USD, DEFAULT_MAX_TURNS, compileSession } from './compileSession.js';
 
+// M7 — capabilities, roles and the overseer surface (DESIGN §11, §13/R1).
+export {
+  ORCHESTRATION_SERVER,
+  ORCHESTRATION_TOOL_PREFIX,
+  OVERSEER_DEFAULT_MAX_BUDGET_USD,
+  OVERSEER_DEFAULT_MAX_TURNS,
+  OVERSEER_MODEL_FLOOR,
+  OVERSEER_ONLY_TOOL_NAMES,
+  OVERSEER_PROJECTION_FORBIDDEN_KEYS,
+  OVERSEER_TOOL_NAMES,
+  SUBAGENT_TOOL_NAMES,
+  WORKER_TOOL_NAMES,
+  applyOrchestrationGrant,
+  isOrchestrationRule,
+  isOverseer,
+  modelTierRelativeToFloor,
+  orchestrationRule,
+  orchestrationToolNames,
+  overseerModelDiagnostic,
+  projectRosterForOverseer,
+} from './overseer.js';
+export type {
+  OrchestrationGrant,
+  OrchestrationGrantInput,
+  OverseerRosterEntry,
+} from './overseer.js';
+
+export {
+  ROLES_DIRNAME as ROLE_ADDENDA_DIRNAME,
+  readRoleAddenda,
+  roleAddendumFile,
+} from './roleAddenda.js';
+export type { RoleAddenda } from './roleAddenda.js';
+
+// M8 — draft-from-description (DESIGN §12).
+export {
+  CATALOGUE_RULES,
+  DRAFT_MAX_TURNS,
+  DRAFT_MODEL,
+  DRAFT_P50_BUDGET_MS,
+  MODEL_TIERS,
+  PERMISSION_RULE_CATALOGUE,
+  draftFromDescription,
+  draftOptions,
+  draftRepairPrompt,
+  draftRequestSchema,
+  draftSystemPrompt,
+  draftUserPrompt,
+  extractFencedJson,
+  realDraftQuery,
+  sanitisePermissions,
+} from './draft.js';
+export type {
+  AgentDraft,
+  DraftDeps,
+  DraftMessage,
+  DraftQueryFn,
+  DraftRequest,
+  DraftResponse,
+  ModelTier,
+  SuggestedIntegration,
+  SuggestedSkill,
+} from './draft.js';
+
 export { SessionCompileError } from './sessionOptions.js';
 export type {
   AssignmentContext,
@@ -227,6 +292,8 @@ export type {
   CompileSessionInput,
   CompiledSession,
   ProjectContext,
+  SessionToolsetHandle,
+  SessionToolsetProvider,
 } from './sessionOptions.js';
 // M2+M3 — the file store, the registry, the CRUD service and its routes.
 
@@ -315,10 +382,12 @@ export { createRosterService } from './service.js';
 export type {
   AgentView,
   DeleteResult,
+  ProjectDefaultsProvider,
   RosterChangeReason,
   RosterListView,
   RosterService,
   RosterServiceOptions,
+  ValidateResult,
 } from './service.js';
 
 export { ROSTER_API_PREFIX, createRosterRoutes } from './routes.js';

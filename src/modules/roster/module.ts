@@ -44,8 +44,10 @@ import type { Module, ModuleContext, ModuleHandle } from '../types.js';
 
 import { bootstrapLibrary, type GitCommand } from './bootstrap.js';
 import { compileSession } from './compileSession.js';
+import { realDraftQuery, type DraftQueryFn } from './draft.js';
 import { createRosterRoutes } from './routes.js';
-import { createRosterService } from './service.js';
+import { createRosterService, type ProjectDefaultsProvider } from './service.js';
+import type { CompileSessionInput, SessionToolsetProvider } from './sessionOptions.js';
 import { createRosterStore, type StoreHooks } from './store.js';
 import { createAgentUiStateRepository } from './uiState.js';
 import { createRosterWatcher, inertWatcher, type RosterWatcher } from './watcher.js';
@@ -65,6 +67,14 @@ export interface RosterModuleOptions {
   readonly watchDebounceMs?: number;
   /** The atomic-write seam of `store.ts`; absent in production. */
   readonly hooks?: StoreHooks;
+  /**
+   * §12's `query()` seam (M8). Production takes the real one; a test passes a
+   * scripted generator, because the drafting pipeline is a property of the
+   * harness — the prompt, the extraction, the repair round-trip, the degraded
+   * partial — and pinning it to a live subscription would prove the least
+   * interesting half of it.
+   */
+  readonly draftQuery?: DraftQueryFn;
 }
 
 export function createRosterModule(
@@ -102,6 +112,24 @@ export function createRosterModule(
         ...(options.hooks === undefined ? {} : { hooks: options.hooks }),
       });
 
+      /**
+       * §13's orchestration row (orchestrator R1), resolved **per launch**.
+       *
+       * `ctx.require` is called inside the closure rather than once at init for
+       * two reasons: orchestrator initialises after roster, so there would be
+       * nothing to find here; and the instance must be new every time — a
+       * `createSdkMcpServer` instance is single-use, and a cached one produces a
+       * session that believes it has the toolset and gets no answers
+       * (orchestrator SDK-NOTES G2). `undefined` — no module, or a build with no
+       * toolset wired — is §11's orchestrator-disabled case, not an error.
+       */
+      const toolset: SessionToolsetProvider = (launch) => {
+        const orchestrator = ctx.require<{
+          readonly getSessionToolset?: SessionToolsetProvider | undefined;
+        }>('orchestrator');
+        return orchestrator?.getSessionToolset?.(launch);
+      };
+
       const service = createRosterService({
         store,
         uiState: createAgentUiStateRepository(open.db),
@@ -113,6 +141,17 @@ export function createRosterModule(
         // §10's `{ secretRef, resolved }` badge. The read-only face: this
         // service probes for presence and never reveals a value.
         secrets: ctx.secrets,
+        // §6.2's two out-of-band inputs, so `POST /agents/:id/validate` composes
+        // exactly what a launch would.
+        policy: ctx.config.policy,
+        // Resolved lazily for the same reason as the toolset: projects is not
+        // in the registry while roster is initialising.
+        projects: () => ctx.require<ProjectDefaultsProvider>('projects'),
+        toolset,
+        draftQuery: options.draftQuery ?? realDraftQuery,
+        log: (message, detail) => {
+          ctx.logger.debug(detail ?? {}, message);
+        },
       });
 
       const loaded = service.load();
@@ -135,7 +174,19 @@ export function createRosterModule(
       // structurally through the registry (runner contracts `RosterProvider`),
       // and a roster build that does not publish the compiler turns every
       // launch into a named `launch_failed` refusal.
-      ctx.provide(ROSTER_SERVICE, Object.assign(service, { compileSession }));
+      //
+      // The published one is *bound to the toolset provider* (R1): the compiler
+      // is a pure function and does not reach into the service registry, so the
+      // module — the thing that holds a `ModuleContext` — is what supplies it.
+      // A caller that passes its own wins, which is what makes the compiler
+      // still testable in isolation.
+      ctx.provide(
+        ROSTER_SERVICE,
+        Object.assign(service, {
+          compileSession: (input: CompileSessionInput) =>
+            compileSession({ ...input, toolset: input.toolset ?? toolset }),
+        }),
+      );
       ctx.registerRoutes(createRosterRoutes({ service, logger: ctx.logger }));
 
       let watcher: RosterWatcher = inertWatcher();

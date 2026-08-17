@@ -537,6 +537,29 @@ export function grantTool(compiled: CompiledPermissions, rule: string): Compiled
   };
 }
 
+/**
+ * Add deny rules the *compiler* owns rather than a human layer.
+ *
+ * The one case today is §11's subagent floor (`Agent` / `Task`, roster
+ * `overseer.ts`): D4 is an architecture decision about the whole product, so it
+ * is not a rule any layer declares and not one any layer may remove. Deny is a
+ * union in every direction (§6.2), so adding to it can only ever narrow — and
+ * an allow rule the addition kills is stripped here for the same reason
+ * {@link compilePermissions} strips one: the audit record must not claim a
+ * grant that is not in force.
+ */
+export function denyTools(
+  compiled: CompiledPermissions,
+  rules: readonly string[],
+): CompiledPermissions {
+  const missing = rules.filter((rule) => !compiled.effective.deny.includes(rule));
+  if (missing.length === 0) return compiled;
+
+  const deny = sortRules([...compiled.effective.deny, ...missing]);
+  const allow = stripDeniedAllows(compiled.effective.allow, deny);
+  return { ...compiled, effective: { ...compiled.effective, allow, deny } };
+}
+
 // ---------------------------------------------------------------------------
 // Reading the result
 // ---------------------------------------------------------------------------

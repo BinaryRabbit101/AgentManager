@@ -50,26 +50,41 @@
  * the key is not "off" — the CLI's own defaults still apply (SDK-NOTES §5) — and
  * `[]` is the only safe value for an agent that declares none.
  *
- * ## Not here yet
+ * ## Added in M7
  *
  * `mcpServers.agentmanager` — the orchestrator's per-launch toolset instance
- * (§13, §11) — is M7, together with the `mcp__agentmanager__*` allow rules that
- * go with it.
+ * (§13's mapping row, orchestrator R1) — together with §11's
+ * `mcp__agentmanager__*` grant, the subagent deny that D4 requires, the higher
+ * overseer turn/budget defaults and the model floor. The instance is obtained
+ * from {@link CompileSessionInput.toolset}, which the *module* wires to
+ * `ctx.require('orchestrator')?.getSessionToolset` — this file stays a pure
+ * function of its inputs, and one that is called exactly once per launch,
+ * because the instance is single-use (orchestrator SDK-NOTES G2).
  */
 import type { Diagnostic, EffectivePermissions } from './contracts.js';
 import type { EnvLayer } from './envMerge.js';
 import { mergeAgentEnv } from './envMerge.js';
 import type { RequestedSessionSurface } from './initMessage.js';
 import { compileIntegrations } from './integrations.js';
+import {
+  ORCHESTRATION_SERVER,
+  SUBAGENT_TOOL_NAMES,
+  applyOrchestrationGrant,
+  isOverseer,
+  overseerModelDiagnostic,
+  OVERSEER_DEFAULT_MAX_BUDGET_USD,
+  OVERSEER_DEFAULT_MAX_TURNS,
+} from './overseer.js';
 import { composePersona } from './persona.js';
 import type { PersonaComposition } from './persona.js';
-import { compilePermissions, grantTool } from './permissions.js';
+import { compilePermissions, denyTools, grantTool } from './permissions.js';
 import type { CompiledPermissions } from './permissions.js';
 import { MODEL_ALIASES } from './schema.js';
 import type {
   ClaudeAgentSdkOptions,
   CompileSessionInput,
   CompiledSession,
+  SessionToolsetHandle,
 } from './sessionOptions.js';
 import { SKILL_TOOL, pluginConfigFor, skillsEnableSet } from './skills.js';
 import type { AgentPluginConfig } from './skills.js';
@@ -77,12 +92,17 @@ import type { AgentPluginConfig } from './skills.js';
 /**
  * Turn and budget defaults for an agent whose definition states none.
  *
- * The values §3's canonical definition carries. §11's higher overseer defaults
- * are M7's — the flag exists on `capabilities`, but what "higher" means is that
- * milestone's decision, not a number invented here.
+ * The values §3's canonical definition carries. An overseer takes §11's higher
+ * pair instead (`OVERSEER_DEFAULT_*`, M7) — "coordination is turn-expensive and
+ * produces little output per turn" — and a definition's own `defaults` still
+ * win over both, which is what "when unset" means.
  */
 export const DEFAULT_MAX_TURNS = 60;
 export const DEFAULT_MAX_BUDGET_USD = 2.5;
+
+/** §11's "higher default `maxTurns` and `maxBudgetUsd`", now that M7 has said
+ *  what higher means (`overseer.ts`). */
+export { OVERSEER_DEFAULT_MAX_BUDGET_USD, OVERSEER_DEFAULT_MAX_TURNS } from './overseer.js';
 
 /**
  * §8's warn-not-block model check.
@@ -138,9 +158,12 @@ export async function compileSession(input: CompileSessionInput): Promise<Compil
 
   const plugins: AgentPluginConfig[] = [];
   if (enableSet.enabled) {
+    // `directory` is this module's name for the folder and `dir` is the store's
+    // (`ResolvedAgent`); the runner hands over the latter, so reading only the
+    // former would mount no plugin on every real launch. See `sessionOptions.ts`.
     const { plugin, diagnostics: pluginDiagnostics } = pluginConfigFor(
       definition.id,
-      agent.directory,
+      agent.directory ?? agent.dir,
     );
     diagnostics.push(...pluginDiagnostics);
     if (plugin !== undefined) plugins.push(plugin);
@@ -151,6 +174,39 @@ export async function compileSession(input: CompileSessionInput): Promise<Compil
   // enable set and no `Skill` tool prompt" (M5) rather than a grant for a tool
   // the session will never offer.
   if (enableSet.enabled) compiled = grantTool(compiled, SKILL_TOOL);
+
+  // --- the orchestration surface (§11, §13's toolset row) ------------------
+  // The toolset instance is asked for **once**, here, and never cached: it is
+  // single-use, and a reused one produces a session that believes it has the
+  // tools and gets no answers (orchestrator SDK-NOTES G2).
+  const overseer = isOverseer(definition);
+  let toolsetHandle: SessionToolsetHandle | undefined;
+  if (input.toolset !== undefined) {
+    toolsetHandle = input.toolset({
+      assignmentId: assignment.id,
+      agentId: definition.id,
+      ...(assignment.role === undefined ? {} : { role: assignment.role }),
+      isOverseer: overseer,
+    });
+  }
+
+  const orchestration = applyOrchestrationGrant(compiled, {
+    agentId: definition.id,
+    overseer,
+    available: toolsetHandle !== undefined,
+    ...(toolsetHandle?.toolNames === undefined
+      ? {}
+      : { mountedToolNames: toolsetHandle.toolNames }),
+  });
+  compiled = orchestration.compiled;
+  diagnostics.push(...orchestration.diagnostics);
+
+  // D4, in the tier that actually enforces it: the SDK's subagent tool is denied
+  // by name — both the current one and the legacy `Task` — on every launch.
+  // "AgentManager routes work between agents; agents do not spawn their own
+  // hidden sub-hierarchies" (§11), and §6.1 is explicit that restriction is
+  // expressed with `deny` rather than by omission from `allow`.
+  compiled = denyTools(compiled, SUBAGENT_TOOL_NAMES);
 
   const effective: EffectivePermissions = compiled.effective;
 
@@ -203,7 +259,30 @@ export async function compileSession(input: CompileSessionInput): Promise<Compil
     sessionEnv: merged.env,
   });
   diagnostics.push(...integrations.diagnostics);
-  const mcpServerNames = Object.keys(integrations.servers);
+
+  // §13's toolset row: the per-launch instance sits beside the agent's own
+  // servers under the one key roster reserves for it. The key is roster's, not
+  // an agent's to claim — `agentmanager` is already a reserved agent id
+  // (`ids.ts`), and an integration that named itself that would otherwise
+  // silently replace the orchestration surface or be replaced by it.
+  const mcpServers: Record<
+    string,
+    (typeof integrations.servers)[string] | SessionToolsetHandle['server']
+  > = { ...integrations.servers };
+  if (Object.prototype.hasOwnProperty.call(mcpServers, ORCHESTRATION_SERVER)) {
+    delete mcpServers[ORCHESTRATION_SERVER];
+    diagnostics.push({
+      level: 'warn',
+      code: 'roster.integration.reserved-name',
+      message:
+        `integration "${ORCHESTRATION_SERVER}" was dropped: that MCP server name is reserved for ` +
+        'the orchestration toolset roster mounts itself (DESIGN §11, §13)',
+      agentId: definition.id,
+      path: `integrations.${ORCHESTRATION_SERVER}`,
+    });
+  }
+  if (toolsetHandle !== undefined) mcpServers[ORCHESTRATION_SERVER] = toolsetHandle.server;
+  const mcpServerNames = Object.keys(mcpServers);
 
   // --- model (§8) ----------------------------------------------------------
   const model = definition.model?.primary ?? input.defaultModel;
@@ -218,6 +297,12 @@ export async function compileSession(input: CompileSessionInput): Promise<Compil
       agentId: definition.id,
       path: 'model.primary',
     });
+  }
+  // §11's model floor, on the model the session will actually run — a `default`
+  // that resolves to something weak is the same problem as a weak one declared.
+  if (overseer) {
+    const floor = overseerModelDiagnostic(definition.id, model);
+    if (floor !== undefined) diagnostics.push(floor);
   }
   /** `fallbackModel` is a **comma-separated string**, not an array, on the
    *  pinned SDK (SDK-NOTES §5). `model.fallback` is a single value, so it maps
@@ -277,12 +362,16 @@ export async function compileSession(input: CompileSessionInput): Promise<Compil
     // server §10 never approved (SDK-NOTES §4).
     plugins,
     skills: enableSet.skills,
-    // §10. Per-agent servers only; `mcpServers.agentmanager` is M7's.
-    mcpServers: integrations.servers,
+    // §10's per-agent servers, plus §11's orchestration toolset under the one
+    // key roster reserves (§13, orchestrator R1).
+    mcpServers,
     additionalDirectories,
     env: merged.env,
-    maxTurns: definition.defaults?.maxTurns ?? DEFAULT_MAX_TURNS,
-    maxBudgetUsd: definition.defaults?.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD,
+    maxTurns:
+      definition.defaults?.maxTurns ?? (overseer ? OVERSEER_DEFAULT_MAX_TURNS : DEFAULT_MAX_TURNS),
+    maxBudgetUsd:
+      definition.defaults?.maxBudgetUsd ??
+      (overseer ? OVERSEER_DEFAULT_MAX_BUDGET_USD : DEFAULT_MAX_BUDGET_USD),
     ...(cwd === undefined ? {} : { cwd }),
     ...(model === undefined ? {} : { model }),
     ...(fallbackModel === undefined ? {} : { fallbackModel }),

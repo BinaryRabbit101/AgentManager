@@ -16,7 +16,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import pino, { type Logger } from 'pino';
+
 import { findInstallRoot } from '../../../config/index.js';
+import { bytes, empty, error, json, text } from '../../../http/response.js';
+import type { HttpResult, RequestContext, ResponseTools } from '../../../http/types.js';
+import type { RouteDefinition } from '../../types.js';
 import { openStorage, type EventsRepository, type Storage } from '../../../storage/index.js';
 import { createEventBus } from '../../bus.js';
 import type { AppEvent, EventBus } from '../../types.js';
@@ -107,6 +112,9 @@ export interface Harness {
   readonly store: RosterStore;
   readonly uiState: AgentUiStateRepository;
   readonly service: RosterService;
+  /** The same bus the service was built with, for a test that needs to build a
+   *  second service over the same library (M8's scripted drafting seam). */
+  readonly bus: EventBus;
   readonly events: AppEvent[];
   readonly libraryRoot: string;
   readonly dataRoot: string;
@@ -145,6 +153,7 @@ export function makeHarness(options: HarnessOptions): Harness {
     store,
     uiState,
     service,
+    bus,
     events: emitted,
     libraryRoot,
     dataRoot: options.dataRoot,
@@ -262,4 +271,69 @@ export function multipartBody(
 /** Sleeps, for the two tests that genuinely have to wait for the filesystem. */
 export function wait(ms: number): Promise<void> {
   return new Promise((done) => setTimeout(done, ms));
+}
+
+// ---------------------------------------------------------------------------
+// Driving a route without a socket
+// ---------------------------------------------------------------------------
+
+/**
+ * Calls one registered route handler directly.
+ *
+ * `module.test.ts` drives the whole stack over a real listener and stays the
+ * authority on the wire behaviour; this is for the criteria that are about a
+ * **status code and a body** on a service the test had to construct itself —
+ * M8's "returns `degraded: true` … and HTTP 200, not an error" needs a scripted
+ * `query()` seam, which `boot()` has no way to inject.
+ *
+ * The response helpers are foundation's own (`http/response.ts`), so a status or
+ * a content type asserted here is the one the server would have written.
+ */
+export function callRoute(
+  routes: readonly RouteDefinition[],
+  method: string,
+  path: string,
+  options: { readonly body?: unknown; readonly params?: Record<string, string> } = {},
+): Promise<{ status: number; body: unknown }> {
+  const route = routes.find((entry) => entry.method === method && entry.path === path);
+  if (route === undefined) throw new Error(`no route ${method} ${path}`);
+
+  const request = {
+    method,
+    path,
+    params: options.params ?? {},
+    query: new URLSearchParams(),
+    body: options.body,
+    origin: 'local' as const,
+    requestId: 'test-request',
+    tokenId: undefined,
+    tokenAttribution: undefined,
+    headers: { 'content-type': 'application/json' },
+    url: path,
+    remoteAddress: '127.0.0.1',
+    logger: silentLogger(),
+    signal: new AbortController().signal,
+    route: undefined,
+    attributeToken: () => undefined,
+  } as unknown as RequestContext;
+
+  const tools = { json, text, bytes, empty, error } as unknown as ResponseTools;
+
+  return Promise.resolve(route.handler(request, tools)).then((result) => {
+    const answered = result as HttpResult | undefined;
+    if (answered === undefined) return { status: 204, body: undefined };
+    const raw = answered.body?.toString('utf8') ?? '';
+    let body: unknown = raw;
+    try {
+      body = JSON.parse(raw) as unknown;
+    } catch {
+      // A non-JSON body (an avatar) stays a string.
+    }
+    return { status: answered.status, body };
+  });
+}
+
+/** A logger that writes nothing — the routes take one and a test wants silence. */
+export function silentLogger(): Logger {
+  return pino({ level: 'silent' });
 }
