@@ -27,7 +27,17 @@ export {
   type AttachAuthEnvDeps,
   type AuthMode,
 } from './attachAuthEnv.js';
-export { createDefaultDenyCanUseTool, type DefaultDenyDeps } from './canUseTool.js';
+export {
+  ALLOW_ONCE_OPTION,
+  createDefaultDenyCanUseTool,
+  createQuestionCanUseTool,
+  DENY_OPTION,
+  readAskUserQuestion,
+  type DefaultDenyDeps,
+  type QuestionCanUseToolDeps,
+  type RaisedQuestion,
+  type SettledQuestion,
+} from './canUseTool.js';
 export {
   DEFAULT_TAIL_BYTES,
   MAX_CONCURRENT_LIMIT,
@@ -36,8 +46,16 @@ export {
   type RunnerConfig,
 } from './config.js';
 export {
+  hasQuestionBridge,
   isWorkspaceRefusal,
   type AcquireWorkspaceResultView,
+  type AskQuestionRequest,
+  type QuestionAnswerView,
+  type QuestionBridgeProvider,
+  type QuestionBridgeView,
+  type QuestionKindView,
+  type QuestionOptionView,
+  type QuestionOutcomeView,
   type AssignmentCompileContext,
   type AssignmentContext,
   type AssignmentContextProvider,
@@ -91,11 +109,34 @@ export {
   type SessionInputQueue,
 } from './inputQueue.js';
 export {
+  ASK_USER_QUESTION_TOOL,
+  answerMessage,
+  createQuestionBridgeClient,
+  createQuestionSessions,
+  describeAnswer,
+  installShadowWarningFilter,
+  openQuestionFor,
+  outcomeOf,
+  parkMessage,
+  questionBridgeStatus,
+  questionFor,
+  SHADOW_WARNING_CODE,
+  type BootQuestionReconciliation,
+  type QuestionBridgeClient,
+  type QuestionBridgeClientDeps,
+  type QuestionBridgeDiagnosis,
+  type QuestionBridgeMode,
+  type QuestionBridgeStatus,
+  type QuestionSessions,
+  type QuestionSessionsDeps,
+} from './questionBridge.js';
+export {
   createLaunchChain,
   RESUME_CONTINUATION,
   type LaunchChain,
   type LaunchChainDeps,
   type LogSink,
+  type ResumeOptions,
   type SessionControlResult,
   type StartSessionRequest,
   type StartSessionResult,

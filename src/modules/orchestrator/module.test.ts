@@ -233,8 +233,8 @@ describe('configuration (M0-2)', () => {
   });
 });
 
-describe('routes (M1-7)', () => {
-  it('mounts exactly this milestone’s six routes', async () => {
+describe('routes (M1-7, M2-6)', () => {
+  it('mounts exactly M1’s six assignment routes and M2’s three question routes', async () => {
     const booted = await bootCore();
     const mine = booted.runtime.routes.routes
       .filter((route) => route.moduleId === ORCHESTRATOR_MODULE_ID)
@@ -243,10 +243,13 @@ describe('routes (M1-7)', () => {
     expect(mine).toEqual([
       'GET /api/assignments',
       'GET /api/assignments/:id',
+      'GET /api/questions',
+      'GET /api/questions/:id',
       'PATCH /api/assignments/:id',
       'POST /api/assignments',
       'POST /api/assignments/:id/close',
       'POST /api/assignments/solo',
+      'POST /api/questions/:id/answer',
     ]);
   });
 

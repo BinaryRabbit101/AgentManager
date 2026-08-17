@@ -46,6 +46,7 @@ import {
   type RosterPort,
   type RunnerPort,
 } from './ports.js';
+import type { QuestionInbox } from './questions.js';
 import type { AssignmentRepository, AssignmentRow } from './repository.js';
 import { emitScopeRules } from './scopeRules.js';
 import {
@@ -97,6 +98,14 @@ export interface AssignmentServiceOptions {
   readonly roster: () => RosterPort | undefined;
   readonly projects: () => ProjectsPort | undefined;
   readonly runner: () => RunnerPort | undefined;
+  /**
+   * M2's question inbox, resolved lazily because it is built *after* this
+   * service — §6.5's expiry consequences call back into `closeAssignment`, and
+   * a constructor argument in the other direction would be a cycle. Absent in a
+   * build that has no inbox, which is why `closeAssignment` still knows how to
+   * cancel rows on its own.
+   */
+  readonly inbox?: (() => QuestionInbox | undefined) | undefined;
   readonly log?: (message: string, detail?: Record<string, unknown>) => void;
 }
 
@@ -433,12 +442,20 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
 
     const closed = repository.close(id, reason);
 
-    // Cancel the open question cards. M2 replaces this with `QuestionBridge`
-    // .cancel(), which additionally rejects the in-process promise; the row
-    // transition is the durable half and is the same either way, and
-    // orchestrator is the only writer of the `questions` table (§6.5).
-    for (const question of questions.listOpen({ assignmentId: id })) {
-      questions.cancel(question.id);
+    // Cancel the open question cards **through the bridge** (M2): the row
+    // transition is the durable half, and going through `cancel()` additionally
+    // settles the in-process `ask()` promises so a session blocked on a card of
+    // an assignment that just closed stops waiting instead of hanging until the
+    // hold expires. Orchestrator is the only writer of `questions` (§6.5), so
+    // the direct-repository path below is the same write, used only by a build
+    // with no inbox wired.
+    const inbox = options.inbox?.();
+    if (inbox === undefined) {
+      for (const question of questions.listOpen({ assignmentId: id })) {
+        questions.cancel(question.id);
+      }
+    } else {
+      inbox.cancelForAssignment(id, `assignment closed: ${reason}`);
     }
 
     // Stop the sessions still alive. R6 settled that orchestrator **may** do
@@ -605,6 +622,16 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
     closeAssignment,
     getAssignmentContext,
     reconcileOnBoot,
+
+    // Runner reaches the bridge through `ctx.require('orchestrator')` (runner
+    // §11.3, §15.1-4). Getters rather than fields because the inbox is built
+    // after this object and would otherwise have to be captured as `undefined`.
+    get questionBridge(): QuestionInbox | undefined {
+      return options.inbox?.();
+    },
+    get questions(): QuestionInbox | undefined {
+      return options.inbox?.();
+    },
 
     get(id) {
       const row = repository.get(id);

@@ -85,6 +85,91 @@ export interface AssignmentContextProvider {
 }
 
 // ---------------------------------------------------------------------------
+// The question bridge (§5.2, §15.1-4)
+// ---------------------------------------------------------------------------
+
+/** §5.1's three kinds. `approval_gate` is orchestrator's to raise, never runner's. */
+export type QuestionKindView = 'question' | 'approval_gate' | 'budget_halt';
+
+export interface QuestionOptionView {
+  readonly id: string;
+  readonly label: string;
+  readonly description?: string | undefined;
+}
+
+/** §5.2's `ask()` request, field for field. */
+export interface AskQuestionRequest {
+  readonly sessionId: string;
+  readonly assignmentId: string;
+  readonly agentId: string;
+  readonly kind: QuestionKindView;
+  readonly prompt: string;
+  readonly options?: readonly QuestionOptionView[] | undefined;
+  readonly multiSelect?: boolean | undefined;
+  readonly allowFreeText?: boolean | undefined;
+  readonly context?: { toolName?: string; toolInput?: unknown } | undefined;
+  /** ISO deadline for the inline hold — stage 1 of §5.4. */
+  readonly holdUntil: string;
+  /** ISO deadline for the question itself, from `runner.question.expireHours`. */
+  readonly expiresAt: string;
+  /**
+   * Called with the question id the moment the row exists — **additive to
+   * §5.2's shape, and optional on both sides**.
+   *
+   * §5.2 types `ask()` as returning the id only at settle time, but runner needs
+   * it at *raise* time for two things it cannot get any other way: the
+   * `session.question.raised` event of §10, and §5.4's park message, which names
+   * the question so the agent (and the transcript) can be matched to the card.
+   * An orchestrator build that ignores the callback still works — runner then
+   * resolves the id from the `questions` row when it parks, which is the same
+   * read §9.2's boot sweep makes.
+   */
+  readonly onRaised?: ((questionId: string) => void) | undefined;
+}
+
+export interface QuestionAnswerView {
+  readonly optionIds?: readonly string[];
+  readonly labels?: readonly string[];
+  readonly text?: string;
+}
+
+/** §5.2's `QuestionOutcome`, field for field. */
+export type QuestionOutcomeView =
+  | {
+      readonly status: 'answered';
+      readonly questionId: string;
+      readonly answer: QuestionAnswerView;
+      readonly answeredVia: 'local' | 'remote';
+      readonly answeredAt: string;
+    }
+  | { readonly status: 'expired'; readonly questionId: string }
+  | { readonly status: 'cancelled'; readonly questionId: string; readonly reason: string };
+
+/**
+ * Orchestrator's `QuestionBridge` (§5.2).
+ *
+ * `ask()` may take hours to resolve; runner calls it at most once per pending
+ * tool call and cancels it if the session dies first (§15.1-4).
+ */
+export interface QuestionBridgeView {
+  ask(request: AskQuestionRequest): Promise<QuestionOutcomeView>;
+  cancel(questionId: string, reason: string): Promise<void>;
+}
+
+/** What runner probes for on the `orchestrator` service (§11.3). */
+export interface QuestionBridgeProvider {
+  readonly questionBridge?: Partial<QuestionBridgeView> | undefined;
+}
+
+/** True when this build's orchestrator can actually carry a question. */
+export function hasQuestionBridge(
+  provider: QuestionBridgeProvider | undefined,
+): provider is { questionBridge: QuestionBridgeView } {
+  const bridge = provider?.questionBridge;
+  return typeof bridge?.ask === 'function' && typeof bridge.cancel === 'function';
+}
+
+// ---------------------------------------------------------------------------
 // Roster (§11.3, §3.1 step 6)
 // ---------------------------------------------------------------------------
 

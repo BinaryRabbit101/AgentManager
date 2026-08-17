@@ -44,6 +44,8 @@
 import type { Storage } from '../../storage/index.js';
 import type { Module, ModuleContext, ModuleHandle } from '../types.js';
 
+import { createQuestionInbox, type QuestionInbox } from './questions.js';
+import { createQuestionRoutes } from './questionRoutes.js';
 import { createAssignmentRepository, type AssignmentRepository } from './repository.js';
 import { createAssignmentRoutes } from './routes.js';
 import { createAssignmentService } from './service.js';
@@ -60,6 +62,8 @@ export const ORCHESTRATOR_SERVICE = 'orchestrator';
 export interface OrchestratorInternals {
   readonly repository: AssignmentRepository;
   readonly service: AssignmentService;
+  /** M2's inbox and `QuestionBridge`. */
+  readonly inbox: QuestionInbox;
 }
 
 export interface OrchestratorModuleOptions {
@@ -83,8 +87,15 @@ export function createOrchestratorModule(
         clock: ctx.clock,
       });
 
+      // M2's inbox is built *after* the service, because §6.5's expiry
+      // consequences call `closeAssignment`; the service reaches it back through
+      // a getter on this holder, which is what keeps the two from being a
+      // constructor cycle.
+      const built: { inbox?: QuestionInbox } = {};
+
       const service = createAssignmentService({
         repository,
+        inbox: () => built.inbox,
         sessions: ctx.store.sessions,
         questions: ctx.store.questions,
         bus: ctx.bus,
@@ -106,9 +117,32 @@ export function createOrchestratorModule(
         },
       });
 
+      const inbox = createQuestionInbox({
+        questions: ctx.store.questions,
+        assignments: repository,
+        bus: ctx.bus,
+        clock: ctx.clock,
+        joinWindowMs: ctx.config.orchestrator.questions.joinWindowMs,
+        // §12: runner owns `question.expireHours`; orchestrator **reads** it
+        // rather than shipping a second key that could disagree with it.
+        expireHours: ctx.config.runner.question.expireHours,
+        onExpiredGate: (assignmentId, reason) => {
+          void service.closeAssignment(assignmentId, reason);
+        },
+        onExpiredBudget: (assignmentId) => {
+          void service.closeAssignment(assignmentId, 'budget_exhausted');
+        },
+        log: (message, detail) => {
+          ctx.logger.debug(detail ?? {}, message);
+        },
+      });
+
+      built.inbox = inbox;
+
       ctx.provide(ORCHESTRATOR_SERVICE, service);
       ctx.registerRoutes(createAssignmentRoutes({ service, logger: ctx.logger }));
-      options.onReady?.({ repository, service });
+      ctx.registerRoutes(createQuestionRoutes({ inbox, logger: ctx.logger }));
+      options.onReady?.({ repository, service, inbox });
 
       // IMPLEMENTATION M1-6. A boot task, not `start()`: foundation runs it
       // after storage is up and *before* any listener binds (foundation §4.2),
@@ -126,6 +160,23 @@ export function createOrchestratorModule(
           );
         }
       }, 'orchestrator:reconcile-assignments');
+
+      // IMPLEMENTATION M2-5's boot sweep: questions that aged out while the core
+      // was down are expired here, before any listener binds, so the inbox never
+      // serves a card whose deadline has already passed.
+      ctx.registerBootTask(() => {
+        const swept = inbox.sweepExpired();
+        if (swept.expired.length > 0) {
+          ctx.logger.info(
+            {
+              expired: swept.expired.length,
+              closedAssignments: swept.closedAssignments.length,
+              haltedAssignments: swept.haltedAssignments.length,
+            },
+            'questions that aged out while the core was down were expired',
+          );
+        }
+      }, 'orchestrator:expire-questions');
 
       ctx.logger.info(
         {

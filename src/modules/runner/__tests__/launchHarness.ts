@@ -19,7 +19,8 @@ import type { Logger } from 'pino';
 import { bytes, empty, error, json, text } from '../../../http/response.js';
 import type { HttpResult, RequestContext, ResponseTools } from '../../../http/types.js';
 import { Secret, type SecretResolver } from '../../../secrets/index.js';
-import type { AppEvent, EmitEvent } from '../../types.js';
+import { createEventBus } from '../../bus.js';
+import type { AppEvent, EventBus } from '../../types.js';
 import { createAssignmentContextStub } from '../assignmentContext.js';
 import { RUNNER_CONFIG_DEFAULTS, type RunnerConfig } from '../config.js';
 import type {
@@ -29,10 +30,18 @@ import type {
   CompiledSession,
   LaunchContextView,
   ProjectsProvider,
+  QuestionBridgeProvider,
+  QuestionBridgeView,
   RosterProvider,
   SdkOptions,
   WorkspaceLeaseView,
 } from '../contracts.js';
+import {
+  createQuestionBridgeClient,
+  createQuestionSessions,
+  type QuestionBridgeClient,
+  type QuestionSessions,
+} from '../questionBridge.js';
 import { createLaunchChain, type LaunchChain, type LaunchChainDeps } from '../launch.js';
 import { createLeaseBook } from '../leases.js';
 import { createSessionRepository, type SessionRepository } from '../repository.js';
@@ -267,6 +276,14 @@ export interface LaunchHarness {
   readonly events: RecordedEvent[];
   readonly logs: RecordedLog[];
   readonly config: RunnerConfig;
+  /** The real bus, so a test can play the part of whoever answers a question. */
+  readonly bus: EventBus;
+  /** M7's bridge client — orchestrator's when one was supplied, else the fallback. */
+  readonly questionBridge: QuestionBridgeClient;
+  /** M7's parked-session machinery (§5.4 stage 3, §9.2). Not subscribed by default. */
+  readonly questionSessions: QuestionSessions;
+  /** Publishes the events the module wires; returns the unsubscribe. */
+  subscribeQuestions(): () => void;
   /** Creates a project, an agent index row and an open assignment. */
   seed(options?: { readonly agentId?: string; readonly projectStatus?: string }): {
     projectId: string;
@@ -291,6 +308,17 @@ export interface LaunchHarness {
 export interface LaunchHarnessOptions {
   readonly dataRoot: string;
   readonly query?: QueryFn;
+  /**
+   * An orchestrator-shaped provider for M7's bridge.
+   *
+   * Omitted, the harness wires the **degraded fallback** of §5.2 — which is the
+   * shape a build with `modules.orchestrator.enabled: false` really has, so the
+   * default is the case the design says must keep working rather than the happy
+   * one.
+   */
+  readonly orchestrator?: QuestionBridgeProvider | undefined;
+  /** Replaces the bridge outright, for the callback-level tests. */
+  readonly questionBridge?: QuestionBridgeView | undefined;
   /** A meter that fails, for M4's "neither side applied" transaction test. */
   readonly usage?: UsageRepository;
   readonly roster?: FakeRoster;
@@ -333,6 +361,34 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
   const events: RecordedEvent[] = [];
   const logs: RecordedLog[] = [];
 
+  // A **real** bus rather than an emit-only stub: M7's fallback bridge and its
+  // parked-session machinery both resolve on subscriptions, so a bus that only
+  // recorded would make the degraded path untestable — which is the one path
+  // §5.2 says must be verified rather than assumed.
+  const bus = createEventBus({ events: storage.store.events, clock });
+  bus.subscribe((event) => {
+    events.push({
+      type: event.type,
+      ids: event.ids,
+      payload: event.payload,
+      persist: event.persist,
+    });
+  });
+
+  const questionBridge =
+    options.questionBridge === undefined
+      ? createQuestionBridgeClient({
+          orchestrator: () => options.orchestrator,
+          questions: storage.store.questions,
+          bus,
+          clock,
+          log: (level, message, detail) => logs.push({ level, message, detail: detail ?? {} }),
+        })
+      : ({
+          ...options.questionBridge,
+          mode: () => 'orchestrator' as const,
+        } satisfies QuestionBridgeClient);
+
   const leases = createLeaseBook({
     projects: () => projects,
     isAssignmentOpen: (assignmentId) =>
@@ -349,7 +405,9 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
       agents: storage.store.agents,
       projects: storage.store.projects,
       settings: storage.store.settings,
+      questions: storage.store.questions,
     },
+    questionBridge,
     roster: () => roster,
     projects: () => projects,
     assignmentContext:
@@ -364,24 +422,16 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
     stateDir: storage.paths.state,
     query: options.query ?? scriptedQuery({ messages: successScript() }).query,
     clock,
-    bus: {
-      emit: <P>(event: EmitEvent<P>): AppEvent<P> => {
-        const stamped: AppEvent<P> = {
-          type: event.type,
-          ts: FIXED_NOW.toISOString(),
-          ids: event.ids ?? {},
-          persist: event.persist ?? false,
-          ...(event.payload === undefined ? {} : { payload: event.payload }),
-        };
-        events.push({
-          type: stamped.type,
-          ids: stamped.ids,
-          payload: stamped.payload,
-          persist: stamped.persist,
-        });
-        return stamped;
-      },
-    },
+    bus,
+    log: (level, message, detail) => logs.push({ level, message, detail: detail ?? {} }),
+  });
+
+  const questionSessions = createQuestionSessions({
+    sessions,
+    questions: storage.store.questions,
+    control: launch,
+    bus,
+    clock,
     log: (level, message, detail) => logs.push({ level, message, detail: detail ?? {} }),
   });
 
@@ -404,6 +454,11 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
     events,
     logs,
     config,
+    bus,
+    questionBridge,
+    questionSessions,
+
+    subscribeQuestions: () => questionSessions.subscribe(),
 
     seed(seedOptions = {}) {
       seeded += 1;

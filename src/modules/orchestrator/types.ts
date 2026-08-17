@@ -9,6 +9,8 @@
  */
 import type { AssignmentPattern, AssignmentRole, AssignmentStatus } from '../../storage/index.js';
 
+import type { QuestionInbox } from './questions.js';
+
 export type { AssignmentPattern, AssignmentRole, AssignmentStatus };
 
 /** The five roles, as data, so the validator can name them in a refusal. */
@@ -250,15 +252,25 @@ export interface ListAssignmentsQuery {
 // ---------------------------------------------------------------------------
 
 /**
- * As far as M1 takes §2.3's interface.
+ * As far as M1 and M2 take §2.3's interface.
  *
- * `questionBridge` (M2) and `getSessionToolset` (M4) are **absent rather than
- * stubbed**: a method that resolves without doing anything is a contract another
- * element builds against and then discovers is a lie. Runner's §11.3 already
- * says what to do when a capability is missing — its degraded question fallback
- * keys on exactly that absence.
+ * `getSessionToolset` (M4) is **absent rather than stubbed**: a method that
+ * resolves without doing anything is a contract another element builds against
+ * and then discovers is a lie. Runner's §11.3 already says what to do when a
+ * capability is missing — its degraded question fallback keys on exactly that
+ * absence, which is why {@link AssignmentService.questionBridge} is optional
+ * rather than a no-op implementation.
  */
 export interface AssignmentService {
+  /**
+   * M2's `QuestionBridge` (runner §5.2, §15.1-4), published for runner.
+   *
+   * `undefined` in a build with no inbox wired — the case runner's degraded
+   * fallback exists for.
+   */
+  readonly questionBridge?: QuestionInbox | undefined;
+  /** The same object, under the name the inbox routes and M6 use. */
+  readonly questions?: QuestionInbox | undefined;
   createAssignment(request: CreateAssignmentRequest): Promise<CreateAssignmentResult>;
   createSolo(request: CreateSoloRequest): Promise<CreateSoloResult>;
   closeAssignment(id: string, reason: CloseReason): Promise<void>;

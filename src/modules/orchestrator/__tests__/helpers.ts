@@ -27,6 +27,7 @@ import type {
   RunnerPort,
   StartSessionRequest,
 } from '../ports.js';
+import { createQuestionInbox, type QuestionInbox } from '../questions.js';
 import { createAssignmentRepository, type AssignmentRepository } from '../repository.js';
 import { createAssignmentService, type AssignmentServiceOptions } from '../service.js';
 import type { AssignmentRole, AssignmentService } from '../types.js';
@@ -189,11 +190,16 @@ export interface Harness {
   readonly storage: Storage;
   readonly repository: AssignmentRepository;
   readonly service: AssignmentService;
+  /** M2's inbox and `QuestionBridge`, wired to the same service and bus. */
+  readonly inbox: QuestionInbox;
   readonly bus: EventBus;
   readonly events: AppEvent[];
   readonly runner: FakeRunner;
   readonly projects: FakeProjects;
   readonly config: OrchestratorConfig;
+  /** The clock the harness reads; advanceable for the join window and expiry. */
+  now(): Date;
+  advance(ms: number): void;
   cleanup(): void;
 }
 
@@ -205,6 +211,8 @@ export interface HarnessOptions {
   readonly moduleEnabled?: boolean;
   readonly config?: Partial<OrchestratorConfig>;
   readonly runner?: FakeRunner;
+  /** `runner.question.expireHours` — read from runner's config, never copied (§12). */
+  readonly expireHours?: number;
 }
 
 export const PROJECT_ID = 'proj-1';
@@ -223,10 +231,16 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     status: options.projectStatus ?? 'active',
   });
 
+  // An advanceable clock: §6.3's join window and §6.5's expiry are both
+  // statements about elapsed time, and a test that slept for them would be a
+  // test nobody runs.
+  let now = new Date('2026-08-16T10:00:00.000Z');
+  const clock = (): Date => now;
+
   const repository = createAssignmentRepository({
     db: storage.db,
     assignments: storage.store.assignments,
-    clock: () => new Date(),
+    clock,
   });
 
   const projects = fakeProjects({
@@ -239,6 +253,7 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
 
   const config: OrchestratorConfig = { ...ORCHESTRATOR_CONFIG_DEFAULTS, ...options.config };
 
+  const built: { inbox?: QuestionInbox } = {};
   const serviceOptions: AssignmentServiceOptions = {
     repository,
     sessions: storage.store.sessions,
@@ -246,21 +261,46 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     bus,
     config,
     moduleEnabled: options.moduleEnabled ?? true,
-    clock: () => new Date(),
+    clock,
     roster: () => fakeRoster(options.agents ?? [{ id: 'ada', roles: ['implementer'] }]),
     projects: () => projects,
     runner: () => runner,
+    inbox: () => built.inbox,
   };
+  const service = createAssignmentService(serviceOptions);
+
+  // Built after the service, exactly as `module.ts` builds it, because §6.5's
+  // expiry consequences call back into `closeAssignment`.
+  const inbox = createQuestionInbox({
+    questions: storage.store.questions,
+    assignments: repository,
+    bus,
+    clock,
+    joinWindowMs: config.questions.joinWindowMs,
+    expireHours: options.expireHours ?? 24,
+    onExpiredGate: (assignmentId, reason) => {
+      void service.closeAssignment(assignmentId, reason);
+    },
+    onExpiredBudget: (assignmentId) => {
+      void service.closeAssignment(assignmentId, 'budget_exhausted');
+    },
+  });
+  built.inbox = inbox;
 
   return {
     storage,
     repository,
-    service: createAssignmentService(serviceOptions),
+    service,
+    inbox,
     bus,
     events,
     runner,
     projects,
     config,
+    now: () => now,
+    advance: (ms) => {
+      now = new Date(now.getTime() + ms);
+    },
     cleanup: () => {
       storage.close();
       dir.cleanup();

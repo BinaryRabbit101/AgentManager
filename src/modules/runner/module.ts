@@ -37,10 +37,22 @@ import {
   createAssignmentContextStub,
   resolveAssignmentContextProvider,
 } from './assignmentContext.js';
-import type { AssignmentContextProvider, ProjectsProvider, RosterProvider } from './contracts.js';
+import type {
+  AssignmentContextProvider,
+  ProjectsProvider,
+  QuestionBridgeProvider,
+  RosterProvider,
+} from './contracts.js';
 import { ProviderUnavailableError } from './errors.js';
 import { createLaunchChain, type LaunchChain } from './launch.js';
 import { createLeaseBook } from './leases.js';
+import {
+  createQuestionBridgeClient,
+  createQuestionSessions,
+  installShadowWarningFilter,
+  type QuestionBridgeClient,
+  type QuestionSessions,
+} from './questionBridge.js';
 import { createSessionRepository, type SessionRepository } from './repository.js';
 import { createRunnerRoutes } from './routes.js';
 import { realQuery, type QueryFn } from './sdk.js';
@@ -63,6 +75,9 @@ export interface RunnerInternals {
   readonly reader: TranscriptReader;
   readonly service: RunnerService;
   readonly launch: LaunchChain;
+  /** M7's bridge client and the parked-session machinery. */
+  readonly questionBridge: QuestionBridgeClient;
+  readonly questionSessions: QuestionSessions;
 }
 
 export interface RunnerModuleOptions {
@@ -139,6 +154,19 @@ export function createRunnerModule(
         },
       });
 
+      // M7's bridge (§5.2): orchestrator's when it is on the registry, runner's
+      // degraded fallback when it is not — resolved per ask, so an orchestrator
+      // that arrives late is picked up without a restart.
+      const questionBridge = createQuestionBridgeClient({
+        orchestrator: () => ctx.require<QuestionBridgeProvider>('orchestrator'),
+        questions: ctx.store.questions,
+        bus: ctx.bus,
+        clock: ctx.clock,
+        log: (level, message, detail) => {
+          ctx.logger[level](detail ?? {}, message);
+        },
+      });
+
       const launch = createLaunchChain({
         sessions,
         usage,
@@ -148,7 +176,9 @@ export function createRunnerModule(
           agents: ctx.store.agents,
           projects: ctx.store.projects,
           settings: ctx.store.settings,
+          questions: ctx.store.questions,
         },
+        questionBridge,
         roster: () => ctx.require<RosterProvider>('roster'),
         projects: () => ctx.require<ProjectsProvider>('projects'),
         // orchestrator's when it is on the registry, runner's stub when it is
@@ -174,6 +204,20 @@ export function createRunnerModule(
 
       const service = createRunnerService({ sessions, usage, transcripts: reader, launch });
 
+      // §5.4 stages 2 and 3 seen from outside the callback, plus §9.2's question
+      // half. Runner **never** resumes a session it did not park itself
+      // (§15.1-7), which is why this consults the row before it acts.
+      const questionSessions = createQuestionSessions({
+        sessions,
+        questions: ctx.store.questions,
+        control: launch,
+        bus: ctx.bus,
+        clock: ctx.clock,
+        log: (level, message, detail) => {
+          ctx.logger[level](detail ?? {}, message);
+        },
+      });
+
       // §15.1-5: orchestrator emits `assignment.closed`; runner releases the
       // workspace lease on it. §6.2: a session blocked on a retryable workspace
       // refusal is re-evaluated when projects releases one.
@@ -186,11 +230,45 @@ export function createRunnerModule(
         ctx.bus.subscribe(['workspace.released'], () => {
           launch.onWorkspaceReleased();
         }),
+        questionSessions.subscribe(),
+        // SDK-NOTES G6: the shadow warning fires at every `query()` because
+        // roster emits an allow set and runner sets `canUseTool`. One debug line
+        // beats a multi-line stderr banner per launch.
+        installShadowWarningFilter((level, message, detail) => {
+          ctx.logger[level](detail ?? {}, message);
+        }),
       ];
+
+      // §9.2 item 3, as a boot task: parked sessions are reconciled from their
+      // `questions` rows before any listener binds, so an answer that landed
+      // while the core was down resumes without waiting for an event that will
+      // never be emitted again.
+      ctx.registerBootTask(async () => {
+        const reconciled = await questionSessions.reconcileOnBoot();
+        if (reconciled.parked.length + reconciled.resumed.length + reconciled.ended.length > 0) {
+          ctx.logger.info(
+            {
+              parked: reconciled.parked.length,
+              resumed: reconciled.resumed.length,
+              ended: reconciled.ended.length,
+            },
+            'sessions waiting on a question were reconciled after a restart',
+          );
+        }
+      }, 'runner:reconcile-questions');
 
       ctx.provide(RUNNER_SERVICE, service);
       ctx.registerRoutes(createRunnerRoutes({ service, logger: ctx.logger }));
-      options.onReady?.({ sessions, usage, transcripts, reader, service, launch });
+      options.onReady?.({
+        sessions,
+        usage,
+        transcripts,
+        reader,
+        service,
+        launch,
+        questionBridge,
+        questionSessions,
+      });
 
       ctx.logger.info(
         {

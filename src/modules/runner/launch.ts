@@ -72,6 +72,7 @@ import type {
   AssignmentsRepository,
   Clock,
   ProjectsRepository,
+  QuestionsRepository,
   SessionOrigin,
   SessionStatus,
   SettingsRepository,
@@ -81,16 +82,18 @@ import type { SecretResolver } from '../../secrets/index.js';
 
 import { resolveAgentEnv } from './agentEnv.js';
 import { attachAuthEnv, type AuthMode } from './attachAuthEnv.js';
-import { createDefaultDenyCanUseTool } from './canUseTool.js';
+import { createDefaultDenyCanUseTool, createQuestionCanUseTool } from './canUseTool.js';
 import type { RunnerConfig } from './config.js';
 import {
   isWorkspaceRefusal,
   type AssignmentContextProvider,
   type CompiledSession,
   type ProjectsProvider,
+  type QuestionBridgeView,
   type RosterProvider,
   type SdkOptions,
 } from './contracts.js';
+import { openQuestionFor, questionBridgeStatus } from './questionBridge.js';
 import {
   AgentUnavailableError,
   AssignmentClosedError,
@@ -188,6 +191,14 @@ export interface SessionControlResult {
   readonly changed: boolean;
 }
 
+/** What a resume may change about the run it restarts (§9.4 path 1, §5.4 stage 3). */
+export interface ResumeOptions {
+  /** The first user message of the resumed turn. Defaults to {@link RESUME_CONTINUATION}. */
+  readonly message?: string | undefined;
+  /** §6.2's band. An answered question comes back at `interactive`. */
+  readonly priority?: SessionPriority | undefined;
+}
+
 export interface SteerOptions {
   /** §4.3: "stop that, do this instead". Default `false` — next turn boundary. */
   readonly interrupt?: boolean | undefined;
@@ -229,6 +240,13 @@ export interface LaunchChainDeps {
     readonly projects: Pick<ProjectsRepository, 'get'>;
     /** The runtime capacity override lives here, not in config (§6.1). */
     readonly settings: Pick<SettingsRepository, 'get' | 'set'>;
+    /**
+     * M7 reads the `questions` row a parked session is waiting on — the same
+     * read §9.2's boot sweep makes, and the reason a park survives a restart.
+     * Orchestrator is the table's only *writer* (orchestrator §6.5); this is a
+     * read, through foundation's repository.
+     */
+    readonly questions?: Pick<QuestionsRepository, 'listByAssignment'> | undefined;
   };
   /** `ctx.require('roster')` — fatal when absent (§11.3). */
   readonly roster: () => RosterProvider | undefined;
@@ -236,6 +254,12 @@ export interface LaunchChainDeps {
   readonly projects: () => ProjectsProvider | undefined;
   /** orchestrator's, or the stub of `assignmentContext.ts` (§11.3). */
   readonly assignmentContext: AssignmentContextProvider;
+  /**
+   * M7's question bridge (§5.2): orchestrator's when it is on the registry,
+   * runner's degraded fallback otherwise. Absent altogether leaves M3's
+   * default-deny installed, which is what a build before M7 had.
+   */
+  readonly questionBridge?: QuestionBridgeView | undefined;
   readonly leases: LeaseBook;
   readonly secrets: SecretResolver;
   readonly config: RunnerConfig;
@@ -278,8 +302,26 @@ export interface LaunchChain {
   steer(sessionId: string, text: string, options?: SteerOptions): Promise<SteerResult>;
   /** §2.2 `running → paused`: `interrupt()` + `close()`, slot freed, lease kept. */
   pause(sessionId: string, exitReason?: ExitReason): Promise<SessionControlResult>;
-  /** §9.4 path 1: the same row, the same transcript, `resume: <sdk_session_id>`. */
-  resume(sessionId: string): Promise<SessionControlResult>;
+  /**
+   * §9.4 path 1: the same row, the same transcript, `resume: <sdk_session_id>`.
+   *
+   * `options.message` replaces the standard continuation with §5.4 stage 3's
+   * first message — "You asked: … The user answered: … Continue from where you
+   * stopped" — and `options.priority` is how an answered question re-queues at
+   * `interactive`, ahead of background work.
+   */
+  resume(sessionId: string, options?: ResumeOptions): Promise<SessionControlResult>;
+  /**
+   * §5.4 stage 2: park a session on an open question (`paused` /
+   * `awaiting_answer`), slot released, **lease kept**, question still open.
+   *
+   * Also the boot path (§9.2 item 3): a session found `running` from a previous
+   * life with an open question is parked here rather than orphaned, because it
+   * is waiting for a human rather than dead.
+   */
+  parkForQuestion(sessionId: string, questionId: string | null): Promise<SessionControlResult>;
+  /** §5.4: a parked session whose question expired — `interrupted`, not `failed`. */
+  endParked(sessionId: string, exitReason: ExitReason, message: string): SessionControlResult;
   /** §2.2's Stop, from any live status. Leaves no subprocess behind (§9.1). */
   stop(sessionId: string, reason?: string): Promise<SessionControlResult>;
   /** `POST /api/sessions/:id/pin` — projects' retention exemption (§11.1). */
@@ -309,6 +351,18 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
   const settled = new Map<string, Array<(record: RunnerSessionRecord) => void>>();
   /** The `Query` handles, input queues and abort controllers of §4.3 / §9.1. */
   const liveSessions = createLiveSessions();
+  /**
+   * §5.4 stage 3's first message, held from `resume()` until the run reads it.
+   *
+   * A map rather than a column: the message is derived from the answer, which is
+   * already durable in the `questions` row, so persisting a second copy would be
+   * two records of one fact. A resume that loses the map (a restart between the
+   * two) still resumes — with the standard continuation — and the boot sweep
+   * re-derives the answer message from the row.
+   */
+  const resumeMessages = new Map<string, string>();
+  /** The question a session was parked on, for `session.paused` (§10). */
+  const parkedOn = new Map<string, string>();
 
   // -------------------------------------------------------------------------
   // Events (§10) — the three lifecycle events the launch chain owns. The full
@@ -519,6 +573,21 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
 
       // --- step 7: runner's own fields, and only those ---------------------
       const abort = new AbortController();
+      // §5.6 + SDK-NOTES C2, read off what roster compiled — never recomputed.
+      const bridgeHealth = questionBridgeStatus(compiled);
+      if (bridgeHealth.diagnostic !== undefined) {
+        emit(
+          'session.diagnostic',
+          session,
+          {
+            severity: 'warn',
+            code: bridgeHealth.diagnostic.code,
+            message: bridgeHealth.diagnostic.message,
+            questionBridge: bridgeHealth.status,
+          },
+          true,
+        );
+      }
       const authed = await attachAuthEnv(compiled.options, {
         mode: deps.auth,
         secrets: deps.secrets,
@@ -534,15 +603,91 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         // runner never sets `sessionId`.
         ...(isResumeRun ? { resume: priorSdkSessionId } : {}),
         abortController: abort,
-        canUseTool: createDefaultDenyCanUseTool({
-          policy: compiled.policy,
-          onDenied: (toolName) => {
-            log('debug', 'a tool call reached canUseTool and was denied by roster default-deny', {
-              sessionId,
-              toolName,
-            });
-          },
-        }),
+        // M7: every undecided call becomes a question (§5.1). M3's total
+        // default-deny stays as the terminal fallback for a build with no
+        // bridge at all — "default-deny is the outcome whenever no human
+        // answers", which is true of both.
+        canUseTool:
+          deps.questionBridge === undefined
+            ? createDefaultDenyCanUseTool({
+                policy: compiled.policy,
+                onDenied: (toolName) => {
+                  log(
+                    'debug',
+                    'a tool call reached canUseTool and was denied by roster default-deny',
+                    { sessionId, toolName },
+                  );
+                },
+              })
+            : createQuestionCanUseTool({
+                sessionId,
+                assignmentId: session.assignmentId,
+                agentId: session.agentId,
+                policy: compiled.policy,
+                bridge: deps.questionBridge,
+                holdMs: config.question.holdMs,
+                expireHours: config.question.expireHours,
+                clock: deps.clock,
+                onRaised: (raised) => {
+                  emit(
+                    'session.question.raised',
+                    session,
+                    {
+                      questionId: raised.questionId,
+                      kind: raised.kind,
+                      prompt: raised.prompt,
+                      options: raised.options,
+                      toolName: raised.toolName,
+                      holdUntil: raised.holdUntil,
+                      expiresAt: raised.expiresAt,
+                    },
+                    true,
+                  );
+                  transcript?.append('question', {
+                    questionId: raised.questionId,
+                    prompt: raised.prompt,
+                    toolName: raised.toolName,
+                    holdUntil: raised.holdUntil,
+                  });
+                },
+                onSettled: (answered) => {
+                  emit(
+                    'session.question.answered',
+                    session,
+                    {
+                      questionId: answered.questionId,
+                      answeredVia: answered.answeredVia,
+                      latencyMs: answered.latencyMs,
+                      delivery: answered.delivery,
+                      decision: answered.decision,
+                    },
+                    true,
+                  );
+                },
+                onPark: (questionId) => {
+                  // The denial is returned first — the SDK is still blocked on
+                  // it — and the wind-down follows on the next tick, which is
+                  // what makes "the model's next token is the deny message" and
+                  // "the session ends up paused" both true.
+                  queueMicrotask(() => {
+                    // A park that fails is a session left running with an open
+                    // card — bad, and loud in the log; it is never a reason to
+                    // reject out of a fire-and-forget continuation and take the
+                    // process with it.
+                    parkForQuestion(sessionId, questionId).catch((error: unknown) => {
+                      log('error', 'a session could not be parked on its question', {
+                        sessionId,
+                        questionId,
+                        error: error instanceof Error ? error.message : String(error),
+                      });
+                    });
+                  });
+                },
+                resolveQuestionId: () => questionIdFor(sessionId),
+                log: (level, message, detail) => {
+                  log(level, message, detail);
+                },
+              }),
         stderr: (chunk: string) => {
           // Redacted on the way into `core.log` by foundation's logger; never
           // into the transcript (§3.3).
@@ -551,6 +696,14 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       };
       // §3.3, enforced: only whitelisted key paths may differ.
       assertOptionsWhitelisted(compiled.options, options);
+
+      // §5.4 stage 3: when a question was answered after the park, the first
+      // message of the resumed turn is the **answer**, not the standard
+      // continuation — "the agent regains the full conversation, knows the
+      // answer, and re-issues the tool call itself". Read once, before the
+      // header records it.
+      const resumeMessage = resumeMessages.get(sessionId) ?? RESUME_CONTINUATION;
+      resumeMessages.delete(sessionId);
 
       // --- step 8: transcript open + the session.start header ---------------
       transcript = transcripts.open(sessionId, {
@@ -584,11 +737,10 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         // the header records that a new `query()` began, which conversation it
         // replayed and what it said to restart the turn, and `seq` carries on
         // from the last line (§8.1, M2).
-        ...(isResumeRun
-          ? { resumedSdkSessionId: priorSdkSessionId, resumeMessage: RESUME_CONTINUATION }
-          : {}),
-        // §5.6: a `dontAsk` session has no question bridge at all.
-        questionBridge: compiled.policy.humanMayApprove ? 'enabled' : 'disabled',
+        ...(isResumeRun ? { resumedSdkSessionId: priorSdkSessionId, resumeMessage } : {}),
+        // §5.6 (+ C2): `disabled` for a session that cannot prompt at all,
+        // `degraded` when the agent's own `AskUserQuestion` is shadowed.
+        questionBridge: bridgeHealth.status,
       });
 
       // --- step 9: query(), streaming input --------------------------------
@@ -606,7 +758,7 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       // needs *something*: a streaming session that is handed no user message
       // takes no turn, so the resume says what happened, exactly as §9.4's other
       // path does for a session that was orphaned.
-      input.push(isResumeRun ? RESUME_CONTINUATION : prompt);
+      input.push(isResumeRun ? resumeMessage : prompt);
       const sdkSession = deps.query({ prompt: input, options });
       live = liveSessions.open({ sessionId, input, sdk: sdkSession, transcript, abort });
 
@@ -704,7 +856,7 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
               sdkSessionId: facts.sdkSessionId,
               model: facts.model,
               permissionMode: facts.permissionMode,
-              questionBridge: compiled.policy.humanMayApprove ? 'enabled' : 'disabled',
+              questionBridge: bridgeHealth.status,
               workspace: { kind: acquired.kind, path: acquired.path, branch: acquired.branch },
               effectivePermissions: compiled.effective,
               elevation: compiled.effective.elevation,
@@ -1039,6 +1191,10 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     transcript?.close();
 
     const record = sessions.transition(sessionId, 'paused', { exitReason, summary });
+    // §10's `session.paused` carries `questionId?` — for a park it is the whole
+    // point of the event, because it is what tells the UI which card resumes it.
+    const questionId = parkedOn.get(sessionId);
+    parkedOn.delete(sessionId);
     emit(
       'session.paused',
       record,
@@ -1048,9 +1204,19 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         sdkSessionId: record.sdkSessionId,
         forced: detail.forced,
         transcriptBytes: record.transcriptBytes,
+        ...(questionId === undefined ? {} : { questionId }),
       },
       true,
     );
+  }
+
+  /** The open question a session is waiting on, read from the row (§5.4, §9.2). */
+  function questionIdFor(sessionId: string): string | undefined {
+    const questions = store.questions;
+    if (questions === undefined) return undefined;
+    const session = sessions.get(sessionId);
+    if (session === undefined) return undefined;
+    return openQuestionFor(questions, session)?.id;
   }
 
   /**
@@ -1223,10 +1389,15 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     return stateOf(sessionId, true);
   }
 
-  function resume(sessionId: string): Promise<SessionControlResult> {
+  function resume(
+    sessionId: string,
+    resumeOptions: ResumeOptions = {},
+  ): Promise<SessionControlResult> {
     return Promise.resolve().then(() => {
       const record = sessions.require(sessionId);
       if (record.status === 'queued' || record.status === 'running') {
+        // §5.4's "the work is not run twice": a session already back in the
+        // queue does not get a second resume because a duplicate event arrived.
         return stateOf(sessionId, false);
       }
       if (TERMINAL_STATUSES.has(record.status)) {
@@ -1245,17 +1416,107 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         );
       }
 
+      if (resumeOptions.message !== undefined) resumeMessages.set(sessionId, resumeOptions.message);
+
       // §9.4 path 1: the **same** row, back into the queue. `queued_at` is not
       // re-dated (it is not patchable, deliberately), so a resumed session takes
       // its old place at the head of its band rather than the back of the queue.
-      const requeued = sessions.transition(sessionId, 'queued', { blockedReason: null });
+      const requeued = sessions.transition(sessionId, 'queued', {
+        blockedReason: null,
+        // §5.4 stage 3: "re-queues the parked session at `interactive`
+        // priority". A human is waiting on the other end of this one.
+        ...(resumeOptions.priority === undefined ? {} : { priority: resumeOptions.priority }),
+      });
       log('info', 'a paused session was re-queued for resume', {
         sessionId,
         sdkSessionId: requeued.sdkSessionId,
+        priority: requeued.priority,
       });
       scheduler.evaluate();
       return stateOf(sessionId, true);
     });
+  }
+
+  /**
+   * §5.4 stage 2 — and §9.2 item 3's boot half, which is the same state reached
+   * two different ways.
+   */
+  async function parkForQuestion(
+    sessionId: string,
+    questionId: string | null,
+  ): Promise<SessionControlResult> {
+    const record = sessions.require(sessionId);
+    if (record.status === 'paused' || TERMINAL_STATUSES.has(record.status)) {
+      return stateOf(sessionId, false);
+    }
+    if (questionId !== null) parkedOn.set(sessionId, questionId);
+
+    const live = liveSessions.get(sessionId);
+    if (live === undefined) {
+      // The boot case: `running` in the row, no process anywhere. There is
+      // nothing to wind down, and the honest state is the one the answer will
+      // resume — not `orphaned`, which is terminal and would strand the card.
+      if (record.status !== 'running') {
+        parkedOn.delete(sessionId);
+        return stateOf(sessionId, false);
+      }
+      settlePaused(sessionId, undefined, 'awaiting_answer', {
+        prompt: sessions.input(sessionId)?.prompt ?? '',
+        lastAssistantText: null,
+        turns: record.turns,
+        forced: false,
+      });
+      notifySettled(sessionId);
+      return stateOf(sessionId, true);
+    }
+
+    // The live case: §9.1's wind-down with a pause intent, so the slot is freed
+    // and the **lease is kept** — §5.4: "the concurrency slot is released, the
+    // workspace lease is kept, and the question stays open".
+    await windDown(live, {
+      intent: 'pause',
+      gracefulInterruptMs: config.gracefulInterruptMs,
+      exitReason: 'awaiting_answer',
+    });
+    await live.settled;
+    return stateOf(sessionId, true);
+  }
+
+  /** §5.4's expiry half: the parked session ends, the expired card stays as the record. */
+  function endParked(
+    sessionId: string,
+    exitReason: ExitReason,
+    message: string,
+  ): SessionControlResult {
+    const record = sessions.get(sessionId);
+    if (record === undefined)
+      return { sessionId, status: 'interrupted', exitReason, changed: false };
+    if (record.status !== 'paused') return stateOf(sessionId, false);
+
+    const summary = composeSummary({
+      prompt: sessions.input(sessionId)?.prompt ?? '',
+      status: 'interrupted',
+    });
+    // `interrupted` rather than `failed`, "because nothing errored — the system
+    // deliberately stopped waiting" (§5.4).
+    sessions.transition(sessionId, 'interrupted', { exitReason, summary });
+    const after = sessions.require(sessionId);
+    emit(
+      'session.ended',
+      after,
+      {
+        status: 'interrupted',
+        exitReason,
+        turns: after.turns,
+        permissionDenials: 0,
+        summary,
+        transcriptBytes: after.transcriptBytes,
+        message,
+      },
+      true,
+    );
+    notifySettled(sessionId);
+    return stateOf(sessionId, true);
   }
 
   async function stop(sessionId: string, reason?: string): Promise<SessionControlResult> {
@@ -1418,6 +1679,8 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     steer,
     pause,
     resume,
+    parkForQuestion,
+    endParked,
     stop,
 
     setPinned(sessionId, pinned) {

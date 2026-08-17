@@ -32,6 +32,30 @@ export {
   type RefusalCode,
 } from './errors.js';
 
+export {
+  createQuestionInbox,
+  isQuestionStrength,
+  normalisePrompt,
+  QUESTION_STRENGTHS,
+  QuestionNotFoundError,
+  QuestionNotOpenError,
+  strengthRank,
+  type AnswerQuestionInput,
+  type AskRequest,
+  type ExpirySweepResult,
+  type ListQuestionsQuery,
+  type QuestionAnswer,
+  type QuestionBridge,
+  type QuestionCard,
+  type QuestionInbox,
+  type QuestionInboxOptions,
+  type QuestionOption,
+  type QuestionOutcome,
+  type QuestionStrength,
+  type RecommendationInput,
+  type RecommendationView,
+} from './questions.js';
+export { createQuestionRoutes, type QuestionRoutesDeps } from './questionRoutes.js';
 export { createAssignmentRepository, type AssignmentRepository } from './repository.js';
 export { createAssignmentService, type AssignmentServiceOptions } from './service.js';
 export { createAssignmentRoutes } from './routes.js';
