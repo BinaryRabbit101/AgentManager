@@ -8,6 +8,27 @@
  * what the registry hands it.
  */
 export {
+  AGENT_ENV_NULL_DEFAULTS,
+  resolveAgentEnv,
+  type AgentEnvPaths,
+  type ResolveAgentEnvOptions,
+} from './agentEnv.js';
+export {
+  createAssignmentContextStub,
+  resolveAssignmentContextProvider,
+  type AssignmentContextStubDeps,
+} from './assignmentContext.js';
+export {
+  attachAuthEnv,
+  BASE_URL_ENV,
+  CLAUDE_OAUTH_SECRET_KEY,
+  OAUTH_TOKEN_ENV,
+  STRIPPED_CREDENTIAL_ENV,
+  type AttachAuthEnvDeps,
+  type AuthMode,
+} from './attachAuthEnv.js';
+export { createDefaultDenyCanUseTool, type DefaultDenyDeps } from './canUseTool.js';
+export {
   DEFAULT_TAIL_BYTES,
   MAX_CONCURRENT_LIMIT,
   RUNNER_CONFIG_DEFAULTS,
@@ -15,14 +36,90 @@ export {
   type RunnerConfig,
 } from './config.js';
 export {
+  isWorkspaceRefusal,
+  type AcquireWorkspaceResultView,
+  type AssignmentCompileContext,
+  type AssignmentContext,
+  type AssignmentContextProvider,
+  type AssignmentScopeRules,
+  type CanUseToolPolicyView,
+  type CompileDiagnostic,
+  type CompileSessionRequest,
+  type CompiledSession,
+  type EffectivePermissionsView,
+  type EnvEntryView,
+  type LaunchContextView,
+  type ProjectCompileContext,
+  type ProjectsProvider,
+  type RosterAgent,
+  type RosterProvider,
+  type SdkOptions,
+  type WorkspaceLeaseView,
+  type WorkspaceRefusalView,
+} from './contracts.js';
+export {
+  AgentUnavailableError,
+  AssignmentClosedError,
+  AssignmentNotFoundError,
   DuplicateSessionInputError,
   InvalidExitReasonError,
   InvalidRequestError,
   InvalidTransitionError,
+  isLaunchFailure,
+  LaunchCompileError,
+  LaunchUnavailableError,
   MissingExitReasonError,
+  OptionWhitelistError,
+  ProjectNotLaunchableError,
+  ProviderUnavailableError,
+  QueueFullError,
   RunnerError,
+  SecretUnresolvedError,
+  SessionExecutionError,
   SessionNotFoundError,
+  SessionStartTimeoutError,
+  WorkspaceUnavailableError,
+  type LaunchFailure,
 } from './errors.js';
+export {
+  createInputQueue,
+  type ImageAttachment,
+  type InputQueueOptions,
+  type PushOptions,
+  type SessionInputQueue,
+} from './inputQueue.js';
+export {
+  createLaunchChain,
+  type LaunchChain,
+  type LaunchChainDeps,
+  type LogSink,
+  type StartSessionRequest,
+  type StartSessionResult,
+} from './launch.js';
+export { createLeaseBook, type LeaseBook, type LeaseBookDeps } from './leases.js';
+export {
+  isInitMessage,
+  outcomeForResult,
+  readAssistant,
+  readInitFacts,
+  readResult,
+  readUser,
+  type AssistantParts,
+  type InitFacts,
+  type ResultFacts,
+  type ResultOutcome,
+  type ToolResultLine,
+  type ToolUseLine,
+  type UserParts,
+} from './messages.js';
+export {
+  assertOptionsWhitelisted,
+  diffOptionPaths,
+  STRIPPABLE_OPTION_PATHS,
+  WHITELISTED_OPTION_PATHS,
+} from './optionGuard.js';
+export { runReaderLoop, type ReaderLoopDeps, type ReaderLoopOutcome } from './readerLoop.js';
+export { isReplayMessage, realQuery, type QueryFn, type SdkSession } from './sdk.js';
 export {
   createRunnerModule,
   RUNNER_MODULE_ID,

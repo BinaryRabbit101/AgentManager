@@ -43,6 +43,7 @@ import type { Storage } from '../../storage/index.js';
 import type { Module, ModuleContext, ModuleHandle } from '../types.js';
 
 import { bootstrapLibrary, type GitCommand } from './bootstrap.js';
+import { compileSession } from './compileSession.js';
 import { createRosterRoutes } from './routes.js';
 import { createRosterService } from './service.js';
 import { createRosterStore, type StoreHooks } from './store.js';
@@ -126,7 +127,12 @@ export function createRosterModule(
         ctx.logger.debug({ agentIds: loaded.agentIds }, 'agents loaded from the library');
       }
 
-      ctx.provide(ROSTER_SERVICE, service);
+      // The published service additionally carries roster §13's compiler —
+      // runner's launch chain consumes `registry.get` + `compileSession`
+      // structurally through the registry (runner contracts `RosterProvider`),
+      // and a roster build that does not publish the compiler turns every
+      // launch into a named `launch_failed` refusal.
+      ctx.provide(ROSTER_SERVICE, Object.assign(service, { compileSession }));
       ctx.registerRoutes(createRosterRoutes({ service, logger: ctx.logger }));
 
       let watcher: RosterWatcher = inertWatcher();

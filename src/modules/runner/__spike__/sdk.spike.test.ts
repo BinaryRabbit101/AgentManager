@@ -19,6 +19,25 @@
  *
  * Nothing in `src/` imports this file, and `tsconfig.build.json` excludes
  * `src/**\/*.test.ts`, so it never reaches `dist/`.
+ *
+ * ## What M3 now covers without a token, and what it cannot
+ *
+ * M3 made `query` injectable (`../sdk.ts`), so runner's *consumption* of each
+ * behaviour below is now an ordinary test driven by a scripted message stream
+ * (`../__tests__/fakeQuery.ts`, `../launch.test.ts`, `../messages.test.ts`).
+ * That does **not** retire any check here: a fake proves what runner does with a
+ * sequence, never that the engine produces it.
+ *
+ * | Item | Fake-covered half (always runs) | Still live-only |
+ * |---|---|---|
+ * | L9 | the reader loop consumes a result per turn, continues past the first, and keeps trailing system messages | that the engine emits exactly one result per turn, and which messages follow it |
+ * | L12 | a session that never reports `init` fails `start_timeout` with the captured `stderr` tail | what a missing token actually produces |
+ * | L14 | runner passes foundation's `CLAUDE_CONFIG_DIR` in `options.env`, resolved from `agentEnv` | that the engine writes the JSONL there |
+ * | G1 | replayed `user` messages are dropped before the transcript | that a `resume` emits them at all |
+ * | G2 | `tool_use` / `tool_result` lines are derived from content blocks | — (settled statically) |
+ *
+ * L1–L8, L10, L11, L13, L15 and L16 are engine behaviour end to end and stay
+ * exactly as M0 wrote them.
  */
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
