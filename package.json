@@ -30,6 +30,7 @@
     "typecheck:web": "tsc -p web/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:boundary": "vitest run --project server boundary src/lifecycle/bind.test.ts src/lifecycle/process.test.ts src/main.test.ts",
     "checks:ui": "node scripts/ui-manual-checks.mjs",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
