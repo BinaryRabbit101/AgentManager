@@ -42,6 +42,15 @@ export interface InitFacts {
   readonly permissionMode: string | null;
   readonly tools: readonly string[];
   readonly mcpServers: readonly { readonly name: string; readonly status: string }[];
+  /**
+   * roster §7.1: "the runner asserts that the `system`/`init` message's
+   * `plugins` and `skills` arrays contain what was requested, raising a
+   * session-start diagnostic if not" — because "a nonexistent plugin path is
+   * **silently skipped**" by the CLI, which is the failure mode the assertion
+   * exists to make loud.
+   */
+  readonly plugins: readonly { readonly name: string; readonly path: string }[];
+  readonly skills: readonly string[];
   /** SDK-NOTES §3.2: gives §8.1's "SDK + CLI version" for free. */
   readonly claudeCodeVersion: string | null;
   /** Which credential actually won — the read-out behind §3.4's guard. */
@@ -60,6 +69,8 @@ export function readInitFacts(message: InitMessage): InitFacts {
       name: server.name,
       status: server.status,
     })),
+    plugins: (message.plugins ?? []).map((plugin) => ({ name: plugin.name, path: plugin.path })),
+    skills: message.skills ?? [],
     claudeCodeVersion: message.claude_code_version ?? null,
     apiKeySource: message.apiKeySource,
     capabilities: message.capabilities ?? [],
@@ -183,6 +194,27 @@ export function readResult(message: ResultMessage): ResultFacts {
     resultText: success ? message.result : null,
     errors: success ? [] : message.errors,
   };
+}
+
+/**
+ * The text of a `stream_event` partial, for §10's `session.delta` (M10).
+ *
+ * Deltas are never written to the transcript (§8.1, D11) — they exist for the
+ * UI's live typing and nothing else — so this reads only what a delta *renders*
+ * as, and answers `undefined` for every other stream event (`message_start`,
+ * `content_block_start`, thinking deltas, and whatever a later SDK adds). A
+ * shape this does not recognise costs a keystroke, never a turn.
+ */
+export function readStreamDelta(message: SDKMessage): string | undefined {
+  if (message.type !== 'stream_event') return undefined;
+  const event: unknown = message.event;
+  if (typeof event !== 'object' || event === null) return undefined;
+  if ((event as { type?: unknown }).type !== 'content_block_delta') return undefined;
+  const delta: unknown = (event as { delta?: unknown }).delta;
+  if (typeof delta !== 'object' || delta === null) return undefined;
+  if ((delta as { type?: unknown }).type !== 'text_delta') return undefined;
+  const text = (delta as { text?: unknown }).text;
+  return typeof text === 'string' && text !== '' ? text : undefined;
 }
 
 // ---------------------------------------------------------------------------

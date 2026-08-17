@@ -28,6 +28,35 @@ export {
   type AuthMode,
 } from './attachAuthEnv.js';
 export {
+  budgetAllowsResume,
+  budgetCrossing,
+  budgetHaltPrompt,
+  BUDGET_HALT_OPTIONS,
+  type BudgetCrossing,
+  type BudgetSubject,
+} from './budget.js';
+export {
+  emitRunnerEvent,
+  EVENT_PERSIST,
+  persistsEvent,
+  preview,
+  PREVIEW_MAX_LENGTH,
+  RUNNER_EVENT_TYPES,
+  SESSION_EVENT_TYPES,
+  type SessionEventSubject,
+} from './events.js';
+export {
+  createRecovery,
+  encodeCwd,
+  nodeRecoveryFs,
+  type BootReconciliation,
+  type Interruption,
+  type Recovery,
+  type RecoveryDeps,
+  type RecoveryFs,
+  type Resumability,
+} from './recovery.js';
+export {
   ALLOW_ONCE_OPTION,
   createDefaultDenyCanUseTool,
   createQuestionCanUseTool,
@@ -133,6 +162,7 @@ export {
 export {
   createLaunchChain,
   RESUME_CONTINUATION,
+  type ContinueOptions,
   type LaunchChain,
   type LaunchChainDeps,
   type LogSink,
@@ -163,6 +193,7 @@ export {
   readAssistant,
   readInitFacts,
   readResult,
+  readStreamDelta,
   readUser,
   type AssistantParts,
   type InitFacts,
@@ -204,7 +235,13 @@ export {
   type TransitionRequest,
 } from './repository.js';
 export { createRunnerRoutes, type RunnerRoutesDeps } from './routes.js';
-export { createRunnerService, type RunnerService, type RunnerServiceOptions } from './service.js';
+export {
+  createRunnerService,
+  type RunnerService,
+  type RunnerServiceOptions,
+  type SessionAffordances,
+  type SessionDetail,
+} from './service.js';
 export {
   assertTransition,
   EXIT_REASONS,

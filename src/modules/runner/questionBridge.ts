@@ -32,11 +32,14 @@
  */
 import type { EventBus, Unsubscribe } from '../types.js';
 import type {
+  AssignmentsRepository,
   Clock,
   QuestionRecord,
   QuestionsRepository,
   SessionRecord,
 } from '../../storage/index.js';
+
+import { budgetAllowsResume } from './budget.js';
 
 import type {
   AskQuestionRequest,
@@ -363,6 +366,16 @@ export interface QuestionSessionsDeps {
   readonly sessions: SessionRepository;
   readonly questions: QuestionsRepository;
   readonly control: QuestionSessionControl;
+  /**
+   * Foundation's assignments repository, for §7.2's budget resolution (M8).
+   *
+   * A `budget_halt` answer resumes the session **only if the row now permits
+   * it**: "an answer that raises the budget resumes the parked session". The
+   * card's text is orchestrator's business; whether the tokens are there is the
+   * row's, and reading it is the difference between resuming into work and
+   * resuming straight back into the same halt.
+   */
+  readonly assignments?: Pick<AssignmentsRepository, 'get'> | undefined;
   readonly bus: Pick<EventBus, 'emit' | 'subscribe'>;
   readonly clock: Clock;
   readonly log?: LogSink | undefined;
@@ -412,6 +425,15 @@ export function createQuestionSessions(deps: QuestionSessionsDeps): QuestionSess
   /** Sessions a resume is already in flight for — §5.4's "not run twice". */
   const resuming = new Set<string>();
 
+  /**
+   * The two exit reasons runner's own parks use (§5.4 and §7.2).
+   *
+   * §15.1-7 is the rule this encodes: "auto-resume applies only to sessions
+   * runner itself parked". A session paused by a *user* carries `user_stopped`
+   * and stays paused until the user says otherwise, whatever cards get answered.
+   */
+  const AUTO_RESUMABLE_PARKS: ReadonlySet<string> = new Set(['awaiting_answer', 'budget_halt']);
+
   function parkedSessionFor(record: QuestionRecord): SessionRecord | undefined {
     if (record.sessionId === null) return undefined;
     const session = deps.sessions.get(record.sessionId);
@@ -419,7 +441,10 @@ export function createQuestionSessions(deps: QuestionSessionsDeps): QuestionSess
     // Only sessions **runner itself parked** on a question auto-resume
     // (§15.1-7). A running session got its answer inline through `canUseTool`
     // and must not be touched.
-    if (session.status !== 'paused' || session.exitReason !== 'awaiting_answer') return undefined;
+    if (session.status !== 'paused') return undefined;
+    if (session.exitReason === null || !AUTO_RESUMABLE_PARKS.has(session.exitReason)) {
+      return undefined;
+    }
     return session;
   }
 
@@ -440,6 +465,20 @@ export function createQuestionSessions(deps: QuestionSessionsDeps): QuestionSess
   async function deliverAnswer(record: QuestionRecord): Promise<boolean> {
     const session = parkedSessionFor(record);
     if (session === undefined) return false;
+    // §7.2's resolution, checked against the row rather than against the answer:
+    // an answer that did *not* raise the budget would otherwise resume the
+    // session straight back into the same halt, burning a turn to learn nothing.
+    if (session.exitReason === 'budget_halt') {
+      const assignment = deps.assignments?.get(session.assignmentId);
+      if (assignment !== undefined && !budgetAllowsResume(assignment)) {
+        log('info', 'a budget-halted session stayed paused: its budget was not raised', {
+          sessionId: session.id,
+          questionId: record.id,
+          assignmentId: session.assignmentId,
+        });
+        return false;
+      }
+    }
     if (resuming.has(session.id)) return false;
     resuming.add(session.id);
     try {
@@ -531,7 +570,7 @@ export function createQuestionSessions(deps: QuestionSessionsDeps): QuestionSess
       // (b) Parked sessions, judged from the **row** rather than from an event
       // that will never be emitted again (§9.2).
       for (const session of deps.sessions.list({ status: 'paused' })) {
-        if (session.exitReason !== 'awaiting_answer') continue;
+        if (session.exitReason === null || !AUTO_RESUMABLE_PARKS.has(session.exitReason)) continue;
         const record = questionFor(deps.questions, session);
         if (record === undefined) continue;
         if (record.status === 'answered') {

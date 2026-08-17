@@ -41,6 +41,15 @@ export interface SdkSession extends AsyncIterable<SDKMessage> {
   interrupt?(): Promise<unknown>;
   /** §9.1: "forcefully ends the query… no further messages will be received". */
   close?(): Promise<void> | void;
+  /**
+   * §10's `runner.mcp.status`, and roster §10's actionable `needs-auth` card.
+   *
+   * Optional in the seam for the same reason `interrupt` is: the real `Query`
+   * satisfies it structurally, and a fake that does not is answered from the
+   * `init` message's `mcp_servers`, which carries the same
+   * `pending | connected | failed | needs-auth | disabled` vocabulary.
+   */
+  mcpServerStatus?(): Promise<readonly { name: string; status: string }[]>;
 }
 
 /** The one SDK entry point runner calls (§4.1: streaming input, always). */

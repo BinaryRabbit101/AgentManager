@@ -1,24 +1,27 @@
 /**
- * `RunnerService` — the in-process face of runner DESIGN §11.2, as far as M1–M6
+ * `RunnerService` — the in-process face of runner DESIGN §11.2, as far as M1–M10
  * take it.
  *
- * §11.2's full interface also carries `continueFrom` and `usageWindows`. Those
- * need crash recovery (M9) and usage windows (M11), and are **absent rather than
- * stubbed**: a method that resolves without doing anything is a contract another
- * element can build against and then discover is a lie.
+ * §11.2's full interface also carries `usageWindows`, which needs the rolling
+ * `usage_events` sums of M11 and is **absent rather than stubbed**: a method
+ * that resolves without doing anything is a contract another element can build
+ * against and then discover is a lie.
  *
- * ## Why `stop` landing here changes something elsewhere
+ * ## Why `stop` and `continueFrom` landing here change something elsewhere
  *
  * Orchestrator's `hasLauncher()` probes for `startSession` **and** `stop`
- * together (orchestrator `ports.ts`), so this milestone is the one that turns
- * `POST /api/assignments/solo` from a `503 runner_unavailable` into a real
- * launch, and turns `closeAssignment` into something that actually stops the
- * sessions it closes. That is asserted end to end from orchestrator's side.
+ * together, and `hasContinuation()` probes for `continueFrom` (orchestrator
+ * `ports.ts`). The first turned `POST /api/assignments/solo` from a
+ * `503 runner_unavailable` into a real launch; the second is M9's, and it is
+ * what makes a seat's second turn resume its own prior conversation instead of
+ * starting a stranger — "not an optimisation detail" (orchestrator §3.2), and
+ * asserted end to end from orchestrator's side.
  */
 import type { SessionStatus } from '../../storage/index.js';
 
 import { LaunchUnavailableError } from './errors.js';
 import type {
+  ContinueOptions,
   LaunchChain,
   SessionControlResult,
   StartSessionRequest,
@@ -26,14 +29,21 @@ import type {
   SteerOptions,
   SteerResult,
 } from './launch.js';
+import type { Recovery } from './recovery.js';
 import type { ExitReason } from './status.js';
 import { bandRank, type QueueEntry, type QueueState } from './scheduler.js';
 import { TERMINAL_STATUSES } from './status.js';
-import type { RunnerSessionRecord, SessionRepository } from './repository.js';
+import type { ListSessionsQuery, RunnerSessionRecord, SessionRepository } from './repository.js';
 import type { ReadForwardOptions, TranscriptPage, TranscriptReader } from './transcriptReader.js';
 import type { SessionUsageTotals, UsageRepository } from './usage.js';
 
-export type { SessionControlResult, StartSessionRequest, StartSessionResult, SteerResult };
+export type {
+  ContinueOptions,
+  SessionControlResult,
+  StartSessionRequest,
+  StartSessionResult,
+  SteerResult,
+};
 
 /** What `GET /api/sessions/:id` answers with (§11.1: "record + usage + queue position"). */
 export interface SessionDetail {
@@ -49,6 +59,33 @@ export interface SessionDetail {
   readonly usage: SessionUsageTotals | null;
   /** Position in the admission order; `null` once the session has started. */
   readonly queuePosition: number | null;
+  /** §11.1's "resume affordances", computed from §9.3's honest answer. */
+  readonly affordances: SessionAffordances;
+}
+
+/**
+ * Which of §11.1's controls this session actually supports (§9.3, §11.1).
+ *
+ * The list is computed rather than inferred by the client, because §9.3's three
+ * "not resumable" cases — no `sdk_session_id`, a workspace that is gone, a
+ * deleted SDK session file — are all facts only the server can check, and a
+ * Continue button that leads to a fresh conversation the user thought was a
+ * resumption is worse than no button.
+ */
+export interface SessionAffordances {
+  readonly canSteer: boolean;
+  readonly canPause: boolean;
+  /** §9.4 path 1 — the same row. Only ever true for a `paused` session. */
+  readonly canResume: boolean;
+  /** §9.4 path 2 — a new row with `resumed_from`, replaying the conversation. */
+  readonly canContinue: boolean;
+  /** A finished session whose conversation is gone: start again, from nothing. */
+  readonly canRelaunch: boolean;
+  readonly canStop: boolean;
+  /** §9.3's answer, and why, for the tooltip next to a missing Continue. */
+  readonly resumable: boolean;
+  readonly notResumable?: string | undefined;
+  readonly notResumableReason?: string | undefined;
 }
 
 export interface RunnerService {
@@ -88,6 +125,22 @@ export interface RunnerService {
   pause(sessionId: string, reason?: ExitReason): Promise<SessionControlResult>;
   /** §9.4 path 1: the same row, the same transcript, `resume`. Idempotent. */
   resume(sessionId: string): Promise<SessionControlResult>;
+  /**
+   * §9.4 path 2 — Continue: a **new** session row with `resumed_from`, a new
+   * transcript, and a first message stating what happened to the session it
+   * continues.
+   *
+   * Orchestrator's `hasContinuation()` probes for exactly this method, and uses
+   * it for every seat turn after the first so the skeptic keeps the memory of
+   * its own prior critique (orchestrator §3.2). `prompt` is what the caller
+   * wants said next; the interruption statement is prepended by runner, because
+   * only runner can read the transcript that says what was in flight (§9.3).
+   */
+  continueFrom(
+    sessionId: string,
+    prompt?: string,
+    options?: ContinueOptions,
+  ): Promise<StartSessionResult>;
   /**
    * Stop, from any live status: `interrupted` / `user_stopped` for a running or
    * paused session, `user_cancelled` for one that never started. Idempotent, and
@@ -129,6 +182,8 @@ export interface RunnerService {
   readTranscript(sessionId: string, options?: ReadForwardOptions): Promise<TranscriptPage>;
   /** Sessions in a non-terminal status: `queued`, `running` or `paused`. */
   listActive(): readonly RunnerSessionRecord[];
+  /** §11.1's `GET /api/sessions` listing, newest first. */
+  listSessions(query?: ListSessionsQuery): readonly RunnerSessionRecord[];
 }
 
 export interface RunnerServiceOptions {
@@ -145,6 +200,14 @@ export interface RunnerServiceOptions {
    * crash.
    */
   readonly launch?: LaunchChain | undefined;
+  /**
+   * M9's §9.3 reader, for `GET /api/sessions/:id`'s resume affordances.
+   *
+   * Absent, every finished session reports `resumable` from its
+   * `sdk_session_id` alone — the one check that needs no filesystem — which is
+   * the honest degradation for a build that has not wired recovery.
+   */
+  readonly recovery?: Pick<Recovery, 'resumability'> | undefined;
 }
 
 const ACTIVE_STATUSES: readonly SessionStatus[] = ['queued', 'running', 'paused'];
@@ -172,8 +235,36 @@ export function createRunnerService(options: RunnerServiceOptions): RunnerServic
     );
   }
 
+  /** §9.3 + §11.1: which controls this row actually supports, and why not. */
+  function affordancesFor(session: RunnerSessionRecord): SessionAffordances {
+    const terminal = TERMINAL_STATUSES.has(session.status);
+    const state = terminal
+      ? (options.recovery?.resumability(session) ?? {
+          resumable: session.sdkSessionId !== null,
+        })
+      : { resumable: session.sdkSessionId !== null };
+    return {
+      canSteer: session.status === 'running',
+      canPause: session.status === 'running',
+      canResume: session.status === 'paused' && session.sdkSessionId !== null,
+      // §9.3: "the UI offers *Relaunch*, not *Resume*" for a session with no
+      // conversation to replay — so Continue is offered only when there is one.
+      canContinue: terminal && state.resumable,
+      canRelaunch: terminal && !state.resumable,
+      canStop: !terminal,
+      resumable: state.resumable,
+      ...('code' in state && state.code !== undefined ? { notResumable: state.code } : {}),
+      ...('reason' in state && state.reason !== undefined
+        ? { notResumableReason: state.reason }
+        : {}),
+    };
+  }
+
   return {
     startSession: (request) => Promise.resolve().then(() => launchChain().startSession(request)),
+
+    continueFrom: (sessionId, prompt, continueOptions) =>
+      Promise.resolve().then(() => launchChain().continueFrom(sessionId, prompt, continueOptions)),
 
     awaitSettled: (sessionId) =>
       Promise.resolve().then(() => launchChain().awaitSettled(sessionId)),
@@ -197,6 +288,7 @@ export function createRunnerService(options: RunnerServiceOptions): RunnerServic
           session,
           usage: usage.totals(sessionId) ?? null,
           queuePosition: queuePosition(session),
+          affordances: affordancesFor(session),
         };
       }),
 
@@ -216,5 +308,7 @@ export function createRunnerService(options: RunnerServiceOptions): RunnerServic
       ACTIVE_STATUSES.flatMap((status) => sessions.list({ status })).filter(
         (session) => !TERMINAL_STATUSES.has(session.status),
       ),
+
+    listSessions: (query = {}) => sessions.list(query),
   };
 }

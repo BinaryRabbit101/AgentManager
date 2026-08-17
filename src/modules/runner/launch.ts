@@ -82,8 +82,15 @@ import type { SecretResolver } from '../../secrets/index.js';
 
 import { resolveAgentEnv } from './agentEnv.js';
 import { attachAuthEnv, type AuthMode } from './attachAuthEnv.js';
+import {
+  budgetCrossing,
+  budgetHaltPrompt,
+  BUDGET_HALT_OPTIONS,
+  type BudgetCrossing,
+} from './budget.js';
 import { createDefaultDenyCanUseTool, createQuestionCanUseTool } from './canUseTool.js';
 import type { RunnerConfig } from './config.js';
+import { emitRunnerEvent, preview, type SessionEventSubject } from './events.js';
 import {
   isWorkspaceRefusal,
   type AssignmentContextProvider,
@@ -118,8 +125,16 @@ import {
   type InterruptReceipt,
   type LiveSession,
 } from './liveSessions.js';
-import { classifyRateLimit, outcomeForResult, readRateLimitEvent } from './messages.js';
+import {
+  classifyRateLimit,
+  outcomeForResult,
+  readAssistant,
+  readRateLimitEvent,
+  readStreamDelta,
+  readUser,
+} from './messages.js';
 import { assertOptionsWhitelisted } from './optionGuard.js';
+import type { Recovery } from './recovery.js';
 import type { RunnerSessionRecord, SessionPriority, SessionRepository } from './repository.js';
 import { runReaderLoop } from './readerLoop.js';
 import {
@@ -255,6 +270,15 @@ export interface LaunchChainDeps {
   /** orchestrator's, or the stub of `assignmentContext.ts` (§11.3). */
   readonly assignmentContext: AssignmentContextProvider;
   /**
+   * M9's §9.3 reader, for the Continue path.
+   *
+   * Optional so a build without it still launches: a `continueFrom` with no
+   * recovery reader starts a **fresh** conversation rather than a resumed one,
+   * which is the honest downgrade rather than a crash.
+   */
+  readonly recovery?:
+    Pick<Recovery, 'resumability' | 'interruption' | 'continuationMessage'> | undefined;
+  /**
    * M7's question bridge (§5.2): orchestrator's when it is on the registry,
    * runner's degraded fallback otherwise. Absent altogether leaves M3's
    * default-deny installed, which is what a build before M7 had.
@@ -281,9 +305,33 @@ export interface LaunchChainDeps {
   readonly ensureDir?: ((path: string) => void) | undefined;
 }
 
+/** What `continueFrom` may override on the new session (§9.4 path 2). */
+export interface ContinueOptions {
+  readonly priority?: SessionPriority | undefined;
+  readonly origin?: SessionOrigin | undefined;
+}
+
 export interface LaunchChain {
   /** §3.1 steps 0–1, then the pump. */
   startSession(request: StartSessionRequest): Promise<StartSessionResult>;
+  /**
+   * §9.4 path 2 — Continue: a **new** session row with `resumed_from`, a new
+   * transcript, and a first user message stating what happened to the one it
+   * continues.
+   *
+   * The prior session must be terminal; a `paused` one is a `resume` and says
+   * so. When §9.3 finds the prior conversation unresumable — no
+   * `sdk_session_id`, a workspace that is gone, a deleted SDK session file —
+   * this still starts the new session, but **fresh**: the row records the chain,
+   * the agent is told the history is not available, and the UI's affordance is
+   * Relaunch rather than Continue (§9.3). Refusing outright would turn a
+   * pattern's second turn into a failed turn (orchestrator §3.2).
+   */
+  continueFrom(
+    sessionId: string,
+    prompt?: string,
+    options?: ContinueOptions,
+  ): Promise<StartSessionResult>;
   /**
    * Resolves when a session reaches a status it will not leave on its own —
    * terminal, `paused`, or blocked back into `queued` by a retryable workspace
@@ -340,8 +388,21 @@ export interface LaunchChain {
   queueEntries(): readonly QueueEntry[];
   /** `PUT /api/runner/capacity` (§6.1). Returns the clamped value stored. */
   setCapacity(maxConcurrent: number): number;
-  /** Stops admitting. M9 owns the rest of shutdown. */
+  /** Stops admitting. {@link shutdown} is the whole of §9.1. */
   stopAdmitting(): void;
+  /** Re-runs admission — §9.2 item 2's "re-admitted through the scheduler". */
+  admitQueued(): void;
+  /**
+   * §9.1's shutdown sequence: stop admitting, then interrupt every running
+   * session, wait `gracefulInterruptMs`, close, and settle it `paused` /
+   * `service_shutdown`. A session that does not wind down in time is aborted and
+   * settles `interrupted` / `shutdown_forced` — honest labelling, because that
+   * one may have died mid-tool-call.
+   *
+   * Resolves when every live session has a written status, which is what makes
+   * "no orphaned subprocess" assertable rather than hopeful.
+   */
+  shutdown(): Promise<void>;
 }
 
 export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
@@ -365,27 +426,20 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
   const parkedOn = new Map<string, string>();
 
   // -------------------------------------------------------------------------
-  // Events (§10) — the three lifecycle events the launch chain owns. The full
-  // table, with its persist flags, is M10's.
+  // Events (§10) — M10.
+  //
+  // The persist flag is **not** an argument here: it is looked up from §10's
+  // table in `events.ts` by type, so a high-volume event cannot be flagged
+  // durable by a typo at one of eighteen call sites. `ids` comes off the session
+  // row for the same reason (§10: "always populated").
   // -------------------------------------------------------------------------
 
   function emit(
     type: string,
-    session: RunnerSessionRecord,
+    session: SessionEventSubject,
     payload: Record<string, unknown>,
-    persist: boolean,
   ): void {
-    deps.bus?.emit({
-      type,
-      ids: {
-        sessionId: session.id,
-        assignmentId: session.assignmentId,
-        projectId: session.projectId,
-        agentId: session.agentId,
-      },
-      payload,
-      persist,
-    });
+    emitRunnerEvent({ bus: deps.bus, type, subject: session, payload });
   }
 
   function notifySettled(sessionId: string): void {
@@ -563,12 +617,11 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         );
       }
       for (const diagnostic of compiled.diagnostics) {
-        emit(
-          'session.diagnostic',
-          session,
-          { severity: diagnostic.level, code: diagnostic.code, message: diagnostic.message },
-          true,
-        );
+        emit('session.diagnostic', session, {
+          severity: diagnostic.level,
+          code: diagnostic.code,
+          message: diagnostic.message,
+        });
       }
 
       // --- step 7: runner's own fields, and only those ---------------------
@@ -576,17 +629,12 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       // §5.6 + SDK-NOTES C2, read off what roster compiled — never recomputed.
       const bridgeHealth = questionBridgeStatus(compiled);
       if (bridgeHealth.diagnostic !== undefined) {
-        emit(
-          'session.diagnostic',
-          session,
-          {
-            severity: 'warn',
-            code: bridgeHealth.diagnostic.code,
-            message: bridgeHealth.diagnostic.message,
-            questionBridge: bridgeHealth.status,
-          },
-          true,
-        );
+        emit('session.diagnostic', session, {
+          severity: 'warn',
+          code: bridgeHealth.diagnostic.code,
+          message: bridgeHealth.diagnostic.message,
+          questionBridge: bridgeHealth.status,
+        });
       }
       const authed = await attachAuthEnv(compiled.options, {
         mode: deps.auth,
@@ -603,6 +651,13 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         // runner never sets `sessionId`.
         ...(isResumeRun ? { resume: priorSdkSessionId } : {}),
         abortController: abort,
+        // §10's `session.delta` exists "only when `includePartialMessages`", and
+        // D11 is explicit about what the deltas are *for*: "deltas go to the
+        // WebSocket for live typing" while the transcript keeps the complete
+        // `assistant` line. Turning it on is what makes the session view type
+        // rather than blink; it is one of §3.3's whitelisted keys precisely so
+        // runner may make this call.
+        includePartialMessages: true,
         // M7: every undecided call becomes a question (§5.1). M3's total
         // default-deny stays as the terminal fallback for a build with no
         // bridge at all — "default-deny is the outcome whenever no human
@@ -629,20 +684,15 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
                 expireHours: config.question.expireHours,
                 clock: deps.clock,
                 onRaised: (raised) => {
-                  emit(
-                    'session.question.raised',
-                    session,
-                    {
-                      questionId: raised.questionId,
-                      kind: raised.kind,
-                      prompt: raised.prompt,
-                      options: raised.options,
-                      toolName: raised.toolName,
-                      holdUntil: raised.holdUntil,
-                      expiresAt: raised.expiresAt,
-                    },
-                    true,
-                  );
+                  emit('session.question.raised', session, {
+                    questionId: raised.questionId,
+                    kind: raised.kind,
+                    prompt: raised.prompt,
+                    options: raised.options,
+                    toolName: raised.toolName,
+                    holdUntil: raised.holdUntil,
+                    expiresAt: raised.expiresAt,
+                  });
                   transcript?.append('question', {
                     questionId: raised.questionId,
                     prompt: raised.prompt,
@@ -651,18 +701,13 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
                   });
                 },
                 onSettled: (answered) => {
-                  emit(
-                    'session.question.answered',
-                    session,
-                    {
-                      questionId: answered.questionId,
-                      answeredVia: answered.answeredVia,
-                      latencyMs: answered.latencyMs,
-                      delivery: answered.delivery,
-                      decision: answered.decision,
-                    },
-                    true,
-                  );
+                  emit('session.question.answered', session, {
+                    questionId: answered.questionId,
+                    answeredVia: answered.answeredVia,
+                    latencyMs: answered.latencyMs,
+                    delivery: answered.delivery,
+                    decision: answered.decision,
+                  });
                 },
                 onPark: (questionId) => {
                   // The denial is returned first — the SDK is still blocked on
@@ -774,24 +819,23 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         runId: newId(),
         log,
         onUsage: (metered) => {
-          emit(
-            'session.usage',
-            session,
-            {
-              seq: openTranscript.nextSeq(),
-              source: metered.source,
-              delta: {
-                input: metered.delta.input,
-                output: metered.delta.output,
-                cacheRead: metered.delta.cacheRead,
-                cacheCreation: metered.delta.cacheCreation,
-              },
-              model: metered.model,
-              sessionTotals: metered.totals ?? null,
-              assignmentTokensUsed: metered.assignmentTokensUsed ?? null,
+          emit('session.usage', session, {
+            seq: openTranscript.nextSeq(),
+            source: metered.source,
+            delta: {
+              input: metered.delta.input,
+              output: metered.delta.output,
+              cacheRead: metered.delta.cacheRead,
+              cacheCreation: metered.delta.cacheCreation,
             },
-            false,
-          );
+            model: metered.model,
+            sessionTotals: metered.totals ?? null,
+            assignmentTokensUsed: metered.assignmentTokensUsed ?? null,
+          });
+          // §7.2's tripwire, read from the figure the metering transaction just
+          // committed — so the check never lags an event-bus hop, and the halt
+          // lands on the turn that crossed rather than several turns later (M8).
+          noteAssignmentTokens(session, metered.assignmentTokensUsed);
         },
       });
 
@@ -819,6 +863,18 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
           // is a bug worth a loud log line, not a lost turn.
           if (message.type === 'assistant') {
             meterSafely(sessionId, () => meter.recordAssistantMessage(message));
+          }
+          // §10's four high-volume events (M10). None of them persists — their
+          // durable record is the transcript line the reader loop wrote for the
+          // same message — and none of them may end a session, which is why the
+          // whole block is guarded.
+          try {
+            publishMessageEvents(session, openTranscript, message);
+          } catch (error) {
+            log('debug', 'a live session event could not be published', {
+              sessionId,
+              error: describe(error),
+            });
           }
           const rateLimit = readRateLimitEvent(message);
           if (rateLimit?.exhausted === true) {
@@ -849,39 +905,33 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
             permissionMode: facts.permissionMode,
           });
           sessions.setSummary(sessionId, composeSummary({ prompt, status: 'running' }));
-          emit(
-            'session.started',
-            session,
-            {
-              sdkSessionId: facts.sdkSessionId,
-              model: facts.model,
-              permissionMode: facts.permissionMode,
-              questionBridge: bridgeHealth.status,
-              workspace: { kind: acquired.kind, path: acquired.path, branch: acquired.branch },
-              effectivePermissions: compiled.effective,
-              elevation: compiled.effective.elevation,
-              diagnostics: compiled.diagnostics,
-              transcriptPath: transcript?.relativePath ?? null,
-              resumedFrom: session.resumedFrom,
-            },
-            true,
-          );
+          emit('session.started', session, {
+            sdkSessionId: facts.sdkSessionId,
+            model: facts.model,
+            permissionMode: facts.permissionMode,
+            questionBridge: bridgeHealth.status,
+            workspace: { kind: acquired.kind, path: acquired.path, branch: acquired.branch },
+            effectivePermissions: compiled.effective,
+            elevation: compiled.effective.elevation,
+            diagnostics: compiled.diagnostics,
+            transcriptPath: transcript?.relativePath ?? null,
+            resumedFrom: session.resumedFrom,
+          });
           if (isResumeRun) {
             // §10's `session.resumed`, with both ids: SDK-NOTES A1 says a plain
             // `resume` should preserve the id, but it is inferred rather than
             // observed (L1), so the design carries both and this reports both.
-            emit(
-              'session.resumed',
-              session,
-              {
-                mode: 'same-session',
-                resumedFrom: session.resumedFrom,
-                sdkSessionId: facts.sdkSessionId,
-                priorSdkSessionId,
-              },
-              true,
-            );
+            emit('session.resumed', session, {
+              mode: 'same-session',
+              resumedFrom: session.resumedFrom,
+              sdkSessionId: facts.sdkSessionId,
+              priorSdkSessionId,
+            });
           }
+          // §10's `runner.mcp.status` and roster §10's actionable `needs-auth`
+          // card, plus roster §7.1's plugin/skill assertion — all reads of what
+          // `init` reported, none of which may fail the session (M10).
+          publishInitDiagnostics(session, sdkSession, compiled.options, facts);
         },
       });
       live.markFinished();
@@ -907,9 +957,14 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
           prompt,
           lastAssistantText,
           turns,
-          message: live.forced
-            ? 'Stopped by the user; the session did not wind down in time and was aborted.'
-            : 'Stopped by the user.',
+          message:
+            live.exitReason === 'shutdown_forced'
+              ? 'AgentManager shut down and this session did not wind down within ' +
+                `runner.gracefulInterruptMs (${String(config.gracefulInterruptMs)} ms), so its ` +
+                'subprocess was aborted. It may have died mid-tool-call (§9.1 step 3).'
+              : live.forced
+                ? 'Stopped by the user; the session did not wind down in time and was aborted.'
+                : 'Stopped by the user.',
         });
         return;
       }
@@ -1130,24 +1185,17 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     transcript?.close();
 
     const record = sessions.transition(sessionId, status, { exitReason, summary });
-    emit(
-      'session.ended',
-      record,
-      {
-        status,
-        exitReason,
-        turns: detail.turns,
-        ...(detail.durationMs === undefined ? {} : { durationMs: detail.durationMs }),
-        ...(detail.costUsdEstimate === undefined
-          ? {}
-          : { costUsdEstimate: detail.costUsdEstimate }),
-        permissionDenials: detail.permissionDenials ?? 0,
-        summary,
-        transcriptBytes: record.transcriptBytes,
-        ...(detail.message === undefined ? {} : { message: detail.message }),
-      },
-      true,
-    );
+    emit('session.ended', record, {
+      status,
+      exitReason,
+      turns: detail.turns,
+      ...(detail.durationMs === undefined ? {} : { durationMs: detail.durationMs }),
+      ...(detail.costUsdEstimate === undefined ? {} : { costUsdEstimate: detail.costUsdEstimate }),
+      permissionDenials: detail.permissionDenials ?? 0,
+      summary,
+      transcriptBytes: record.transcriptBytes,
+      ...(detail.message === undefined ? {} : { message: detail.message }),
+    });
   }
 
   /**
@@ -1193,21 +1241,25 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     const record = sessions.transition(sessionId, 'paused', { exitReason, summary });
     // §10's `session.paused` carries `questionId?` — for a park it is the whole
     // point of the event, because it is what tells the UI which card resumes it.
-    const questionId = parkedOn.get(sessionId);
+    //
+    // The map is the fast path; the **row** is the fallback, because a budget
+    // halt (§7.2) races its own card: the pause is deliberately started before
+    // `ask()` resolves, so the id may not be in the map yet. Reading it back is
+    // the same read §9.2's boot sweep makes, and it is the durable one.
+    const questionId =
+      parkedOn.get(sessionId) ??
+      (exitReason === 'awaiting_answer' || exitReason === 'budget_halt'
+        ? questionIdFor(sessionId)
+        : undefined);
     parkedOn.delete(sessionId);
-    emit(
-      'session.paused',
-      record,
-      {
-        reason: exitReason,
-        resumable,
-        sdkSessionId: record.sdkSessionId,
-        forced: detail.forced,
-        transcriptBytes: record.transcriptBytes,
-        ...(questionId === undefined ? {} : { questionId }),
-      },
-      true,
-    );
+    emit('session.paused', record, {
+      reason: exitReason,
+      resumable,
+      sdkSessionId: record.sdkSessionId,
+      forced: detail.forced,
+      transcriptBytes: record.transcriptBytes,
+      ...(questionId === undefined ? {} : { questionId }),
+    });
   }
 
   /** The open question a session is waiting on, read from the row (§5.4, §9.2). */
@@ -1238,6 +1290,295 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         code: error instanceof RunnerError ? error.code : undefined,
       });
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // §10's live events — M10
+  // -------------------------------------------------------------------------
+
+  /** `toolUseId` → what it was and when it started, for `session.tool.end`. */
+  const toolsInFlight = new Map<string, { readonly name: string; readonly startedAt: number }>();
+
+  /**
+   * The four high-volume events of §10, derived from one SDK message.
+   *
+   * The `seq` each carries is the transcript line the reader loop is about to
+   * write for the same message — this runs *before* the append, which is what
+   * makes "merge the live stream and the transcript on `seq`" (ui §9.4) a
+   * merge rather than a guess. A `stream_event` writes no line at all (D11), so
+   * its `seq` is a watermark: the line it will appear inside.
+   */
+  function publishMessageEvents(
+    subject: RunnerSessionRecord,
+    transcript: SessionTranscript,
+    message: Parameters<NonNullable<Parameters<typeof runReaderLoop>[0]['onMessage']>>[0],
+  ): void {
+    const base = transcript.nextSeq();
+
+    if (message.type === 'assistant') {
+      const parts = readAssistant(message);
+      emit('session.message', subject, {
+        seq: base,
+        role: 'assistant',
+        messageId: parts.messageId,
+        contentBlocks: parts.content,
+        text: parts.text,
+      });
+      parts.toolUses.forEach((call, index) => {
+        toolsInFlight.set(call.toolUseId, {
+          name: call.name,
+          startedAt: deps.clock().getTime(),
+        });
+        emit('session.tool.start', subject, {
+          seq: base + 1 + index,
+          toolUseId: call.toolUseId,
+          name: call.name,
+          inputPreview: preview(call.input),
+        });
+      });
+      return;
+    }
+
+    if (message.type === 'user') {
+      const parts = readUser(message);
+      const text = typeof parts.content === 'string' ? parts.content : '';
+      emit('session.message', subject, {
+        seq: base,
+        role: 'user',
+        contentBlocks: typeof parts.content === 'string' ? [] : parts.content,
+        text,
+      });
+      parts.toolResults.forEach((result, index) => {
+        const started = toolsInFlight.get(result.toolUseId);
+        toolsInFlight.delete(result.toolUseId);
+        emit('session.tool.end', subject, {
+          seq: base + 1 + index,
+          toolUseId: result.toolUseId,
+          name: started?.name ?? null,
+          isError: result.isError,
+          durationMs: started === undefined ? null : deps.clock().getTime() - started.startedAt,
+          resultPreview: preview(result.content),
+        });
+      });
+      return;
+    }
+
+    if (message.type === 'stream_event') {
+      const text = readStreamDelta(message);
+      if (text !== undefined) emit('session.delta', subject, { seq: base, text });
+    }
+  }
+
+  /**
+   * §10's `runner.mcp.status`, roster §10's `needs-auth` card, and roster §7.1's
+   * plugin/skill assertion — everything `init` makes checkable.
+   *
+   * None of it can fail the session: an MCP server that wants an OAuth dance is
+   * an actionable card, not a launch failure, and a plugin the CLI silently
+   * skipped is a diagnostic the owner can act on rather than a reason to refuse
+   * work the agent can still mostly do.
+   */
+  function publishInitDiagnostics(
+    subject: RunnerSessionRecord,
+    sdkSession: { mcpServerStatus?: () => Promise<readonly { name: string; status: string }[]> },
+    compiledOptions: SdkOptions,
+    facts: {
+      mcpServers: readonly { name: string; status: string }[];
+      plugins: readonly { name: string; path: string }[];
+      skills: readonly string[];
+    },
+  ): void {
+    void (async () => {
+      // `Query.mcpServerStatus()` is the design's source; `init.mcp_servers`
+      // carries the same vocabulary and is what a build without the method (or
+      // a fake) answers with. Roster §10's five values pass through unchanged
+      // either way — runner re-maps none of them.
+      let servers: readonly { name: string; status: string }[] = facts.mcpServers;
+      try {
+        const live = await sdkSession.mcpServerStatus?.();
+        if (Array.isArray(live)) {
+          servers = (live as readonly { name: string; status: string }[]).map((server) => ({
+            name: server.name,
+            status: server.status,
+          }));
+        }
+      } catch (error) {
+        log('debug', 'the SDK could not report MCP server status', {
+          sessionId: subject.id,
+          error: describe(error),
+        });
+      }
+
+      if (servers.length > 0) {
+        emit('runner.mcp.status', subject, { sessionId: subject.id, servers });
+      }
+      for (const server of servers) {
+        if (server.status !== 'needs-auth') continue;
+        emit('session.diagnostic', subject, {
+          severity: 'warn',
+          code: 'mcp_needs_auth',
+          message:
+            `The MCP server "${server.name}" needs authentication before this session can use its ` +
+            'tools. The session is running without them; authorise the server and start it again.',
+          server: server.name,
+          status: server.status,
+        });
+      }
+    })().catch((error: unknown) => {
+      log('debug', 'MCP status reporting failed', {
+        sessionId: subject.id,
+        error: describe(error),
+      });
+    });
+
+    // roster §7.1: "a nonexistent plugin path is **silently skipped**". So the
+    // only way to know an agent's skills actually loaded is to compare what was
+    // asked for against what `init` reports.
+    const wanted = (compiledOptions.plugins ?? []).map((plugin) => plugin.path);
+    const present = new Set(facts.plugins.map((plugin) => normalisePath(plugin.path)));
+    const missingPlugins = wanted.filter((path) => !present.has(normalisePath(path)));
+    if (missingPlugins.length > 0) {
+      emit('session.diagnostic', subject, {
+        severity: 'warn',
+        code: 'plugins_not_loaded',
+        message:
+          `The CLI did not load ${String(missingPlugins.length)} requested plugin path(s): ` +
+          `${missingPlugins.join(', ')}. A nonexistent plugin path is silently skipped (roster §7.1), ` +
+          "so the agent's own skills are not available in this session.",
+        plugins: missingPlugins,
+      });
+    }
+
+    const requestedSkills = compiledOptions.skills;
+    if (Array.isArray(requestedSkills)) {
+      const loaded = new Set(facts.skills.map((skill) => skill.split(':').pop() ?? skill));
+      const missingSkills = requestedSkills.filter(
+        (skill) => !loaded.has(skill) && !loaded.has(skill.split(':').pop() ?? skill),
+      );
+      if (missingSkills.length > 0) {
+        emit('session.diagnostic', subject, {
+          severity: 'warn',
+          code: 'skills_not_loaded',
+          message:
+            `The session requested skills the init message does not list: ${missingSkills.join(', ')} ` +
+            '(roster §7.1). They will not fire in this session.',
+          skills: missingSkills,
+        });
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // §7.2's budget halt — M8
+  // -------------------------------------------------------------------------
+
+  /** Sessions that have already halted, so the tripwire fires once per run. */
+  const budgetHalted = new Set<string>();
+
+  /**
+   * §7.2, run against the figure `assignments.addTokensUsed` just committed.
+   *
+   * Order matters and is the design's: the session is put on the path to
+   * `paused` **first**, then the card is raised, then the event goes out —
+   * "because *detect-then-notify-then-act* burns tokens during the notify".
+   * The budget itself is re-read from the row rather than taken from the launch
+   * chain's `AssignmentContext`, so a budget raised while the session ran is
+   * seen (see `budget.ts`).
+   */
+  function noteAssignmentTokens(
+    subject: RunnerSessionRecord,
+    assignmentTokensUsed: number | undefined,
+  ): void {
+    if (assignmentTokensUsed === undefined) return;
+    if (budgetHalted.has(subject.id)) return;
+    const crossing = budgetCrossing(
+      store.assignments.get(subject.assignmentId),
+      assignmentTokensUsed,
+    );
+    if (crossing === undefined) return;
+    budgetHalted.add(subject.id);
+
+    log('warn', 'an assignment crossed its token budget and its session was halted', {
+      sessionId: subject.id,
+      assignmentId: crossing.assignmentId,
+      tokenBudget: crossing.tokenBudget,
+      tokensUsed: crossing.tokensUsed,
+    });
+
+    // 1. Pause. `pause()` sets the wind-down intent before its first `await`,
+    //    so the turn stops here rather than after the card round-trips.
+    void pause(subject.id, 'budget_halt').catch((error: unknown) => {
+      log('error', 'a budget-halted session could not be paused', {
+        sessionId: subject.id,
+        error: describe(error),
+      });
+    });
+
+    // 2. The card. `ask()` may take hours to resolve (§15.1-4) and the resume is
+    //    driven by the persisted row rather than this promise (§9.2), so the
+    //    outcome is deliberately not awaited here.
+    raiseBudgetHalt(subject, crossing);
+
+    // 3. The event orchestrator turns into `phase: awaiting_user`.
+    emit('assignment.budget.exceeded', subject, {
+      assignmentId: crossing.assignmentId,
+      tokenBudget: crossing.tokenBudget,
+      tokensUsed: crossing.tokensUsed,
+      overshoot: crossing.overshoot,
+      sessionId: subject.id,
+      sessions: sessionsHalted(crossing.assignmentId),
+    });
+  }
+
+  function sessionsHalted(assignmentId: string): readonly string[] {
+    return [...budgetHalted].filter(
+      (sessionId) => sessions.get(sessionId)?.assignmentId === assignmentId,
+    );
+  }
+
+  function raiseBudgetHalt(subject: RunnerSessionRecord, crossing: BudgetCrossing): void {
+    const bridge = deps.questionBridge;
+    if (bridge === undefined) {
+      log('warn', 'a budget halt could not raise a card: this build has no question bridge', {
+        sessionId: subject.id,
+        assignmentId: crossing.assignmentId,
+      });
+      return;
+    }
+    const now = deps.clock().getTime();
+    const prompt = budgetHaltPrompt(crossing, sessionsHalted(crossing.assignmentId));
+    bridge
+      .ask({
+        sessionId: subject.id,
+        assignmentId: subject.assignmentId,
+        agentId: subject.agentId,
+        // §15.1-8: `question` and `budget_halt` are the two kinds runner raises.
+        kind: 'budget_halt',
+        prompt,
+        options: BUDGET_HALT_OPTIONS.map((option) => ({ ...option })),
+        allowFreeText: true,
+        holdUntil: new Date(now).toISOString(),
+        expiresAt: new Date(now + config.question.expireHours * 3_600_000).toISOString(),
+        onRaised: (questionId) => {
+          parkedOn.set(subject.id, questionId);
+          emit('session.question.raised', subject, {
+            questionId,
+            kind: 'budget_halt',
+            prompt,
+            options: BUDGET_HALT_OPTIONS.map((option) => ({ ...option })),
+            toolName: null,
+            holdUntil: new Date(now).toISOString(),
+            expiresAt: new Date(now + config.question.expireHours * 3_600_000).toISOString(),
+          });
+        },
+      })
+      .catch((error: unknown) => {
+        log('error', 'the budget-halt card could not be raised', {
+          sessionId: subject.id,
+          assignmentId: crossing.assignmentId,
+          error: describe(error),
+        });
+      });
   }
 
   // -------------------------------------------------------------------------
@@ -1327,18 +1668,13 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       receiptSupported: receipt.supported,
       ...(receipt.error === undefined ? {} : { interruptError: receipt.error }),
     });
-    emit(
-      'session.steered',
-      record,
-      {
-        text,
-        interrupted: interrupting,
-        messageUuid,
-        stillQueued: receipt.stillQueued,
-        receiptSupported: receipt.supported,
-      },
-      true,
-    );
+    emit('session.steered', record, {
+      text,
+      interrupted: interrupting,
+      messageUuid,
+      stillQueued: receipt.stillQueued,
+      receiptSupported: receipt.supported,
+    });
 
     return {
       ...stateOf(sessionId, true),
@@ -1501,20 +1837,15 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     // deliberately stopped waiting" (§5.4).
     sessions.transition(sessionId, 'interrupted', { exitReason, summary });
     const after = sessions.require(sessionId);
-    emit(
-      'session.ended',
-      after,
-      {
-        status: 'interrupted',
-        exitReason,
-        turns: after.turns,
-        permissionDenials: 0,
-        summary,
-        transcriptBytes: after.transcriptBytes,
-        message,
-      },
-      true,
-    );
+    emit('session.ended', after, {
+      status: 'interrupted',
+      exitReason,
+      turns: after.turns,
+      permissionDenials: 0,
+      summary,
+      transcriptBytes: after.transcriptBytes,
+      message,
+    });
     notifySettled(sessionId);
     return stateOf(sessionId, true);
   }
@@ -1543,20 +1874,15 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       });
       sessions.transition(sessionId, 'interrupted', { exitReason: 'user_stopped', summary });
       const after = sessions.require(sessionId);
-      emit(
-        'session.ended',
-        after,
-        {
-          status: 'interrupted',
-          exitReason: 'user_stopped',
-          turns: after.turns,
-          permissionDenials: 0,
-          summary,
-          transcriptBytes: after.transcriptBytes,
-          message: reason ?? 'Discarded by the user while paused.',
-        },
-        true,
-      );
+      emit('session.ended', after, {
+        status: 'interrupted',
+        exitReason: 'user_stopped',
+        turns: after.turns,
+        permissionDenials: 0,
+        summary,
+        transcriptBytes: after.transcriptBytes,
+        message: reason ?? 'Discarded by the user while paused.',
+      });
       return stateOf(sessionId, true);
     }
 
@@ -1612,53 +1938,139 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
   }
 
   // -------------------------------------------------------------------------
+  // §3.1 steps 0–1, shared by `startSession` and §9.4's Continue
+  // -------------------------------------------------------------------------
+
+  function start(
+    request: StartSessionRequest,
+    continuation?: { readonly resumedFrom: string; readonly sdkSessionId: string | null },
+  ): StartSessionResult {
+    admit(request);
+
+    const record = sessions.enqueue({
+      assignmentId: request.assignmentId,
+      agentId: request.agentId,
+      projectId: request.projectId,
+      prompt: request.prompt,
+      ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
+      ...(request.role === undefined ? {} : { role: request.role }),
+      ...(request.priority === undefined ? {} : { priority: request.priority }),
+      ...(request.origin === undefined ? {} : { origin: request.origin }),
+      // §9.4 path 2: "**New** session row, new transcript, `resumed_from = <old
+      // id>`". Written at enqueue because it is not patchable — the chain is a
+      // record rather than something a later call may rewrite.
+      ...(continuation === undefined ? {} : { resumedFrom: continuation.resumedFrom }),
+      // §6.1: roster's `defaults.concurrencyWeight`, copied onto the row at
+      // enqueue so admission order is decidable from one read over
+      // `sessions` without reaching back into roster.
+      weight: weightFor(request.agentId),
+      // §8.3: written at admission so a live session already has a readable
+      // row, and again at the terminal transition.
+      summary: composeSummary({ prompt: request.prompt, status: 'queued' }),
+    });
+
+    // The one thing that makes the new row a *continuation* rather than a fresh
+    // start: `runSession` decides "is this a resume?" from the row's
+    // `sdk_session_id`, which is precisely the signal that survives a restart.
+    // Left null when §9.3 says the conversation is not resumable — then this is
+    // a Relaunch that still records the chain.
+    if (continuation?.sdkSessionId != null) {
+      sessions.patch(record.id, { sdkSessionId: continuation.sdkSessionId });
+    }
+
+    const queuePosition = sessions
+      .list({ status: 'queued' })
+      .filter(
+        (other) =>
+          other.id !== record.id &&
+          bandRank(other.priority) <= bandRank(record.priority) &&
+          (other.queuedAt ?? '') <= (record.queuedAt ?? ''),
+      ).length;
+
+    emit('session.queued', record, {
+      priority: record.priority,
+      weight: record.weight,
+      queuePosition,
+      promptPreview: request.prompt.slice(0, 200),
+      resumedFrom: continuation?.resumedFrom ?? null,
+    });
+
+    if (continuation !== undefined) {
+      emit('session.resumed', sessions.require(record.id), {
+        // §10: `mode: 'same-session' | 'new-session'`. This is the new-session
+        // half — the one §9.4 calls Continue.
+        mode: 'new-session',
+        resumedFrom: continuation.resumedFrom,
+        sdkSessionId: continuation.sdkSessionId,
+        priorSdkSessionId: continuation.sdkSessionId,
+      });
+    }
+
+    scheduler.evaluate();
+    return { sessionId: record.id, status: record.status, queuePosition };
+  }
 
   return {
     startSession(request) {
+      return Promise.resolve().then(() => start(request));
+    },
+
+    continueFrom(sessionId, prompt = '', continueOptions = {}) {
       return Promise.resolve().then(() => {
-        admit(request);
+        const prior = sessions.require(sessionId);
+        if (!TERMINAL_STATUSES.has(prior.status)) {
+          throw new SessionControlRefusedError(
+            'continue',
+            sessionId,
+            prior.status,
+            prior.status === 'paused'
+              ? 'a paused session is resumed on the same row rather than continued into a new one ' +
+                  '(§9.4 path 1). Resume it instead.'
+              : `it is "${prior.status}" and has not finished; Continue exists for a session that ` +
+                  'genuinely ended (§9.4 path 2).',
+          );
+        }
 
-        const record = sessions.enqueue({
-          assignmentId: request.assignmentId,
-          agentId: request.agentId,
-          projectId: request.projectId,
-          prompt: request.prompt,
-          ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
-          ...(request.role === undefined ? {} : { role: request.role }),
-          ...(request.priority === undefined ? {} : { priority: request.priority }),
-          ...(request.origin === undefined ? {} : { origin: request.origin }),
-          // §6.1: roster's `defaults.concurrencyWeight`, copied onto the row at
-          // enqueue so admission order is decidable from one read over
-          // `sessions` without reaching back into roster.
-          weight: weightFor(request.agentId),
-          // §8.3: written at admission so a live session already has a readable
-          // row, and again at the terminal transition.
-          summary: composeSummary({ prompt: request.prompt, status: 'queued' }),
-        });
+        // §9.3, honestly: the resume is offered only when the conversation is
+        // actually there. When it is not, this still starts the work — the row
+        // records the chain and the agent is told the history is missing —
+        // because a pattern's second turn must not fail over a pruned file.
+        const state = deps.recovery?.resumability(prior) ?? {
+          resumable: prior.sdkSessionId !== null,
+        };
+        const interruption = deps.recovery?.interruption(sessionId) ?? { lastSeq: 0 };
+        const preamble =
+          deps.recovery?.continuationMessage(prior, interruption) ??
+          `The previous session (${sessionId}) ended. Continue from there.`;
+        const opening = state.resumable
+          ? preamble
+          : `${preamble} Its conversation could not be replayed${
+              state.reason === undefined ? '' : `: ${state.reason}`
+            }`;
 
-        const queuePosition = sessions
-          .list({ status: 'queued' })
-          .filter(
-            (other) =>
-              other.id !== record.id &&
-              bandRank(other.priority) <= bandRank(record.priority) &&
-              (other.queuedAt ?? '') <= (record.queuedAt ?? ''),
-          ).length;
-
-        emit(
-          'session.queued',
-          record,
+        const record = start(
           {
-            priority: record.priority,
-            weight: record.weight,
-            queuePosition,
-            promptPreview: request.prompt.slice(0, 200),
+            assignmentId: prior.assignmentId,
+            agentId: prior.agentId,
+            projectId: prior.projectId,
+            prompt: prompt.trim() === '' ? opening : `${opening}\n\n${prompt}`,
+            ...(prior.role === null ? {} : { role: prior.role }),
+            priority: continueOptions.priority ?? prior.priority,
+            ...(continueOptions.origin === undefined ? {} : { origin: continueOptions.origin }),
           },
-          true,
+          {
+            resumedFrom: sessionId,
+            sdkSessionId: state.resumable ? prior.sdkSessionId : null,
+          },
         );
 
-        scheduler.evaluate();
-        return { sessionId: record.id, status: record.status, queuePosition };
+        log('info', 'a finished session was continued into a new one', {
+          sessionId: record.sessionId,
+          resumedFrom: sessionId,
+          resumable: state.resumable,
+          ...(state.code === undefined ? {} : { notResumable: state.code }),
+        });
+        return record;
       });
     },
 
@@ -1694,6 +2106,29 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     liveSessionIds: () => liveSessions.ids(),
 
     async onAssignmentClosed(assignmentId) {
+      // §15.1-5 names the lease. The sessions have to go with it, and M8's third
+      // criterion pins the case that makes it visible: a session halted on a
+      // budget whose assignment is then *closed* rather than raised "leaves it
+      // `interrupted` and releases the lease". A paused session under a closed
+      // assignment can never be resumed — admission re-checks the assignment
+      // (§6.2) — so leaving it `paused` would strand a Resume button that only
+      // ever fails, and would hold the lease for ever through §3.1's safety net.
+      for (const session of sessions.list({ assignmentId })) {
+        if (session.status === 'paused') {
+          endParked(
+            session.id,
+            'user_stopped',
+            'The assignment was closed while this session was paused, so it was discarded.',
+          );
+        } else if (session.status === 'queued') {
+          failQueuedAs(
+            session.id,
+            'interrupted',
+            'user_cancelled',
+            'The assignment was closed before this session started.',
+          );
+        }
+      }
       await leases.releaseAssignment(assignmentId);
     },
 
@@ -1708,6 +2143,48 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     stopAdmitting: () => {
       scheduler.stop();
     },
+    admitQueued: () => {
+      scheduler.evaluate();
+    },
+
+    async shutdown() {
+      // §9.1 step 1: "Stop admitting. Queued sessions stay `queued` — a queue
+      // entry is pure intent and loses nothing."
+      scheduler.stop();
+
+      const live = liveSessions.ids();
+      if (live.length === 0) return;
+      log('info', 'shutting down: winding every running session down', { sessions: live.length });
+
+      // Step 2, in parallel, because the whole sequence has to fit inside
+      // foundation's `service.shutdownGraceSeconds` and doing them one after
+      // another would need N × gracefulInterruptMs.
+      await Promise.all(
+        live.map(async (sessionId) => {
+          const handle = liveSessions.get(sessionId);
+          if (handle === undefined) return;
+          try {
+            await windDown(handle, {
+              intent: 'pause',
+              gracefulInterruptMs: config.gracefulInterruptMs,
+              exitReason: 'service_shutdown',
+              // Step 3: "Any session that does not wind down in time: abort its
+              // `AbortController`, set `interrupted` / `shutdown_forced`. Honest
+              // labelling — that one may have died mid-tool-call."
+              forced: { intent: 'stop', exitReason: 'shutdown_forced' },
+            });
+            await handle.settled;
+          } catch (error) {
+            log('error', 'a session could not be wound down during shutdown', {
+              sessionId,
+              error: describe(error),
+            });
+          }
+        }),
+      );
+
+      // Step 4: "Workspace leases are **kept**. The assignments are not over."
+    },
   };
 }
 
@@ -1715,4 +2192,18 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
 function describe(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/**
+ * Path comparison for roster §7.1's plugin assertion.
+ *
+ * Windows is the primary platform (architecture D1), so separators and case are
+ * both noise here: the question is "did the CLI load the directory we asked
+ * for", not "did it echo the string back byte for byte".
+ */
+function normalisePath(path: string): string {
+  return path
+    .replace(/[\\/]+/gu, '/')
+    .replace(/\/$/u, '')
+    .toLowerCase();
 }

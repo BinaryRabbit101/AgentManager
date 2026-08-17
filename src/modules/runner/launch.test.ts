@@ -124,12 +124,20 @@ describe('the launch chain runs a session end to end (§3.1)', () => {
       });
       await harness.service.awaitSettled(started.sessionId);
 
-      // The scheduler's `runner.queue.changed` and the meter's `session.usage`
-      // interleave with the lifecycle events (M4, M5); both are session-less or
-      // unpersisted, and the three lifecycle events keep their order.
+      // The scheduler's `runner.queue.changed` and the unpersisted per-message
+      // events of §10 (`session.usage`, `session.message`, `session.tool.*`)
+      // interleave with the lifecycle events; the three lifecycle events keep
+      // their order.
+      const unpersisted = new Set([
+        'session.usage',
+        'session.message',
+        'session.delta',
+        'session.tool.start',
+        'session.tool.end',
+      ]);
       const types = harness.events
         .map((event) => event.type)
-        .filter((type) => type.startsWith('session.') && type !== 'session.usage');
+        .filter((type) => type.startsWith('session.') && !unpersisted.has(type));
       expect(types).toEqual(['session.queued', 'session.started', 'session.ended']);
       for (const event of harness.events) {
         if (!event.type.startsWith('session.')) continue;
@@ -137,7 +145,7 @@ describe('the launch chain runs a session end to end (§3.1)', () => {
         expect(event.ids.assignmentId).toBe(seed.assignmentId);
         expect(event.ids.projectId).toBe(seed.projectId);
         expect(event.ids.agentId).toBe(seed.agentId);
-        expect(event.persist).toBe(event.type !== 'session.usage');
+        expect(event.persist).toBe(!unpersisted.has(event.type));
       }
     } finally {
       harness.close();
@@ -233,6 +241,11 @@ describe('options immutability (§3.3)', () => {
         'abortController',
         'canUseTool',
         'env.CLAUDE_CODE_OAUTH_TOKEN',
+        // M10: §10's `session.delta` is emitted "only when
+        // `includePartialMessages`", and D11 wants the deltas for the UI's live
+        // typing. It is one of §3.3's whitelisted keys precisely so runner may
+        // set it.
+        'includePartialMessages',
         'stderr',
       ]);
 

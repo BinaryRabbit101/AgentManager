@@ -228,6 +228,18 @@ export interface WindDownOptions {
   /** §12's `gracefulInterruptMs`, which §9.1 sizes to fit inside shutdown grace. */
   readonly gracefulInterruptMs: number;
   readonly exitReason: ExitReason;
+  /**
+   * What the session settles as when the graceful window expires and the abort
+   * had to be used instead (§9.1 step 3).
+   *
+   * Shutdown is the case this exists for: a session that winds down is `paused`
+   * / `service_shutdown` and can be resumed; one that ignored the interrupt is
+   * `interrupted` / `shutdown_forced`, "honest labelling — that one may have
+   * died mid-tool-call". Omitted, a forced wind-down keeps its original intent
+   * and reason, which is what a user-pressed Pause or Stop wants: the verb
+   * asked for a status and got it, slowly.
+   */
+  readonly forced?: { readonly intent: ControlIntent; readonly exitReason: ExitReason } | undefined;
 }
 
 export interface WindDownOutcome {
@@ -263,6 +275,10 @@ export async function windDown(
 
   if (!clean) {
     live.forced = true;
+    if (options.forced !== undefined) {
+      live.intent = options.forced.intent;
+      live.exitReason = options.forced.exitReason;
+    }
     live.abort.abort(
       new Error(
         `Session ${live.sessionId} did not wind down within ${String(options.gracefulInterruptMs)} ms; ` +

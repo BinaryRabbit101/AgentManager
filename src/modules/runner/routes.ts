@@ -1,19 +1,38 @@
 /**
- * Runner's HTTP surface as far as M2, M4, M5 and M6 take it (runner DESIGN
- * §11.1). The rest of §11.1's table — `/continue`, the event stream, the
- * listing — arrives with M9 and M10.
+ * Runner's HTTP surface — §11.1's table, complete but for `GET
+ * /api/runner/usage`, which needs M11's rolling `usage_events` windows.
  *
  * ```
- * GET  /api/sessions/:id             record + usage + queue position   (M4/M5)
+ * POST /api/sessions                 { assignmentId, agentId, projectId, … }  (M10)
+ * GET  /api/sessions                 ?status=&projectId=&…&limit=&before=     (M10)
+ * GET  /api/sessions/:id             record + usage + queue position + affordances
  * GET  /api/sessions/:id/transcript  ?from=&limit= | ?tail=            (M2)
+ * GET  /api/sessions/:id/stream      the live per-session event feed   (M10)
  * POST /api/sessions/:id/steer       { text, interrupt? }              (M6)
  * POST /api/sessions/:id/pause       { reason? }                       (M6)
  * POST /api/sessions/:id/resume                                        (M6)
+ * POST /api/sessions/:id/continue    { prompt? } → new session         (M9)
  * POST /api/sessions/:id/stop        { reason? }                       (M6)
  * POST /api/sessions/:id/pin         { pinned }                        (M6)
  * GET  /api/runner/queue             the queue panel's state and rows  (M5)
  * PUT  /api/runner/capacity          { maxConcurrent }, 1..8, settings (M5)
  * ```
+ *
+ * ## `GET /api/sessions/:id/stream` — one socket, one session
+ *
+ * §3.3 of the ui design allows two sockets: the always-open global feed, and
+ * this one "only while a session view is open", so "a phone watching one session
+ * does not receive token deltas for every other running session". It is
+ * therefore a *filter*, not a second event system: the same bus, the same frame
+ * shape `/api/events` sends, narrowed to §10's session types **and** to this
+ * session's id.
+ *
+ * There is deliberately **no `since=` replay here.** Every event that only this
+ * route carries is non-persisted by §10, so there is nothing to replay; §15.2's
+ * replay contract is "persisted events from `/api/events?since=` plus a
+ * byte-offset tail of the transcript", and duplicating half of it here would
+ * give a reconnecting client two sources for the same lifecycle event and no
+ * rule for which wins.
  *
  * ## The control verbs are idempotent, and that is a route-level promise
  *
@@ -48,15 +67,25 @@
 import type { Logger } from 'pino';
 
 import type { HttpResult, RequestContext, ResponseTools } from '../../http/types.js';
-import type { RouteDefinition } from '../types.js';
+import type { AppEvent, EventBus, RouteDefinition } from '../types.js';
+import type { SessionStatus } from '../../storage/index.js';
 
 import { InvalidRequestError, RunnerError, SessionNotFoundError } from './errors.js';
+import { SESSION_EVENT_TYPES } from './events.js';
 import type { RunnerService } from './service.js';
-import { isExitReason } from './status.js';
+import { isExitReason, SESSION_STATUSES } from './status.js';
 
 export interface RunnerRoutesDeps {
   readonly service: RunnerService;
   readonly logger: Logger;
+  /**
+   * Foundation's bus, for `GET /api/sessions/:id/stream`.
+   *
+   * Optional so the M2–M6 route tests, which never open a socket, keep building
+   * the table without one — the stream route then reports the capability as
+   * absent rather than throwing on a null subscribe.
+   */
+  readonly bus?: Pick<EventBus, 'subscribe'> | undefined;
 }
 
 /** A query parameter that must be a non-negative integer when present. */
@@ -75,8 +104,93 @@ function readBody(req: RequestContext): Record<string, unknown> {
   return typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
 }
 
+/** A body field that must be a non-empty string. */
+function readRequiredString(body: Record<string, unknown>, name: string): string {
+  const value = body[name];
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new InvalidRequestError(`"${name}" is required and must be a non-empty string.`, name);
+  }
+  return value;
+}
+
 export function createRunnerRoutes(deps: RunnerRoutesDeps): readonly RouteDefinition[] {
   const { service, logger } = deps;
+
+  const create = async (req: RequestContext, res: ResponseTools): Promise<HttpResult> => {
+    const body = readBody(req);
+    const priority: unknown = body['priority'];
+    if (priority !== undefined && priority !== 'interactive' && priority !== 'normal') {
+      throw new InvalidRequestError(
+        '"priority" must be "interactive" or "normal" — §6.2\'s two bands, and nothing richer.',
+        'priority',
+      );
+    }
+    const role: unknown = body['role'];
+    if (role !== undefined && typeof role !== 'string') {
+      throw new InvalidRequestError('"role" must be a string when present.', 'role');
+    }
+    const started = await service.startSession({
+      assignmentId: readRequiredString(body, 'assignmentId'),
+      agentId: readRequiredString(body, 'agentId'),
+      projectId: readRequiredString(body, 'projectId'),
+      prompt: readRequiredString(body, 'prompt'),
+      ...(role === undefined ? {} : { role }),
+      ...(priority === undefined ? {} : { priority }),
+      // §11.1: "`origin` is taken from foundation's request context"; runner
+      // records it and adds no remote-specific behaviour of its own (§15.3).
+      origin: req.origin === 'remote' ? 'remote' : 'local',
+    });
+    return res.json(started, { status: 201 });
+  };
+
+  const list = (req: RequestContext, res: ResponseTools): Promise<HttpResult> => {
+    const status = req.query.get('status');
+    if (status !== null && !(SESSION_STATUSES as readonly string[]).includes(status)) {
+      throw new InvalidRequestError(
+        `"status" must be one of ${SESSION_STATUSES.join(', ')} (§2.2's closed vocabulary).`,
+        'status',
+      );
+    }
+    const before = req.query.get('before');
+    const limit = readInteger(req, 'limit');
+    const sessions = service.listSessions({
+      ...(status === null ? {} : { status: status as SessionStatus }),
+      ...(req.query.get('projectId') === null
+        ? {}
+        : { projectId: req.query.get('projectId') as string }),
+      ...(req.query.get('assignmentId') === null
+        ? {}
+        : { assignmentId: req.query.get('assignmentId') as string }),
+      ...(req.query.get('agentId') === null ? {} : { agentId: req.query.get('agentId') as string }),
+      ...(limit === undefined ? {} : { limit }),
+      ...(before === null ? {} : { before }),
+    });
+    return Promise.resolve(
+      res.json({
+        sessions,
+        // The cursor for the next page, so a client never has to know that ids
+        // are ULIDs to page with them.
+        next: sessions.length === 0 ? null : (sessions[sessions.length - 1]?.id ?? null),
+      }),
+    );
+  };
+
+  const continueSession = async (req: RequestContext, res: ResponseTools): Promise<HttpResult> => {
+    const prompt: unknown = readBody(req)['prompt'];
+    if (prompt !== undefined && typeof prompt !== 'string') {
+      throw new InvalidRequestError(
+        '"prompt" must be a string when present. Omit it to continue with only the statement of ' +
+          'what happened to the previous session (§9.4).',
+        'prompt',
+      );
+    }
+    const started = await service.continueFrom(req.params['id'] ?? '', prompt ?? '', {
+      // §6.2: a human pressed Continue and is watching for the result.
+      priority: 'interactive',
+      origin: req.origin === 'remote' ? 'remote' : 'local',
+    });
+    return res.json(started, { status: 201 });
+  };
 
   const transcript = async (req: RequestContext, res: ResponseTools): Promise<HttpResult> => {
     const sessionId = req.params['id'] ?? '';
@@ -122,7 +236,59 @@ export function createRunnerRoutes(deps: RunnerRoutesDeps): readonly RouteDefini
       // print `usage.costUsd` as a total because there is no such field.
       usage: detail.usage,
       queuePosition: detail.queuePosition,
+      // §11.1's "resume affordances" — §9.3's honest answer, computed here so a
+      // client never has to guess whether Continue would actually continue.
+      affordances: detail.affordances,
     });
+  };
+
+  /**
+   * `GET /api/sessions/:id/stream` — §10's session events for one session.
+   *
+   * Handled the way foundation handles `/api/events`: `res.sse()` takes over the
+   * response, the handler returns nothing, and the subscription is torn down on
+   * close **and** on request abort. Filtering by `ids.sessionId` is what makes
+   * this route worth having over the global feed with a `types=` filter — a
+   * phone on a tailnet stops paying for every other running session's deltas.
+   */
+  const stream = async (req: RequestContext, res: ResponseTools): Promise<HttpResult | void> => {
+    const sessionId = req.params['id'] ?? '';
+    const bus = deps.bus;
+    if (bus === undefined) {
+      return res.error(
+        503,
+        'stream_unavailable',
+        'This runner was built without an event bus, so it cannot stream a session.',
+      );
+    }
+    // A 404 *before* the socket opens, rather than an SSE stream that will never
+    // carry a frame: a typo'd id must fail loudly rather than look idle for ever.
+    if ((await service.getSession(sessionId)) === undefined) {
+      throw new SessionNotFoundError(sessionId);
+    }
+
+    const sse = res.sse();
+    const unsubscribe = bus.subscribe([...SESSION_EVENT_TYPES], (event: AppEvent) => {
+      if (event.ids.sessionId !== sessionId) return;
+      sse.send({
+        event: 'event',
+        ...(event.id === undefined ? {} : { id: event.id }),
+        data: {
+          id: event.id,
+          ts: event.ts,
+          type: event.type,
+          ids: event.ids,
+          payload: event.payload,
+          persist: event.persist,
+        },
+      });
+    });
+    sse.onClose(unsubscribe);
+    req.signal.addEventListener('abort', () => sse.close(), { once: true });
+    // The client's cue that it is attached and may now tail the transcript from
+    // its byte offset without racing the live feed (§15.2's replay contract).
+    sse.send({ event: 'attached', data: { sessionId, types: SESSION_EVENT_TYPES } });
+    return undefined;
   };
 
   const steer = async (req: RequestContext, res: ResponseTools): Promise<HttpResult> => {
@@ -201,10 +367,35 @@ export function createRunnerRoutes(deps: RunnerRoutesDeps): readonly RouteDefini
 
   return [
     {
+      method: 'POST',
+      path: '/api/sessions',
+      description: 'Start a session against an existing, open assignment (§3.1, §11.1).',
+      handler: (req, res) => guard(() => create(req, res), res, logger),
+    },
+    {
+      method: 'GET',
+      path: '/api/sessions',
+      description: 'List sessions, newest first, filtered and paged by id cursor (§11.1).',
+      handler: (req, res) => guard(() => list(req, res), res, logger),
+    },
+    {
       method: 'GET',
       path: '/api/sessions/:id',
-      description: 'One session: the record, its usage rollup and its queue position (§11.1).',
+      description:
+        'One session: the record, its usage, its queue position and its controls (§11.1).',
       handler: (req, res) => guard(() => session(req, res), res, logger),
+    },
+    {
+      method: 'GET',
+      path: '/api/sessions/:id/stream',
+      description: 'The live event feed for one session, filtered to its id (§10, §11.1).',
+      handler: (req, res) => guard(() => stream(req, res), res, logger),
+    },
+    {
+      method: 'POST',
+      path: '/api/sessions/:id/continue',
+      description: 'Continue a finished session as a new one with resumed_from (§9.4).',
+      handler: (req, res) => guard(() => continueSession(req, res), res, logger),
     },
     {
       method: 'GET',
@@ -266,10 +457,10 @@ export function createRunnerRoutes(deps: RunnerRoutesDeps): readonly RouteDefini
  * trace to the UI".
  */
 async function guard(
-  run: () => Promise<HttpResult>,
+  run: () => Promise<HttpResult | void>,
   res: ResponseTools,
   logger: Logger,
-): Promise<HttpResult> {
+): Promise<HttpResult | void> {
   try {
     return await run();
   } catch (error) {

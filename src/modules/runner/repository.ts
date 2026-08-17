@@ -114,6 +114,16 @@ export interface ListSessionsQuery {
   readonly assignmentId?: string;
   readonly agentId?: string;
   readonly limit?: number;
+  /**
+   * §11.1's paging cursor: only sessions older than this id.
+   *
+   * Session ids are ULIDs and foundation's listing is `ORDER BY id DESC`
+   * ("ULID ids sort by creation, so this needs no extra column"), so "older
+   * than" is a lexicographic comparison on the id the client already has. No
+   * timestamp column is involved, and therefore no two rows in one millisecond
+   * can make a page repeat or skip.
+   */
+  readonly before?: string;
 }
 
 export interface SessionRepository {
@@ -308,16 +318,23 @@ export function createSessionRepository(options: SessionRepositoryOptions): Sess
     enqueue: (input) => enqueue(input),
     get,
     require,
-    list: (query = {}) =>
-      store.sessions
-        .list({
-          ...(query.status === undefined ? {} : { status: query.status }),
-          ...(query.projectId === undefined ? {} : { projectId: query.projectId }),
-          ...(query.assignmentId === undefined ? {} : { assignmentId: query.assignmentId }),
-          ...(query.agentId === undefined ? {} : { agentId: query.agentId }),
-          ...(query.limit === undefined ? {} : { limit: query.limit }),
-        })
-        .map(decorate),
+    list(query = {}) {
+      const rows = store.sessions.list({
+        ...(query.status === undefined ? {} : { status: query.status }),
+        ...(query.projectId === undefined ? {} : { projectId: query.projectId }),
+        ...(query.assignmentId === undefined ? {} : { assignmentId: query.assignmentId }),
+        ...(query.agentId === undefined ? {} : { agentId: query.agentId }),
+        // The cursor is applied here rather than pushed into foundation's
+        // filter, so `limit` has to be applied here too — a limit applied first
+        // would return a page of rows the cursor then emptied.
+        ...(query.limit === undefined || query.before !== undefined ? {} : { limit: query.limit }),
+      });
+      const paged =
+        query.before === undefined
+          ? rows
+          : rows.filter((row) => row.id < (query.before as string)).slice(0, query.limit);
+      return paged.map(decorate);
+    },
     input(sessionId) {
       const row = readInput.get(sessionId);
       if (row === undefined) return undefined;

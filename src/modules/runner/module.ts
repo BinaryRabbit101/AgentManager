@@ -53,6 +53,7 @@ import {
   type QuestionBridgeClient,
   type QuestionSessions,
 } from './questionBridge.js';
+import { createRecovery, type Recovery } from './recovery.js';
 import { createSessionRepository, type SessionRepository } from './repository.js';
 import { createRunnerRoutes } from './routes.js';
 import { realQuery, type QueryFn } from './sdk.js';
@@ -78,6 +79,8 @@ export interface RunnerInternals {
   /** M7's bridge client and the parked-session machinery. */
   readonly questionBridge: QuestionBridgeClient;
   readonly questionSessions: QuestionSessions;
+  /** M9's §9.2 boot reconciliation and §9.3 resumability reader. */
+  readonly recovery: Recovery;
 }
 
 export interface RunnerModuleOptions {
@@ -167,10 +170,39 @@ export function createRunnerModule(
         },
       });
 
+      // M9's §9.2 / §9.3. Built before the launch chain because the chain's
+      // Continue path reads §9.3's answer, and after the reader because that is
+      // where the transcript header — and therefore the workspace path a resume
+      // needs to exist — comes from.
+      const recovery = createRecovery({
+        sessions,
+        transcripts,
+        reader,
+        assignments: ctx.store.assignments,
+        // Foundation §2.3 pins `CLAUDE_CONFIG_DIR` inside our own data root,
+        // which is what makes an SDK session survive our restart at all (§9.3).
+        claudeConfigDir: `${open.paths.state}\\claude-config`,
+        config: runner,
+        releaseLease: async (leaseId) => {
+          const projects = ctx.require<ProjectsProvider>('projects');
+          if (projects === undefined) return;
+          await projects.releaseWorkspace(leaseId);
+        },
+        admitQueued: () => {
+          launch.admitQueued();
+        },
+        bus: ctx.bus,
+        clock: ctx.clock,
+        log: (level, message, detail) => {
+          ctx.logger[level](detail ?? {}, message);
+        },
+      });
+
       const launch = createLaunchChain({
         sessions,
         usage,
         transcripts,
+        recovery,
         store: {
           assignments: ctx.store.assignments,
           agents: ctx.store.agents,
@@ -202,7 +234,13 @@ export function createRunnerModule(
         },
       });
 
-      const service = createRunnerService({ sessions, usage, transcripts: reader, launch });
+      const service = createRunnerService({
+        sessions,
+        usage,
+        transcripts: reader,
+        launch,
+        recovery,
+      });
 
       // §5.4 stages 2 and 3 seen from outside the callback, plus §9.2's question
       // half. Runner **never** resumes a session it did not park itself
@@ -211,6 +249,8 @@ export function createRunnerModule(
         sessions,
         questions: ctx.store.questions,
         control: launch,
+        // M8: a `budget_halt` answer only resumes if the row now has the tokens.
+        assignments: ctx.store.assignments,
         bus: ctx.bus,
         clock: ctx.clock,
         log: (level, message, detail) => {
@@ -257,8 +297,22 @@ export function createRunnerModule(
         }
       }, 'runner:reconcile-questions');
 
+      // §9.2 items 1, 2 and 4, registered **after** the question sweep and
+      // therefore run after it: a session that was mid-question when the core
+      // died is one waiting for a human, not a dead one, and parking it first is
+      // what keeps the `running → orphaned` sweep from stranding its card (§5.4).
+      ctx.registerBootTask(async () => {
+        const reconciled = await recovery.reconcileOnBoot();
+        if (reconciled.orphaned.length > 0) {
+          ctx.logger.warn(
+            { sessions: reconciled.orphaned },
+            'sessions were left running by a previous process and have been marked orphaned',
+          );
+        }
+      }, 'runner:reconcile-sessions');
+
       ctx.provide(RUNNER_SERVICE, service);
-      ctx.registerRoutes(createRunnerRoutes({ service, logger: ctx.logger }));
+      ctx.registerRoutes(createRunnerRoutes({ service, logger: ctx.logger, bus: ctx.bus }));
       options.onReady?.({
         sessions,
         usage,
@@ -268,6 +322,7 @@ export function createRunnerModule(
         launch,
         questionBridge,
         questionSessions,
+        recovery,
       });
 
       ctx.logger.info(
@@ -280,9 +335,17 @@ export function createRunnerModule(
       );
 
       return {
-        stop() {
-          launch.stopAdmitting();
+        /**
+         * §9.1, in foundation's `shutdownGraceSeconds` budget.
+         *
+         * The subscriptions go **first** so nothing new is started or resumed
+         * while the wind-down runs, then every running session is interrupted,
+         * closed and settled. Awaited, because "leaves no orphaned subprocess"
+         * is only true if the process waits for the answer.
+         */
+        async stop() {
           for (const unsubscribe of subscriptions) unsubscribe();
+          await launch.shutdown();
         },
 
         health: () => {

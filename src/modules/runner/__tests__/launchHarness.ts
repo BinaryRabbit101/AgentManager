@@ -17,7 +17,13 @@ import { resolve } from 'node:path';
 import type { Logger } from 'pino';
 
 import { bytes, empty, error, json, text } from '../../../http/response.js';
-import type { HttpResult, RequestContext, ResponseTools } from '../../../http/types.js';
+import type {
+  HttpResult,
+  RequestContext,
+  ResponseTools,
+  SseMessage,
+  SseStream,
+} from '../../../http/types.js';
 import { Secret, type SecretResolver } from '../../../secrets/index.js';
 import { createEventBus } from '../../bus.js';
 import type { AppEvent, EventBus } from '../../types.js';
@@ -44,12 +50,13 @@ import {
 } from '../questionBridge.js';
 import { createLaunchChain, type LaunchChain, type LaunchChainDeps } from '../launch.js';
 import { createLeaseBook } from '../leases.js';
+import { createRecovery, type Recovery, type RecoveryFs } from '../recovery.js';
 import { createSessionRepository, type SessionRepository } from '../repository.js';
 import type { QueryFn } from '../sdk.js';
 import { createRunnerRoutes } from '../routes.js';
 import { createRunnerService, type RunnerService } from '../service.js';
 import { createTranscriptFactory, type TranscriptFactory } from '../transcript.js';
-import { createTranscriptReader } from '../transcriptReader.js';
+import { createTranscriptReader, type TranscriptReader } from '../transcriptReader.js';
 import { createUsageRepository, type UsageRepository } from '../usage.js';
 import { openTestStorage } from './helpers.js';
 import { successScript, scriptedQuery } from './fakeQuery.js';
@@ -57,17 +64,54 @@ import type { Storage } from '../../../storage/index.js';
 
 export const FIXED_NOW = new Date('2026-08-16T10:00:00.000Z');
 
-/** The helpers the real server hands a handler, minus the `sse` no route opens. */
-const responseTools: ResponseTools = {
-  json,
-  text,
-  bytes,
-  empty,
-  error,
-  sse: () => {
-    throw new Error('no runner route opens an SSE stream before M10');
-  },
-};
+/**
+ * A recording SSE stream, so `GET /api/sessions/:id/stream` is testable without
+ * a socket — the same reason `RouteHandler` was defined to work without one
+ * (foundation §6.4).
+ */
+export interface FakeSse extends SseStream {
+  readonly sent: SseMessage[];
+  readonly closeListeners: (() => void)[];
+}
+
+export function fakeSse(): FakeSse {
+  const sent: SseMessage[] = [];
+  const closeListeners: (() => void)[] = [];
+  let closed = false;
+  return {
+    sent,
+    closeListeners,
+    send: (message) => void sent.push(message),
+    comment: () => undefined,
+    onClose(listener) {
+      if (closed) listener();
+      else closeListeners.push(listener);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      for (const listener of closeListeners.splice(0)) listener();
+    },
+    get closed(): boolean {
+      return closed;
+    },
+  };
+}
+
+/** The helpers the real server hands a handler. */
+function responseTools(sse: SseStream | undefined): ResponseTools {
+  return {
+    json,
+    text,
+    bytes,
+    empty,
+    error,
+    sse: () => {
+      if (sse === undefined) throw new Error('this call did not expect an SSE stream');
+      return sse;
+    },
+  };
+}
 
 /** What the fake roster's `compileSession` returns, before per-test overrides. */
 export function fakeCompiledOptions(cwd: string): SdkOptions {
@@ -282,6 +326,12 @@ export interface LaunchHarness {
   readonly questionBridge: QuestionBridgeClient;
   /** M7's parked-session machinery (§5.4 stage 3, §9.2). Not subscribed by default. */
   readonly questionSessions: QuestionSessions;
+  /** M9's §9.2 boot task and §9.3 resumability reader. */
+  readonly recovery: Recovery;
+  /** The reader both transcript faces share. */
+  readonly reader: TranscriptReader;
+  /** Opens `GET /api/sessions/:id/stream` and returns the recording stream. */
+  streamSession(sessionId: string): Promise<FakeSse>;
   /** Publishes the events the module wires; returns the unsubscribe. */
   subscribeQuestions(): () => void;
   /** Creates a project, an agent index row and an open assignment. */
@@ -330,6 +380,8 @@ export interface LaunchHarnessOptions {
   readonly agentEnv?: Record<string, string | null>;
   /** An advanceable clock, for the deadlines M5 measures in minutes. */
   readonly clock?: () => Date;
+  /** §9.3's filesystem questions, answered by the test rather than by the disk. */
+  readonly recoveryFs?: RecoveryFs;
 }
 
 export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness {
@@ -396,10 +448,31 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
     log: (level, message, detail) => logs.push({ level, message, detail }),
   });
 
+  // M9. Built ahead of the chain because the chain's Continue path reads §9.3's
+  // answer; `admitQueued` closes back over the chain, which the boot task calls
+  // long after both exist.
+  const recovery = createRecovery({
+    sessions,
+    transcripts,
+    reader,
+    assignments: storage.store.assignments,
+    claudeConfigDir: `${storage.paths.state}\\claude-config`,
+    config,
+    releaseLease: (leaseId) => projects.releaseWorkspace(leaseId),
+    admitQueued: () => {
+      launch.admitQueued();
+    },
+    bus,
+    clock,
+    ...(options.recoveryFs === undefined ? {} : { fs: options.recoveryFs }),
+    log: (level, message, detail) => logs.push({ level, message, detail: detail ?? {} }),
+  });
+
   const launch = createLaunchChain({
     sessions,
     usage,
     transcripts,
+    recovery,
     store: {
       assignments: storage.store.assignments,
       agents: storage.store.agents,
@@ -430,16 +503,53 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
     sessions,
     questions: storage.store.questions,
     control: launch,
+    assignments: storage.store.assignments,
     bus,
     clock,
     log: (level, message, detail) => logs.push({ level, message, detail: detail ?? {} }),
   });
 
-  const service = createRunnerService({ sessions, usage, transcripts: reader, launch });
+  const service = createRunnerService({
+    sessions,
+    usage,
+    transcripts: reader,
+    launch,
+    recovery,
+  });
   const routes = createRunnerRoutes({
     service,
-    logger: { error: () => undefined, debug: () => undefined } as unknown as Logger,
+    bus,
+    logger: {
+      error: () => undefined,
+      debug: () => undefined,
+      warn: () => undefined,
+    } as unknown as Logger,
   });
+
+  /** One route call, against the handler contract rather than a socket. */
+  async function invoke(
+    method: string,
+    path: string,
+    callOptions: { body?: unknown; params?: Record<string, string>; query?: string },
+    sse: SseStream | undefined,
+  ): Promise<HttpResult | void> {
+    const route = routes.find((entry) => entry.method === method && entry.path === path);
+    if (route === undefined) throw new Error(`no route ${method} ${path}`);
+    const req = {
+      method,
+      path,
+      params: callOptions.params ?? {},
+      query: new URLSearchParams(callOptions.query ?? ''),
+      body: callOptions.body,
+      origin: 'local',
+      requestId: 'req-1',
+      // The stream route listens for the client hanging up; a test that never
+      // aborts still has to hand it something with `addEventListener`.
+      signal: new AbortController().signal,
+      logger: { debug: () => undefined },
+    } as unknown as RequestContext;
+    return route.handler(req, responseTools(sse));
+  }
 
   let seeded = 0;
   return {
@@ -447,6 +557,8 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
     sessions,
     usage,
     transcripts,
+    reader,
+    recovery,
     service,
     launch,
     roster,
@@ -479,23 +591,17 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
     },
 
     async call(method, path, callOptions = {}) {
-      const route = routes.find((entry) => entry.method === method && entry.path === path);
-      if (route === undefined) throw new Error(`no route ${method} ${path}`);
-      const req = {
-        method,
-        path,
-        params: callOptions.params ?? {},
-        query: new URLSearchParams(callOptions.query ?? ''),
-        body: callOptions.body,
-        origin: 'local',
-        requestId: 'req-1',
-        logger: { debug: () => undefined },
-      } as unknown as RequestContext;
-      const result = (await route.handler(req, responseTools)) as HttpResult;
+      const result = (await invoke(method, path, callOptions, undefined)) as HttpResult;
       return {
         status: result.status,
         body: JSON.parse(result.body?.toString('utf8') ?? '{}') as Record<string, unknown>,
       };
+    },
+
+    async streamSession(sessionId) {
+      const sse = fakeSse();
+      await invoke('GET', '/api/sessions/:id/stream', { params: { id: sessionId } }, sse);
+      return sse;
     },
 
     transcriptLines(sessionId) {

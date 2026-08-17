@@ -309,6 +309,22 @@ export function fakeRateLimitEvent(
   } as unknown as SDKMessage;
 }
 
+/**
+ * A partial-text `stream_event` (SDK-NOTES §3.1).
+ *
+ * Never written to the transcript (D11) — it exists for §10's `session.delta`
+ * and the UI's live typing, which is exactly what the M10 assertion checks.
+ */
+export function fakeStreamEvent(text: string): SDKMessage {
+  return {
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+    parent_tool_use_id: null,
+    uuid: uuid(),
+    session_id: SESSION_ID,
+  } as unknown as SDKMessage;
+}
+
 /** A message type this build has never heard of (§7.4's tolerance requirement). */
 export function fakeUnknownMessage(): SDKMessage {
   return {
