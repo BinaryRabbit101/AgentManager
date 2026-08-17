@@ -1,0 +1,611 @@
+/*
+ * The core loop's own styles: drag (§5.3), the launch flow (§6), the session
+ * view (§9) and the question inbox (§11).
+ *
+ * Same rules as `styles.css`: semantic tokens only, never a raw colour (§14.2);
+ * ≥44px targets on anything a thumb has to hit (§15); the animation budget is
+ * the card lift and the streaming caret and nothing else (§14.1).
+ */
+
+/* --- drag and drop (§5.3) ----------------------------------------------- */
+
+.agent-card__grip {
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  cursor: grab;
+  color: var(--text-muted);
+  flex: none;
+}
+
+.agent-card[data-dragging='true'] {
+  opacity: 0.4;
+}
+
+/* §5.3's lift: a shadow and 2°, inside §14.1's ≤150ms ceiling. */
+.drag-preview {
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transform: rotate(2deg);
+}
+
+.drag-preview[data-refused='true'] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* §5.3: "valid targets outline in the accent colour, invalid ones dim". */
+.board-dnd[data-dragging='true'] .project-card[data-drop-refused='true'] {
+  opacity: 0.45;
+}
+
+.board-dnd[data-dragging='true'] .project-card[data-over='true'][data-drop-refused='false'] {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.project-card__launch {
+  margin-top: 0.4rem;
+  width: 100%;
+  font-size: 0.8rem;
+}
+
+.project-card__refusal {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.agent-card__reorder {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.agent-card__reorder button {
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+/* --- the card menu (§5.2) ------------------------------------------------ */
+
+.card-menu {
+  position: relative;
+  margin-left: auto;
+}
+
+.card-menu__trigger {
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.card-menu__list {
+  position: absolute;
+  right: 0;
+  z-index: 5;
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem;
+  min-width: 12rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+}
+
+.card-menu__list button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  min-height: 44px;
+  padding: 0 0.6rem;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.card-menu__list button:hover:not(:disabled) {
+  background: var(--surface-sunken);
+}
+
+/* --- toasts (§5.3's rollback, and nothing else) -------------------------- */
+
+.toasts {
+  position: fixed;
+  inset-inline-end: 1rem;
+  inset-block-end: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  z-index: 20;
+  max-width: min(28rem, 90vw);
+}
+
+.toast {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  border: 1px solid var(--border-strong);
+  border-inline-start: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+  padding: 0.6rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.toast[data-tone='danger'] {
+  border-inline-start-color: var(--danger);
+}
+
+.toast button {
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  margin-inline-start: auto;
+}
+
+/* --- launch flow (§6) ---------------------------------------------------- */
+
+.dialog-scrim {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 45%);
+  z-index: 30;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.launch__pickers {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.launch__pickers .field {
+  flex: 1 1 12rem;
+}
+
+.launch select,
+.launch textarea {
+  min-height: 44px;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  width: 100%;
+}
+
+.launch__section {
+  border-top: 1px solid var(--border);
+  padding: 0.5rem 0;
+}
+
+.launch__section summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.launch__summary-line {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.launch__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  font-size: 0.85rem;
+}
+
+.launch__permissions {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.2rem 1rem;
+  font-size: 0.85rem;
+}
+
+.launch__permissions dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* §6: never collapsed — invisible escalation is the failure mode it prevents. */
+.launch__elevation {
+  border: 2px solid var(--warn);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+}
+
+.launch__elevation[data-permitted='false'] {
+  border-color: var(--border-strong);
+  color: var(--text-muted);
+}
+
+.launch__elevation p {
+  margin: 0.25rem 0 0;
+}
+
+.launch__reason {
+  color: var(--text-muted);
+}
+
+.launch__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+/* --- session view (§9) --------------------------------------------------- */
+
+.session {
+  display: grid;
+  grid-template-columns: 1fr 15rem;
+  gap: 1rem;
+  align-items: start;
+}
+
+/* §2.3: on a phone "the right-hand usage rail collapses under the header". */
+@media (width <= 900px) {
+  .session {
+    grid-template-columns: 1fr;
+  }
+}
+
+.session__header {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  padding-bottom: 0.5rem;
+  z-index: 2;
+}
+
+.session__header h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.35rem;
+}
+
+.session__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+}
+
+.session__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.session__steer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.session__steer input:not([type='checkbox']) {
+  flex: 1 1 16rem;
+  min-height: 44px;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.session__blocks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.session-block {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  padding: 0.5rem 0.7rem;
+}
+
+.session-block[data-kind='prompt'] {
+  background: var(--accent-soft);
+}
+
+.session-block[data-kind='diagnostic'] {
+  border-color: var(--danger);
+}
+
+.session-block__meta {
+  margin: 0 0 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.session-block__text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* §14.1's second and last looping indicator. */
+.session-block__caret {
+  display: inline-block;
+  width: 0.5rem;
+  height: 1em;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: caret 1s steps(2) infinite;
+}
+
+@keyframes caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0;
+  }
+}
+
+.session-block__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.session-block__tool-name {
+  font-weight: 600;
+}
+
+.session-block__preview {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* §15: code blocks scroll inside their own container, never the page. */
+.session-block__pre {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem;
+  margin: 0.25rem 0;
+  overflow-x: auto;
+  max-height: 24rem;
+  overflow-y: auto;
+}
+
+.usage-rail {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  padding: 0.75rem;
+}
+
+.usage-rail h3 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin: 0 0 0.5rem;
+}
+
+.usage-rail__figures {
+  display: grid;
+  grid-template-columns: 1fr max-content;
+  gap: 0.2rem 0.75rem;
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.usage-rail__figures dt {
+  color: var(--text-muted);
+}
+
+.usage-rail__figures dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  text-align: right;
+}
+
+/* Tokens are the unit, so they are the biggest thing in the rail (§16.8). */
+.usage-rail__figures dd[data-primary='true'] {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.usage-rail__bar {
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+
+.usage-rail__bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+/* --- question inbox (§11) ------------------------------------------------ */
+
+.rail-badge {
+  min-width: 1.4rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.question-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.question-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-card);
+  padding: 0.75rem;
+}
+
+.question-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.8rem;
+}
+
+.question-card__prompt {
+  margin: 0.4rem 0 0.2rem;
+  font-size: 1rem;
+}
+
+.question-card__prompt a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.question-card__asked {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.question-card__divider {
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+  margin: 0.5rem 0;
+  font-weight: 600;
+}
+
+.question-card__stances {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.question-card__stance {
+  display: grid;
+  grid-template-columns: max-content max-content 1fr;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+
+.question-card__rationale {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-muted);
+}
+
+/* §11.2: colour is always secondary to the word. */
+.question-card__stance[data-emphasis='shout'] .question-card__strength {
+  color: var(--danger);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.question-card__stance[data-emphasis='bold'] .question-card__strength {
+  font-weight: 700;
+}
+
+.question-card__stance[data-emphasis='muted'] .question-card__strength {
+  color: var(--text-muted);
+}
+
+.question-card__answer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.question-card__option {
+  flex: 1 1 12rem;
+}
+
+.question-card__option-detail {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.question-card__expiry {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* §2.3: the inbox is the phone's primary surface. Option buttons go full width. */
+@media (width <= 640px) {
+  .question-card__option {
+    flex: 1 1 100%;
+  }
+}

@@ -5,6 +5,7 @@
  */
 
 @import './theme/tokens.css';
+@import './core-loop.css';
 
 *,
 *::before,

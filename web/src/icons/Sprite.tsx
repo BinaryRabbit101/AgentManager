@@ -23,7 +23,10 @@ export type IconName =
   | 'pin'
   | 'chevron'
   | 'folder'
-  | 'plus';
+  | 'plus'
+  | 'grip'
+  | 'tool'
+  | 'clock';
 
 export function Sprite(): ReactElement {
   return (
@@ -122,6 +125,36 @@ export function Sprite(): ReactElement {
         strokeWidth="1.5"
       >
         <path d="M8 3v10M3 8h10" strokeLinecap="round" />
+      </symbol>
+      <symbol id="icon-grip" viewBox="0 0 16 16" fill="currentColor">
+        <circle cx="6" cy="3.5" r="1.2" />
+        <circle cx="10" cy="3.5" r="1.2" />
+        <circle cx="6" cy="8" r="1.2" />
+        <circle cx="10" cy="8" r="1.2" />
+        <circle cx="6" cy="12.5" r="1.2" />
+        <circle cx="10" cy="12.5" r="1.2" />
+      </symbol>
+      <symbol
+        id="icon-tool"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <path
+          d="M10.5 2.2a3.5 3.5 0 0 0-4.3 4.5L2 11l3 3 4.3-4.2a3.5 3.5 0 0 0 4.5-4.3l-2.2 2.2-2-2z"
+          strokeLinejoin="round"
+        />
+      </symbol>
+      <symbol
+        id="icon-clock"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <circle cx="8" cy="8" r="6" />
+        <path d="M8 4.5V8l2.5 1.5" strokeLinecap="round" />
       </symbol>
     </svg>
   );

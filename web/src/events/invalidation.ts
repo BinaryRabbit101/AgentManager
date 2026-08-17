@@ -24,6 +24,17 @@ export interface InvalidationPlan {
   readonly sessionLifecycle: boolean;
   /** True when the frame is per-session detail the global feed must never see. */
   readonly perSessionDetail: boolean;
+  /**
+   * `+1` when a question was raised, `-1` when one was answered, `0` otherwise.
+   *
+   * §2.2's badge count is `GET /api/orchestrator/status`'s `questions.open`,
+   * which is **orchestrator M9** and lands after ui M5 — so until it does the
+   * count is the inbox's own length, kept live by `assignment.question.raised` /
+   * `.answered` exactly as §11.1 describes. The same deliberate degrade the board
+   * made for the status pill (M2): the rendering and the words do not change,
+   * only where the number is read.
+   */
+  readonly questionDelta: -1 | 0 | 1;
 }
 
 const EMPTY: InvalidationPlan = {
@@ -31,6 +42,7 @@ const EMPTY: InvalidationPlan = {
   avatars: [],
   sessionLifecycle: false,
   perSessionDetail: false,
+  questionDelta: 0,
 };
 
 /**
@@ -90,7 +102,16 @@ export function plan(frame: EventFrame): InvalidationPlan {
   }
 
   if (type.startsWith('assignment.') || type.startsWith('question.')) {
-    return { ...EMPTY, invalidate: [['questions'], ['assignments']] };
+    return {
+      ...EMPTY,
+      invalidate: [['questions'], ['assignments']],
+      questionDelta:
+        type === 'assignment.question.raised'
+          ? 1
+          : type === 'assignment.question.answered'
+            ? -1
+            : 0,
+    };
   }
 
   if (type.startsWith('runner.')) {

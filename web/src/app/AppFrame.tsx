@@ -16,6 +16,7 @@ import type { ReactElement, ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 
 import { Icon, type IconName } from '../icons/Sprite';
+import { useAppStore } from '../state/store';
 
 import { ConnectionIndicator, OfflineBanner } from './ConnectionIndicator';
 import { ThemeToggle } from './ThemeToggle';
@@ -38,6 +39,9 @@ export interface AppFrameProps {
 }
 
 export function AppFrame({ children }: AppFrameProps): ReactElement {
+  // §2.2's badge. `null` until something has said — see the store's note.
+  const openQuestions = useAppStore((store) => store.openQuestions);
+
   return (
     <div className="frame">
       <header className="frame__topbar">
@@ -53,6 +57,12 @@ export function AppFrame({ children }: AppFrameProps): ReactElement {
               <NavLink to={destination.to} end={destination.to === '/'}>
                 <Icon name={destination.icon} />
                 <span>{destination.label}</span>
+                {destination.to === '/questions' && openQuestions !== null && openQuestions > 0 ? (
+                  <span className="rail-badge" data-badge="questions">
+                    {openQuestions}
+                    <span className="visually-hidden"> questions waiting</span>
+                  </span>
+                ) : null}
               </NavLink>
             </li>
           ))}

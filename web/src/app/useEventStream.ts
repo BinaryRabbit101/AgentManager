@@ -28,6 +28,13 @@ export function useEventStream(events: EventStream, avatars: AvatarCache): void 
     const offEvent = events.on((frame) => {
       const outcome = plan(frame);
       if (outcome.sessionLifecycle) ingest(frame);
+      if (outcome.questionDelta !== 0) {
+        // §11.1: "bump/clear the badge". The count lives in the store rather than
+        // in a query, because a raised question must show within a second and a
+        // refetch round-trip is not that (IMPLEMENTATION §5).
+        const store = useAppStore.getState();
+        store.setOpenQuestions(Math.max(0, (store.openQuestions ?? 0) + outcome.questionDelta));
+      }
       for (const agentId of outcome.avatars) avatars.invalidate(agentId);
       for (const key of outcome.invalidate) {
         void queryClient.invalidateQueries({ queryKey: key });

@@ -14,6 +14,7 @@ import type { AvatarCache } from '../api/avatars';
 import type { ApiClient } from '../api/client';
 import type { EffectiveConfig, Health } from '../api/types';
 import type { EventStream } from '../events/EventStream';
+import type { SseTransport } from '../events/sse';
 
 export interface BootFacts {
   readonly config: EffectiveConfig;
@@ -25,6 +26,16 @@ export interface AppServices {
   readonly avatars: AvatarCache;
   readonly events: EventStream;
   readonly boot: BootFacts;
+  /**
+   * How the **per-session** feed of §3.3 is opened.
+   *
+   * The global feed's transport is already a seam inside `EventStream` (remote
+   * §3.4 substitutes the ticket flavour there). The session view opens its own
+   * socket while it is mounted, so the same seam has to reach it — and it reaches
+   * it here rather than through a module-level default, for exactly the reason
+   * this file exists: a screen must be mountable without a network.
+   */
+  readonly sessionTransport?: SseTransport | undefined;
 }
 
 const AppServicesContext = createContext<AppServices | undefined>(undefined);
@@ -61,4 +72,34 @@ export function useModules(): readonly string[] {
  */
 export function useHasOrchestrator(): boolean {
   return useModules().includes('orchestrator');
+}
+
+/**
+ * §3.5: what exists is learned from the module list, "never by probing for a
+ * 404". The remote module is absent in the work edition by construction (§13.5)
+ * and absent everywhere until the remote element ships, and both cases read the
+ * same here — which is the point of feature detection over an edition branch.
+ */
+export function useHasModule(name: string): boolean {
+  return useModules().includes(name);
+}
+
+/**
+ * `policy.allowPermissionElevation` and the layer that won it (§3.5, §13.5).
+ *
+ * Read from `/api/config/effective` at boot rather than assumed: config is
+ * immutable per process (foundation §2.4), so one read is the whole story, and
+ * the layer is what turns a disabled control into an explained one.
+ */
+export function usePermissionElevationPolicy(): {
+  readonly allowed: boolean;
+  readonly layer: string | undefined;
+} {
+  const { config } = useServices().boot;
+  const policy = config.config['policy'];
+  const allowed =
+    typeof policy === 'object' && policy !== null
+      ? (policy as Record<string, unknown>)['allowPermissionElevation'] !== false
+      : true;
+  return { allowed, layer: config.sources['policy.allowPermissionElevation']?.layer };
 }

@@ -14,9 +14,13 @@ import { Board } from './board/Board';
 import { AppFrame } from './app/AppFrame';
 import { DebugPanel } from './app/DebugPanel';
 import { Placeholder } from './app/Placeholder';
+import { Toasts } from './app/Toasts';
 import { useServices } from './app/AppContext';
 import { useEventStream } from './app/useEventStream';
 import { Sprite } from './icons/Sprite';
+import { LaunchFlowHost } from './launch/LaunchFlow';
+import { QuestionInbox } from './questions/QuestionInbox';
+import { SessionView } from './session/SessionView';
 
 export function App(): ReactElement {
   const { events, avatars } = useServices();
@@ -40,24 +44,16 @@ export function App(): ReactElement {
             path="/projects/:id"
             element={<Placeholder title="Project" milestone="M7" what="The project page" />}
           />
-          <Route
-            path="/sessions/:id"
-            element={<Placeholder title="Session" milestone="M4" what="The session view" />}
-          />
+          <Route path="/sessions/:id" element={<SessionView />} />
           <Route
             path="/assignments/:id"
             element={
               <Placeholder title="Assignment" milestone="M9" what="The collaboration view" />
             }
           />
-          <Route
-            path="/questions"
-            element={<Placeholder title="Questions" milestone="M5" what="The question inbox" />}
-          />
-          <Route
-            path="/questions/:id"
-            element={<Placeholder title="Question" milestone="M5" what="One question card" />}
-          />
+          <Route path="/questions" element={<QuestionInbox />} />
+          {/* The ntfy deep-link target (§2.1, orchestrator §10). */}
+          <Route path="/questions/:id" element={<QuestionInbox />} />
           <Route
             path="/usage"
             element={<Placeholder title="Usage" milestone="M10" what="The usage view" />}
@@ -82,6 +78,13 @@ export function App(): ReactElement {
           />
         </Routes>
         <DebugPanel />
+        {/*
+          Mounted above every route, because the launch flow is reached from
+          three different screens and must survive the navigation that opening it
+          from a project card would otherwise cause (§5.4, §6).
+        */}
+        <LaunchFlowHost />
+        <Toasts />
       </AppFrame>
     </>
   );

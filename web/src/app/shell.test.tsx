@@ -174,9 +174,13 @@ describe('the frame and the debug panel (§2.2, IMPLEMENTATION §1)', () => {
     ).toBeInTheDocument();
   });
 
-  it('carries the deep-linked id through to the placeholder', () => {
-    mount(<App />, { respond: EMPTY, route: '/questions/abc' });
-    expect(screen.getByText('abc')).toHaveAttribute('data-route-id', 'abc');
+  it('carries the deep-linked id through to the screen that reads it', () => {
+    // M1 asserted this against a placeholder that echoed the id. M5 replaced the
+    // placeholder with the real inbox, so the same property is now proven where
+    // it matters: the id from the URL becomes the request the card is drawn from
+    // (ui IMPLEMENTATION §5's deep link, orchestrator §10's ntfy target).
+    const view = mount(<App />, { respond: EMPTY, route: '/questions/abc' });
+    expect(view.calls).toContain('/api/questions/abc');
   });
 });
 

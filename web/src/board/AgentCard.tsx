@@ -6,9 +6,13 @@
  * its headline, then the badges. Every element's source is the table in §5.2 and
  * nothing on the card is computed from something the server already decided.
  *
- * Drag is M3. This milestone renders the card and its non-drag affordances only.
+ * M3 adds the gesture and its two non-drag equivalents (§5.4): the card is a
+ * sortable draggable, the `⋯` menu carries **Launch on…**, and in Reorder mode
+ * it grows ▲▼ buttons with a position readout. All three end in the same code.
  */
 
+import { useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import type { ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -16,6 +20,7 @@ import type { AgentView, Diagnostic } from '../api/types';
 import { Icon } from '../icons/Sprite';
 import { useAgentFleetStatus } from '../state/store';
 
+import { AgentCardMenu } from './AgentCardMenu';
 import { Avatar } from './Avatar';
 import { FLEET_STATE_LABELS } from './fleetStatus';
 
@@ -24,22 +29,59 @@ export interface AgentCardProps {
   /** Library-wide diagnostics that name this agent (§2.3, roster). */
   readonly diagnostics: readonly Diagnostic[];
   readonly projectName?: string | undefined;
+  /** §5.4's Reorder mode: 1-based position, and the two move controls. */
+  readonly reorder?:
+    | {
+        readonly position: number;
+        readonly total: number;
+        readonly onMove: (delta: -1 | 1) => void;
+      }
+    | undefined;
 }
 
-export function AgentCard({ agent, diagnostics, projectName }: AgentCardProps): ReactElement {
+export function AgentCard({
+  agent,
+  diagnostics,
+  projectName,
+  reorder,
+}: AgentCardProps): ReactElement {
   const { definition, uiState } = agent;
   const status = useAgentFleetStatus(definition.id);
   const archived = agent.archivedAt !== null;
   const overseer = definition.capabilities?.overseer === true;
   const allDiagnostics = [...agent.diagnostics, ...diagnostics];
 
+  // One sortable serves both gestures §5.3 gives the card: it is the thing that
+  // is dragged onto a project, and it is an item of the board's sortable
+  // context. An archived card is not draggable — there is nothing to launch.
+  const sortable = useSortable({ id: definition.id, disabled: archived });
+
   return (
     <li
       className="agent-card"
       data-archived={archived ? 'true' : 'false'}
       data-agent-id={definition.id}
+      data-dragging={sortable.isDragging ? 'true' : 'false'}
+      ref={sortable.setNodeRef}
+      style={{
+        transform: CSS.Translate.toString(sortable.transform),
+        transition: sortable.transition ?? undefined,
+      }}
     >
       <div className="agent-card__head">
+        {archived ? null : (
+          <button
+            type="button"
+            className="agent-card__grip"
+            // §5.4: this is the keyboard path — Tab here, Space to lift, arrows
+            // to move between targets, Space to drop.
+            aria-label={`Move or launch ${definition.name}`}
+            {...sortable.attributes}
+            {...sortable.listeners}
+          >
+            <Icon name="grip" />
+          </button>
+        )}
         <Avatar agentId={definition.id} name={definition.name} avatar={definition.avatar} />
         <div style={{ minWidth: 0 }}>
           <Link className="agent-card__name" to={`/agents/${encodeURIComponent(definition.id)}`}>
@@ -54,10 +96,39 @@ export function AgentCard({ agent, diagnostics, projectName }: AgentCardProps): 
           </div>
         </div>
         {uiState.pinned ? <Icon name="pin" title="Pinned" /> : null}
+        <AgentCardMenu agentId={definition.id} agentName={definition.name} archived={archived} />
       </div>
 
       {/* §14.1: "Taglines are always shown." One line of the agent's own voice. */}
-      <p className="agent-card__tagline">{definition.tagline ?? ' '}</p>
+      <p className="agent-card__tagline">{definition.tagline ?? ' '}</p>
+
+      {reorder === undefined ? null : (
+        <div
+          className="agent-card__reorder"
+          role="group"
+          aria-label={`Position of ${definition.name}`}
+        >
+          <button
+            type="button"
+            aria-label={`Move ${definition.name} up`}
+            disabled={reorder.position <= 1}
+            onClick={() => reorder.onMove(-1)}
+          >
+            ▲
+          </button>
+          <span>
+            {reorder.position} of {reorder.total}
+          </span>
+          <button
+            type="button"
+            aria-label={`Move ${definition.name} down`}
+            disabled={reorder.position >= reorder.total}
+            onClick={() => reorder.onMove(1)}
+          >
+            ▼
+          </button>
+        </div>
+      )}
 
       <div
         className="status-pill"

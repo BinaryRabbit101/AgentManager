@@ -37,6 +37,27 @@ export const DEFAULT_FILTERS: BoardFilters = Object.freeze({
   archived: false,
 });
 
+/**
+ * What the launch flow was opened with (§6's pre-fill rules).
+ *
+ * One shape for all three ways in — drop, card menu, project page — because
+ * "both paths call the same code. There is no 'mobile launch' and 'desktop
+ * launch' — one launch flow, reached three ways" (§5.4).
+ */
+export interface LaunchIntent {
+  readonly agentId: string | null;
+  readonly projectId: string | null;
+  /** Where it was opened from, so the flow knows which picker to focus. */
+  readonly origin: 'drag' | 'agent-menu' | 'project';
+}
+
+/** A transient message — the rollback path of §5.3 and nothing more. */
+export interface Toast {
+  readonly id: string;
+  readonly message: string;
+  readonly tone: 'danger' | 'info';
+}
+
 export interface AppState {
   readonly theme: ThemeChoice;
   readonly connection: ConnectionState;
@@ -44,6 +65,18 @@ export interface AppState {
   readonly filters: BoardFilters;
   readonly sort: BoardSort;
   readonly quickAddOpen: boolean;
+  /** §5.4's explicit Reorder mode — the pointer-free path to board order. */
+  readonly reorderMode: boolean;
+  readonly launch: LaunchIntent | null;
+  readonly toasts: readonly Toast[];
+  /**
+   * Open questions, for the rail badge (§2.2).
+   *
+   * `null` until something has said — a badge that reads `0` before the inbox
+   * has been read is a claim the app cannot yet make. Live from
+   * `assignment.question.raised` / `.answered` (§3.4).
+   */
+  readonly openQuestions: number | null;
 
   /*
    * Declared as function *properties* rather than as methods, deliberately.
@@ -58,8 +91,16 @@ export interface AppState {
   readonly setFilters: (patch: Partial<BoardFilters>) => void;
   readonly setSort: (sort: BoardSort) => void;
   readonly setQuickAddOpen: (open: boolean) => void;
+  readonly setReorderMode: (on: boolean) => void;
+  readonly openLaunch: (intent: LaunchIntent) => void;
+  readonly closeLaunch: () => void;
+  readonly pushToast: (message: string, tone?: Toast['tone']) => void;
+  readonly dismissToast: (id: string) => void;
+  readonly setOpenQuestions: (count: number | null) => void;
   readonly reset: () => void;
 }
+
+let toastSeq = 0;
 
 export const useAppStore = create<AppState>((set) => ({
   theme: 'system',
@@ -70,6 +111,10 @@ export const useAppStore = create<AppState>((set) => ({
   filters: DEFAULT_FILTERS,
   sort: 'board-order',
   quickAddOpen: false,
+  reorderMode: false,
+  launch: null,
+  toasts: [],
+  openQuestions: null,
 
   setTheme: (theme) => set({ theme }),
   setConnection: (connection) => set({ connection }),
@@ -77,6 +122,16 @@ export const useAppStore = create<AppState>((set) => ({
   setFilters: (patch) => set((state) => ({ filters: { ...state.filters, ...patch } })),
   setSort: (sort) => set({ sort }),
   setQuickAddOpen: (quickAddOpen) => set({ quickAddOpen }),
+  setReorderMode: (reorderMode) => set({ reorderMode }),
+  openLaunch: (launch) => set({ launch }),
+  closeLaunch: () => set({ launch: null }),
+  pushToast: (message, tone = 'danger') => {
+    toastSeq += 1;
+    const toast: Toast = { id: `toast-${String(toastSeq)}`, message, tone };
+    set((state) => ({ toasts: [...state.toasts, toast] }));
+  },
+  dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((one) => one.id !== id) })),
+  setOpenQuestions: (openQuestions) => set({ openQuestions }),
   reset: () =>
     set({
       connection: 'reconnecting',
@@ -84,6 +139,10 @@ export const useAppStore = create<AppState>((set) => ({
       filters: DEFAULT_FILTERS,
       sort: 'board-order',
       quickAddOpen: false,
+      reorderMode: false,
+      launch: null,
+      toasts: [],
+      openQuestions: null,
     }),
 }));
 

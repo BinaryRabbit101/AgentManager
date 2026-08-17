@@ -221,6 +221,8 @@ export function routes(table: Readonly<Record<string, unknown>>): Responder {
 export interface MountOptions {
   readonly respond?: Responder;
   readonly stream?: FakeStream;
+  /** The **per-session** feed of §3.3, which the session view opens for itself. */
+  readonly sessionStream?: FakeStream;
   readonly boot?: BootFacts;
   readonly route?: string;
 }
@@ -230,6 +232,8 @@ export interface Mounted extends RenderResult {
   readonly events: EventStream;
   readonly avatars: AvatarCache;
   readonly stream: FakeStream;
+  /** Independent of `stream`, exactly as the two sockets of §3.3 are. */
+  readonly sessionStream: FakeStream;
   readonly queryClient: QueryClient;
   /** Every request the screen made, in order — the request-count assertions. */
   readonly calls: string[];
@@ -239,6 +243,7 @@ export function mount(ui: ReactElement, options: MountOptions = {}): Mounted {
   const calls: string[] = [];
   const respond = options.respond ?? routes({});
   const stream = options.stream ?? fakeStream();
+  const sessionStream = options.sessionStream ?? fakeStream();
 
   const client = new ApiClient({
     fetch: ((input: string, init: RequestInit) => {
@@ -255,12 +260,20 @@ export function mount(ui: ReactElement, options: MountOptions = {}): Mounted {
 
   const wrapper = ({ children }: { children: ReactNode }): ReactElement => (
     <QueryClientProvider client={queryClient}>
-      <AppServicesProvider services={{ client, avatars, events, boot: options.boot ?? BOOT_FACTS }}>
+      <AppServicesProvider
+        services={{
+          client,
+          avatars,
+          events,
+          boot: options.boot ?? BOOT_FACTS,
+          sessionTransport: sessionStream.transport,
+        }}
+      >
         <MemoryRouter initialEntries={[options.route ?? '/']}>{children}</MemoryRouter>
       </AppServicesProvider>
     </QueryClientProvider>
   );
 
   const result = render(ui, { wrapper });
-  return { ...result, client, events, avatars, stream, queryClient, calls };
+  return { ...result, client, events, avatars, stream, sessionStream, queryClient, calls };
 }

@@ -94,7 +94,11 @@ export interface AgentDefinition {
   readonly specialty: Specialty;
   readonly tagline?: string;
   readonly tags?: readonly string[];
-  readonly capabilities?: { readonly overseer?: boolean };
+  readonly capabilities?: {
+    readonly overseer?: boolean;
+    /** The pinned five of orchestrator §2.3; the role picker is limited to these. */
+    readonly roles?: readonly string[];
+  };
   readonly meta: { readonly createdAt: string; readonly origin?: string };
 }
 
@@ -174,6 +178,53 @@ export interface ProjectListView {
   readonly projects: readonly Project[];
 }
 
+/** projects §1.2's one widening path, gated by `policy.allowPermissionElevation`. */
+export interface PermissionElevation {
+  readonly allow: readonly string[];
+  /** Required and non-empty server-side: an elevation nobody justified is the bug. */
+  readonly reason: string;
+}
+
+export interface ProjectDefaults {
+  readonly agentIds?: readonly string[];
+  readonly permissionElevation?: PermissionElevation;
+  readonly setupCommand?: string;
+  readonly instructionsPath?: string;
+}
+
+/**
+ * `GET /api/projects/:id` — the full record, which the list route also spreads.
+ *
+ * Declared separately from {@link Project} because only the read of one project
+ * is *promised* to carry `defaults` ("One project: full record, defaults
+ * (elevation included) and health"), and the launch flow's elevation banner is
+ * the one place that must not depend on a list projection staying generous.
+ */
+export interface ProjectDetail extends Project {
+  readonly defaults: ProjectDefaults;
+}
+
+/**
+ * Why a project cannot be launched against — the drop-target rule of §5.3.
+ *
+ * The **words** are projects §2.2/§2.3's own (`provisioning`, `archived`, and
+ * the `missing` health condition); the sentence beside each is the UI's, because
+ * "it dims during the drag and its tooltip says why" is a UI affordance and no
+ * server route returns a refusal for something that was never submitted.
+ */
+export function projectLaunchRefusal(project: Project): string | undefined {
+  if (project.status === 'archived' || project.archivedAt !== null) {
+    return 'archived — restore it before launching an agent on it';
+  }
+  if (project.status === 'provisioning') {
+    return 'still being set up — it has no working folder yet';
+  }
+  if (project.health.some((condition) => condition.code === 'missing')) {
+    return 'its folder is missing — relocate it before launching an agent on it';
+  }
+  return undefined;
+}
+
 export interface InspectionWarning {
   readonly code: string;
   readonly message: string;
@@ -237,4 +288,161 @@ export interface AgentFleetStatus {
   readonly since: string | null;
   readonly projectId: string | null;
   readonly sessionId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Runner — the session view (§9)
+// ---------------------------------------------------------------------------
+
+/** The session row, as `GET /api/sessions/:id` returns it (runner §11.1). */
+export interface SessionRecord {
+  readonly id: string;
+  readonly assignmentId: string;
+  readonly agentId: string;
+  readonly projectId: string;
+  readonly status: SessionStatus;
+  readonly sdkSessionId: string | null;
+  readonly model: string | null;
+  readonly permissionMode: string | null;
+  readonly origin: 'local' | 'remote';
+  /** `null` once projects' retention has pruned the file (§9.4). */
+  readonly transcriptPath: string | null;
+  readonly transcriptBytes: number;
+  readonly summary: string | null;
+  readonly pinned: boolean;
+  readonly startedAt: string | null;
+  readonly endedAt: string | null;
+  readonly exitReason: string | null;
+  readonly role: string | null;
+  readonly resumedFrom: string | null;
+  readonly blockedReason: string | null;
+  readonly turns: number;
+}
+
+/**
+ * The `session_usage` rollup.
+ *
+ * `costUsdEstimate` carries runner §7.3's rule in its name and the rail carries
+ * it in its label: "estimated model cost", never spend, never a percentage of a
+ * plan (§4, §9.2).
+ */
+export interface SessionUsageTotals {
+  readonly sessionId: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly totalTokens: number;
+  readonly events: number;
+  readonly turns: number;
+  readonly costUsdEstimate: number | null;
+  readonly updatedAt: string;
+}
+
+export interface SessionDetailView {
+  readonly session: SessionRecord;
+  readonly usage: SessionUsageTotals | null;
+  readonly queuePosition: number | null;
+}
+
+/** One JSONL transcript line (runner §8.1). `seq` is the join key of §9.4. */
+export interface TranscriptLine {
+  readonly seq: number;
+  readonly ts: string;
+  readonly type: string;
+  readonly [field: string]: unknown;
+}
+
+/** `GET /api/sessions/:id/transcript?tail=` | `?from=&limit=` (runner §11.1). */
+export interface TranscriptPage {
+  readonly sessionId: string;
+  readonly lines: readonly TranscriptLine[];
+  readonly from: number;
+  readonly next: number;
+  readonly size: number;
+  readonly pruned: boolean;
+}
+
+/**
+ * What every control verb answers with (runner §11.1).
+ *
+ * `changed` — not the status code — is what says whether *this* call did it,
+ * which is the whole shape of "pressing Stop twice produces a state, not an
+ * error" (§9.3, IMPLEMENTATION §4).
+ */
+export interface SessionControlResult {
+  readonly sessionId: string;
+  readonly status: SessionStatus;
+  readonly exitReason: string | null;
+  readonly changed: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator — assignments and the question inbox (§6, §11)
+// ---------------------------------------------------------------------------
+
+/** `POST /api/assignments/solo` → 201 (orchestrator §16.7). */
+export interface CreateSoloResult {
+  readonly assignmentId: string;
+  readonly sessionId: string;
+  readonly warnings: readonly { readonly code: string; readonly message: string }[];
+}
+
+export type QuestionKind = 'question' | 'approval_gate' | 'budget_halt';
+export type QuestionStatus = 'open' | 'answered' | 'cancelled' | 'expired';
+
+/**
+ * orchestrator §6.2's four-value ordinal ladder, in rank order.
+ *
+ * Rendered **as the word**, never as a number, a bar or a percentage (§11.2).
+ */
+export const QUESTION_STRENGTHS = ['blocking', 'strong', 'lean', 'defer'] as const;
+export type QuestionStrength = (typeof QUESTION_STRENGTHS)[number];
+
+export interface QuestionOption {
+  readonly id: string;
+  readonly label: string;
+  readonly description?: string;
+}
+
+export interface RecommendationView {
+  readonly agentId: string;
+  /** The seat this agent held — attribution is always present (§16-2). */
+  readonly role: string | null;
+  readonly stance: string | null;
+  readonly strength: QuestionStrength | null;
+  readonly rationale: string | null;
+}
+
+/** orchestrator §11.1's pinned list projection — the inbox is one request cold. */
+export interface QuestionCard {
+  readonly id: string;
+  readonly kind: QuestionKind;
+  readonly status: QuestionStatus;
+  readonly prompt: string;
+  readonly options: readonly QuestionOption[];
+  readonly multiSelect: boolean;
+  readonly allowFreeText: boolean;
+  readonly context: { readonly toolName?: string; readonly toolInput?: unknown } | null;
+  readonly createdAt: string;
+  readonly holdUntil: string | null;
+  readonly expiresAt: string | null;
+  readonly assignmentId: string;
+  readonly projectId: string | null;
+  readonly sessionId: string | null;
+  readonly recommendations: readonly RecommendationView[];
+  /** Server-computed (§6.3). Never derived here (§4, §18 decision 10). */
+  readonly disagreement: boolean;
+  readonly contested: boolean;
+  readonly answeredVia: 'local' | 'remote' | null;
+  readonly answeredAt: string | null;
+  readonly answer: {
+    readonly optionIds?: readonly string[];
+    readonly labels?: readonly string[];
+    readonly text?: string;
+  } | null;
+}
+
+export interface QuestionListView {
+  readonly questions: readonly QuestionCard[];
 }
