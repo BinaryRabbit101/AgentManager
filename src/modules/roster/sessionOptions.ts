@@ -24,6 +24,7 @@ import type { SecretResolver } from '../../secrets/index.js';
 
 import type { Diagnostic, EffectivePermissions } from './contracts.js';
 import type { EnvEntry } from './envMerge.js';
+import type { RequestedSessionSurface } from './initMessage.js';
 import type { PersonaComposition } from './persona.js';
 import type { CanUseToolPolicy, PermissionPolicy, RawPermissionSet } from './permissions.js';
 import type { AgentDefinition, Role } from './schema.js';
@@ -49,8 +50,17 @@ export interface CompilableAgent {
   readonly persona: string;
   /** `roles/<role>.md` bodies by role; only the assignment's role is read. */
   readonly roleAddenda?: Readonly<Partial<Record<Role, string>>> | undefined;
-  /** Absolute path to the agent folder — M5's `plugins: [{ type: 'local' }]` root. */
+  /** Absolute path to the agent folder — §7.1's `plugins: [{ type: 'local' }]` root. */
   readonly directory?: string | undefined;
+  /**
+   * The skill folder names actually present under `<directory>/skills/`, as the
+   * store read them (§7.2's launch-time half of the exact-name check).
+   *
+   * `undefined` means "the caller does not know", not "there are none": a
+   * compile against an agent that never came off disk takes the declared names
+   * on trust rather than inventing a failure from ignorance.
+   */
+  readonly skills?: readonly string[] | undefined;
 }
 
 /** §13's `ProjectContext` — raw input, never a computed result. */
@@ -127,6 +137,16 @@ export interface CompiledSession {
   /** §6.1's default-deny policy — the runner installs the callback, not roster. */
   readonly policy: CanUseToolPolicy;
   readonly systemPrompt: PersonaComposition;
+  /**
+   * What this launch asked the SDK for, in the shape `assertSessionStart`
+   * consumes (§7.1: "the runner asserts that the `system`/`init` message's
+   * `plugins` and `skills` arrays contain what was requested").
+   *
+   * Carried here rather than re-derived from `options` so the runner's option
+   * whitelist (runner §3.3) does not have to grow a reason to read `plugins` or
+   * `mcpServers`.
+   */
+  readonly requested: RequestedSessionSurface;
   readonly diagnostics: readonly Diagnostic[];
 }
 

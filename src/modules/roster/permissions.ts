@@ -35,6 +35,11 @@
 import type { Diagnostic, EffectivePermissions, PermissionElevation } from './contracts.js';
 import type { PermissionMode } from './schema.js';
 import { PERMISSION_MODES, permissionModeRank } from './schema.js';
+import { isScopedRule, normaliseAllowRules, normaliseGuardRules, ruleTool } from './sdkRules.js';
+
+/** Re-exported from {@link ./sdkRules.js}, which is where rule *syntax* lives;
+ *  this module owns the *algebra* over rules and nothing about their grammar. */
+export { isScopedRule, ruleTool };
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -189,17 +194,6 @@ export const DEFAULT_DENY_MESSAGE =
 // Rule algebra
 // ---------------------------------------------------------------------------
 
-/** The tool a rule is about: `Bash(rm *)` → `Bash`, `WebFetch` → `WebFetch`. */
-export function ruleTool(rule: string): string {
-  const open = rule.indexOf('(');
-  return open === -1 ? rule : rule.slice(0, open);
-}
-
-/** True for `Tool(pattern)`; false for a bare tool name. */
-export function isScopedRule(rule: string): boolean {
-  return rule.includes('(');
-}
-
 /**
  * Whether `candidate` grants at least as much as `rule` does.
  *
@@ -221,8 +215,45 @@ function dedupe(rules: Iterable<string>): string[] {
 }
 
 /** Locale-independent, so a table test's expectation is stable everywhere. */
-function sorted(rules: readonly string[]): string[] {
+export function sortRules(rules: readonly string[]): string[] {
   return [...rules].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+const sorted = sortRules;
+
+// ---------------------------------------------------------------------------
+// Layer normalisation — the two SDK-spike fixes, applied before composition
+// ---------------------------------------------------------------------------
+
+/**
+ * A layer's rules as the engine will read them (see `sdkRules.ts`).
+ *
+ * Normalisation happens per layer and *before* composition, not after, for one
+ * reason: `allow` is an intersection, and an intersection between a rewritten
+ * rule and an un-rewritten one would silently drop both. `Edit(./docs/**)` from
+ * an assignment must be comparable with a baseline that wrote the same scope as
+ * `Write(./docs/**)`, and it only is if both have been through the same rewrite
+ * first.
+ */
+interface NormalisedLayer {
+  readonly allow: readonly string[];
+  readonly deny: readonly string[];
+  readonly ask: readonly string[];
+  readonly diagnostics: readonly Diagnostic[];
+}
+
+function normaliseLayer(layer: RawPermissionSet | undefined, path: string): NormalisedLayer {
+  const allow = normaliseAllowRules(layer?.allow ?? [], `${path}.allow`);
+  const deny = normaliseGuardRules(layer?.deny ?? [], `${path}.deny`);
+  const ask = normaliseGuardRules(layer?.ask ?? [], `${path}.ask`);
+  return {
+    allow: allow.rules,
+    deny: deny.rules,
+    // Fix 1: a rule that tried to auto-approve `AskUserQuestion` lands here, in
+    // the one bucket that still reaches `canUseTool` (§6.3).
+    ask: [...ask.rules, ...allow.forcedAsk],
+    diagnostics: [...allow.diagnostics, ...deny.diagnostics, ...ask.diagnostics],
+  };
 }
 
 /**
@@ -341,6 +372,24 @@ export function compilePermissions(
 ): CompiledPermissions {
   const diagnostics: Diagnostic[] = [];
 
+  // --- normalisation: what the engine will actually enforce ----------------
+  // Runner SDK-NOTES C2 (`AskUserQuestion` must never be auto-approved) and
+  // orchestrator SDK-NOTES C1 (only `Edit(path)` scopes file edits, and
+  // `Edit(*)` collapses to a bare auto-approve). See `sdkRules.ts`.
+  const base = normaliseLayer(baseline, 'permissions');
+  const projectLayer = normaliseLayer(projectOverride?.permissions, 'project.permissionOverride');
+  const assignmentLayer = normaliseLayer(assignmentScope?.scopeRules, 'assignment.scopeRules');
+  const elevationAllow = normaliseAllowRules(
+    projectOverride?.elevation?.allow ?? [],
+    'project.elevation.allow',
+  );
+  diagnostics.push(
+    ...base.diagnostics,
+    ...projectLayer.diagnostics,
+    ...assignmentLayer.diagnostics,
+    ...elevationAllow.diagnostics,
+  );
+
   // --- mode: minimum on the ladder ---------------------------------------
   let mode = readMode(baseline?.mode, 'permissions.mode', diagnostics) ?? DEFAULT_PERMISSION_MODE;
   mode = leastPermissive(
@@ -353,23 +402,24 @@ export function compilePermissions(
   );
 
   // --- deny: union, globalDeny first --------------------------------------
-  const deny = new Set<string>(policy.globalDeny);
-  for (const rule of baseline?.deny ?? []) deny.add(rule);
-  for (const rule of projectOverride?.permissions?.deny ?? []) deny.add(rule);
+  const deny = new Set<string>(normaliseGuardRules(policy.globalDeny, 'policy.globalDeny').rules);
+  for (const rule of base.deny) deny.add(rule);
+  for (const rule of projectLayer.deny) deny.add(rule);
   if (assignmentScope !== undefined && !assignmentScope.write) {
     for (const rule of MUTATING_TOOL_DENY_RULES) deny.add(rule);
   }
-  for (const rule of assignmentScope?.scopeRules?.deny ?? []) deny.add(rule);
+  for (const rule of assignmentLayer.deny) deny.add(rule);
 
   // --- ask: union ----------------------------------------------------------
-  const ask = new Set<string>(baseline?.ask ?? []);
-  for (const rule of projectOverride?.permissions?.ask ?? []) ask.add(rule);
-  for (const rule of assignmentScope?.scopeRules?.ask ?? []) ask.add(rule);
+  const ask = new Set<string>(base.ask);
+  for (const rule of projectLayer.ask) ask.add(rule);
+  for (const rule of assignmentLayer.ask) ask.add(rule);
 
   // --- allow: intersection, with the one widening path ---------------------
-  let allow = dedupe(baseline?.allow ?? []);
+  let allow = dedupe(base.allow);
 
-  const projectAllow = projectOverride?.permissions?.allow;
+  const projectAllow =
+    projectOverride?.permissions?.allow === undefined ? undefined : projectLayer.allow;
   if (projectAllow !== undefined) {
     const { kept, widened } = intersectAllow(allow, projectAllow);
     allow = kept;
@@ -390,8 +440,9 @@ export function compilePermissions(
   let appliedElevation: PermissionElevation | null = null;
   if (elevation !== undefined && elevation.allow.length > 0) {
     if (policy.allowPermissionElevation) {
-      allow = dedupe([...allow, ...elevation.allow]);
-      appliedElevation = { allow: [...elevation.allow], reason: elevation.reason };
+      allow = dedupe([...allow, ...elevationAllow.rules]);
+      for (const rule of elevationAllow.forcedAsk) ask.add(rule);
+      appliedElevation = { allow: [...elevationAllow.rules], reason: elevation.reason };
       diagnostics.push({
         level: 'info',
         code: 'roster.permissions.elevation-applied',
@@ -413,7 +464,8 @@ export function compilePermissions(
     }
   }
 
-  const assignmentAllow = assignmentScope?.scopeRules?.allow;
+  const assignmentAllow =
+    assignmentScope?.scopeRules?.allow === undefined ? undefined : assignmentLayer.allow;
   if (assignmentAllow !== undefined) {
     const { kept, widened } = intersectAllow(allow, assignmentAllow);
     allow = kept;
@@ -461,6 +513,27 @@ export function compilePermissions(
       denyMessage: DEFAULT_DENY_MESSAGE,
     },
     diagnostics,
+  };
+}
+
+/**
+ * Add one auto-approve rule the *compiler* owns rather than a human layer.
+ *
+ * There is exactly one such rule today: §7.2's `"Skill"`, added when an agent
+ * actually has skills enabled. It is not a permission any layer declared, so it
+ * cannot enter through {@link compilePermissions}' intersection — an
+ * intersection would drop it against any baseline that does not mention it.
+ *
+ * Deny still wins: if a layer denied the tool by name or verbatim, the grant is
+ * refused rather than quietly overriding a stated restriction (§6.1).
+ */
+export function grantTool(compiled: CompiledPermissions, rule: string): CompiledPermissions {
+  const { effective } = compiled;
+  if (effective.allow.includes(rule)) return compiled;
+  if (effective.deny.includes(rule) || effective.deny.includes(ruleTool(rule))) return compiled;
+  return {
+    ...compiled,
+    effective: { ...effective, allow: sortRules([...effective.allow, rule]) },
   };
 }
 

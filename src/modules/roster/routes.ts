@@ -91,6 +91,29 @@ function answering(
   }
 }
 
+/**
+ * {@link answering} for the two endpoints that resolve credential references.
+ *
+ * Separate rather than making every handler async: only the reads that carry
+ * §10's `{ secretRef, resolved }` block have anything to await, and a route
+ * table where every handler returns a promise would hide which ones actually
+ * touch the secret store.
+ */
+async function answeringAsync(
+  logger: Logger,
+  req: RequestContext,
+  res: ResponseTools,
+  handler: () => Promise<HttpResult>,
+): Promise<HttpResult> {
+  try {
+    return await handler();
+  } catch (error) {
+    return answering(logger, req, res, () => {
+      throw error;
+    });
+  }
+}
+
 export function createRosterRoutes(deps: RosterRoutesDeps): RouteDefinition[] {
   const { service, logger } = deps;
   const id = (req: RequestContext): string => req.params['id'] ?? '';
@@ -99,8 +122,9 @@ export function createRosterRoutes(deps: RosterRoutesDeps): RouteDefinition[] {
     {
       method: 'GET',
       path: `${ROSTER_API_PREFIX}/agents`,
-      description: 'Lists the roster with board state and diagnostics.',
-      handler: (req, res) => answering(logger, req, res, () => res.json(service.list())),
+      description: 'Lists the roster with board state, diagnostics and credential status.',
+      handler: (req, res) =>
+        answeringAsync(logger, req, res, async () => res.json(await service.listWithCredentials())),
     },
 
     {
@@ -124,8 +148,12 @@ export function createRosterRoutes(deps: RosterRoutesDeps): RouteDefinition[] {
     {
       method: 'GET',
       path: `${ROSTER_API_PREFIX}/agents/:id`,
-      description: 'One agent: the full definition and its resolved persona text.',
-      handler: (req, res) => answering(logger, req, res, () => res.json(service.get(id(req)))),
+      description:
+        'One agent: the full definition, its resolved persona text, and { secretRef, resolved } per credential.',
+      handler: (req, res) =>
+        answeringAsync(logger, req, res, async () =>
+          res.json(await service.getWithCredentials(id(req))),
+        ),
     },
 
     {

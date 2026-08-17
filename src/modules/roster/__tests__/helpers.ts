@@ -156,15 +156,28 @@ export function makeHarness(options: HarnessOptions): Harness {
  * Writes an agent folder the way a hand-editing owner or a `git pull` would —
  * bypassing the store entirely, so a test that loads it is testing the loader
  * rather than its own writer.
+ *
+ * Declared skills get their folders (§7.1's `skills/<name>/SKILL.md`) unless
+ * `skillFolders: false` asks for the broken state on purpose. A definition whose
+ * `skills.names` point at nothing is a real fault the loader now reports, and a
+ * helper that produced that state by default would make every fixture load with
+ * a diagnostic it did not mean to have.
  */
 export function writeAgentFolder(
   libraryRoot: string,
   definition: AgentDefinition,
-  options: { readonly persona?: string; readonly files?: Record<string, string> } = {},
+  options: {
+    readonly persona?: string;
+    readonly files?: Record<string, string>;
+    readonly skillFolders?: boolean;
+  } = {},
 ): string {
   const dir = join(libraryRoot, 'agents', definition.id);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'agent.json'), serialiseAgentDefinition(definition), 'utf8');
+  if (options.skillFolders !== false && definition.skills?.mode === 'declared') {
+    for (const name of definition.skills.names ?? []) writeSkillFolder(dir, name);
+  }
   writeFileSync(
     join(dir, definition.persona.file),
     options.persona ?? `# ${definition.name}\n\nA fixture persona.\n`,
@@ -178,11 +191,32 @@ export function writeAgentFolder(
   return dir;
 }
 
+/**
+ * Creates `<agentDir>/skills/<name>/SKILL.md` — the layout §7.1 mounts as a
+ * plugin, minimal but real: a folder with a frontmatter'd SKILL.md is what the
+ * loader looks for, and an empty directory would be a fixture that only half
+ * exists.
+ */
+export function writeSkillFolder(agentDir: string, name: string, body?: string): string {
+  const dir = join(agentDir, 'skills', name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'SKILL.md'),
+    body ?? `---\nname: ${name}\ndescription: A fixture skill.\n---\n\nDo the thing.\n`,
+    'utf8',
+  );
+  return dir;
+}
+
 /** Writes one of M1's golden fixtures into a library. */
 export function writeFixtureAgent(
   libraryRoot: string,
   name: FixtureName,
-  options?: { readonly persona?: string; readonly files?: Record<string, string> },
+  options?: {
+    readonly persona?: string;
+    readonly files?: Record<string, string>;
+    readonly skillFolders?: boolean;
+  },
 ): AgentDefinition {
   const definition = loadFixture(name);
   writeAgentFolder(libraryRoot, definition, options ?? {});

@@ -42,20 +42,28 @@
  * file or a `setPermissionMode()` call could otherwise reach it. Cheap, and it
  * moves an invariant from "roster's schema is careful" to "the engine refuses".
  *
+ * ## Added in M5 / M6
+ *
+ * `plugins` and the exact-name `skills` check (§7, `skills.ts`), and
+ * `mcpServers` from the agent's `integrations` with every `secretRef` resolved
+ * (§10, `integrations.ts`). `skills` was already emitted in M4, because omitting
+ * the key is not "off" — the CLI's own defaults still apply (SDK-NOTES §5) — and
+ * `[]` is the only safe value for an agent that declares none.
+ *
  * ## Not here yet
  *
- * `plugins` and the `skills` name validation are M5; `mcpServers` (per-agent
- * integrations and the orchestrator toolset) is M6/M7. `skills` itself *is*
- * emitted, because omitting the key is not "off" — the CLI's own defaults still
- * apply (SDK-NOTES §5) — and `[]` is the only safe value for an agent that
- * declares none.
+ * `mcpServers.agentmanager` — the orchestrator's per-launch toolset instance
+ * (§13, §11) — is M7, together with the `mcp__agentmanager__*` allow rules that
+ * go with it.
  */
 import type { Diagnostic, EffectivePermissions } from './contracts.js';
 import type { EnvLayer } from './envMerge.js';
 import { mergeAgentEnv } from './envMerge.js';
+import type { RequestedSessionSurface } from './initMessage.js';
+import { compileIntegrations } from './integrations.js';
 import { composePersona } from './persona.js';
 import type { PersonaComposition } from './persona.js';
-import { compilePermissions } from './permissions.js';
+import { compilePermissions, grantTool } from './permissions.js';
 import type { CompiledPermissions } from './permissions.js';
 import { MODEL_ALIASES } from './schema.js';
 import type {
@@ -63,6 +71,8 @@ import type {
   CompileSessionInput,
   CompiledSession,
 } from './sessionOptions.js';
+import { SKILL_TOOL, pluginConfigFor, skillsEnableSet } from './skills.js';
+import type { AgentPluginConfig } from './skills.js';
 
 /**
  * Turn and budget defaults for an agent whose definition states none.
@@ -94,19 +104,6 @@ function withAgentId(diagnostics: readonly Diagnostic[], agentId: string): Diagn
 }
 
 /**
- * §7.2's mapping, restated: `declared` → the exact names, `all` → `'all'`,
- * `none` (and an agent with no `skills` block at all) → `[]`.
- */
-function skillsOption(
-  skills: { mode: 'declared' | 'all' | 'none'; names?: string[] | undefined } | undefined,
-): string[] | 'all' {
-  if (skills === undefined) return [];
-  if (skills.mode === 'all') return 'all';
-  if (skills.mode === 'none') return [];
-  return [...(skills.names ?? [])];
-}
-
-/**
  * Compile a session.
  *
  * @throws {SessionCompileError} when a `secretRef` in the environment does not
@@ -119,7 +116,7 @@ export async function compileSession(input: CompileSessionInput): Promise<Compil
   const diagnostics: Diagnostic[] = [];
 
   // --- permissions (§6.2) --------------------------------------------------
-  const compiled: CompiledPermissions = compilePermissions(
+  let compiled: CompiledPermissions = compilePermissions(
     definition.permissions,
     {
       ...(project?.permissionOverride === undefined
@@ -134,6 +131,27 @@ export async function compileSession(input: CompileSessionInput): Promise<Compil
     policy,
   );
   diagnostics.push(...withAgentId(compiled.diagnostics, definition.id));
+
+  // --- skills and the plugin (§7) -----------------------------------------
+  const enableSet = skillsEnableSet(definition, agent.skills);
+  diagnostics.push(...enableSet.diagnostics);
+
+  const plugins: AgentPluginConfig[] = [];
+  if (enableSet.enabled) {
+    const { plugin, diagnostics: pluginDiagnostics } = pluginConfigFor(
+      definition.id,
+      agent.directory,
+    );
+    diagnostics.push(...pluginDiagnostics);
+    if (plugin !== undefined) plugins.push(plugin);
+  }
+  // §7.2: setting the option auto-adds the tool, so this entry is about
+  // *auto-approval* — without it every skill invocation would prompt. Added only
+  // when something can actually fire, so `skills.mode: "none"` yields "an empty
+  // enable set and no `Skill` tool prompt" (M5) rather than a grant for a tool
+  // the session will never offer.
+  if (enableSet.enabled) compiled = grantTool(compiled, SKILL_TOOL);
+
   const effective: EffectivePermissions = compiled.effective;
 
   // --- system prompt (§4, §5) ---------------------------------------------
@@ -171,6 +189,21 @@ export async function compileSession(input: CompileSessionInput): Promise<Compil
     agentId: definition.id,
   });
   diagnostics.push(...merged.diagnostics);
+
+  // --- integrations → mcpServers (§10) ------------------------------------
+  // After the env merge, because a stdio server's `env` is the session env plus
+  // its own resolved entries: `Options.env` replaces rather than merges, and so
+  // does a server's, so a server declaring one variable would otherwise lose
+  // `PATH`. Throws rather than warns when a ref does not resolve.
+  const integrations = await compileIntegrations({
+    agentId: definition.id,
+    agentName: definition.name,
+    integrations: definition.integrations,
+    secrets: input.secrets,
+    sessionEnv: merged.env,
+  });
+  diagnostics.push(...integrations.diagnostics);
+  const mcpServerNames = Object.keys(integrations.servers);
 
   // --- model (§8) ----------------------------------------------------------
   const model = definition.model?.primary ?? input.defaultModel;
@@ -239,7 +272,13 @@ export async function compileSession(input: CompileSessionInput): Promise<Compil
     // Always emitted: when omitted, *all* sources load (SDK-NOTES §5). `user`
     // and `local` are unrepresentable in the schema (§7.3).
     settingSources: [...definition.settingSources],
-    skills: skillsOption(definition.skills),
+    // §7.1: the agent folder *is* a plugin. Absolute path, and
+    // `skipMcpDiscovery` so a stray `.mcp.json` in the folder cannot mount a
+    // server §10 never approved (SDK-NOTES §4).
+    plugins,
+    skills: enableSet.skills,
+    // §10. Per-agent servers only; `mcpServers.agentmanager` is M7's.
+    mcpServers: integrations.servers,
     additionalDirectories,
     env: merged.env,
     maxTurns: definition.defaults?.maxTurns ?? DEFAULT_MAX_TURNS,
@@ -255,11 +294,19 @@ export async function compileSession(input: CompileSessionInput): Promise<Compil
     // *policy* (§6.1) and the runner installs the callback (runner §5.1).
   };
 
+  const requested: RequestedSessionSurface = {
+    agentId: definition.id,
+    pluginPaths: plugins.map((plugin) => plugin.path),
+    skills: enableSet.skills,
+    mcpServers: mcpServerNames,
+  };
+
   return {
     options,
     effective,
     policy: compiled.policy,
     systemPrompt,
+    requested,
     diagnostics,
   };
 }

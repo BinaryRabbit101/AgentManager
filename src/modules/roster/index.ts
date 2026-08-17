@@ -130,11 +130,63 @@ export {
   MUTATING_TOOL_DENY_RULES,
   MUTATING_TOOL_NAMES,
   compilePermissions,
+  grantTool,
   isScopedRule,
   outcomeForTool,
   removesToolDefinition,
   ruleTool,
+  sortRules,
 } from './permissions.js';
+
+// The two SDK-spike corrections the compiler applies before composing
+// (runner SDK-NOTES C2, orchestrator SDK-NOTES C1).
+export {
+  ASK_USER_QUESTION_TOOL,
+  CANONICAL_FILE_EDIT_TOOL,
+  FILE_EDIT_ALIASES,
+  FILE_EDIT_TOOLS,
+  allowsAskUserQuestion,
+  collapsesToBareTool,
+  normaliseAllowRules,
+  normaliseGuardRules,
+  ruleContent,
+} from './sdkRules.js';
+export type { NormalisedRules } from './sdkRules.js';
+
+// M5 — skills packaging (DESIGN §7).
+export {
+  SKILL_TOOL,
+  isAbsoluteAgentDir,
+  listSkillNames,
+  missingSkillFolders,
+  pluginConfigFor,
+  skillsEnableSet,
+  validateSkills,
+} from './skills.js';
+export type { AgentPluginConfig, SkillsEnableSet } from './skills.js';
+
+// M5/M6 — the session-start assertion and §10's MCP status mapping.
+export { MCP_SERVER_STATUSES, assertSessionStart, mcpServerDiagnostics } from './initMessage.js';
+export type { McpServerStatus, RequestedSessionSurface, SessionInitFacts } from './initMessage.js';
+
+// M6 — integrations and secret resolution (DESIGN §10).
+export {
+  compileIntegrations,
+  integrationCredentialStatus,
+  integrationSecretRefs,
+  mcpToolPrefix,
+  validateIntegrationAllowRules,
+} from './integrations.js';
+export type {
+  CompiledHttpServer,
+  CompiledIntegrations,
+  CompiledMcpServer,
+  CompiledSseServer,
+  CompiledStdioServer,
+  CompileIntegrationsInput,
+  IntegrationCredentialStatus,
+  IntegrationSecretRef,
+} from './integrations.js';
 
 export type {
   AssignmentPermissionLayer,

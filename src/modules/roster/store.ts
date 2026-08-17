@@ -47,9 +47,11 @@ import { isoTimestamp, type Clock } from '../../storage/time.js';
 
 import type { Diagnostic } from './contracts.js';
 import { RosterValidationError } from './errors.js';
+import { validateIntegrationAllowRules } from './integrations.js';
 import { parseAgentDefinitionJson, serialiseAgentDefinition } from './parse.js';
 import type { AgentDefinition, AgentId } from './schema.js';
 import { LibraryWriteError } from './serviceErrors.js';
+import { listSkillNames, validateSkills } from './skills.js';
 
 // ---------------------------------------------------------------------------
 // Layout (§2.1)
@@ -71,8 +73,9 @@ export const PLUGIN_MANIFEST_FILENAME = 'plugin.json';
 export const AVATAR_FILENAME = 'avatar.png';
 /** Optional per-collaboration-role persona addenda (§4). */
 export const ROLES_DIRNAME = 'roles';
-/** Per-agent skills, in plugin layout (§7). */
-export const SKILLS_DIRNAME = 'skills';
+/** Per-agent skills, in plugin layout (§7) — defined in `skills.ts`, which this
+ *  module imports, and re-exported so the layout reads as one list. */
+export { SKILLS_DIRNAME } from './skills.js';
 
 /** The prefix every in-flight atomic write uses, and `.gitignore` excludes. */
 export const TEMP_PREFIX = '.tmp-';
@@ -207,6 +210,11 @@ export interface ResolvedAgent {
   readonly persona: string;
   /** Absolute path to the agent folder. Never leaves the server (§3.2). */
   readonly dir: string;
+  /**
+   * Folder names under `skills/` (§7.1), read at load so neither the compiler
+   * nor the API has to touch the disk to know what an agent actually carries.
+   */
+  readonly skills: readonly string[];
   /** sha-256 over the authored bytes — what makes a reload a no-op (§2.3). */
   readonly contentHash: string;
   /** ISO timestamp when this was read out of `.archive/`, else `null` (§9.3). */
@@ -253,6 +261,9 @@ export interface RosterStore {
   folderNames(): readonly string[];
   /** True when `agents/<id>/` exists, valid definition or not. */
   hasFolder(id: string): boolean;
+  /** Skill folder names under `agents/<id>/skills/` (§7.1). Empty when there is
+   *  no folder — which is also the answer for an agent about to be created. */
+  skillNames(id: string): string[];
   load(id: string): LoadOutcome;
   /** Every `.archive/<id>-<stamp>/`, newest last. */
   archiveEntries(): readonly ArchiveEntry[];
@@ -383,12 +394,33 @@ export function createRosterStore(options: RosterStoreOptions): RosterStore {
       if (manifest !== undefined) diagnostics.push(manifest);
     }
 
+    // §7.2's exact-name check, at load. A declared skill whose folder is gone —
+    // deleted by hand, or lost in a partial `git pull` — is "a diagnostic on
+    // reload rather than a broken launch" (M5): the agent stays in the registry
+    // and the compiler drops the name at launch.
+    const skills = listSkillNames(dir);
+    diagnostics.push(
+      ...validateSkills(definition, skills, dir).map((diagnostic) => ({
+        ...diagnostic,
+        // A missing folder must not evict the agent the way an unparseable
+        // definition does; the API refuses the *write* that would create this
+        // state, so a folder that reaches here is one a human edited underneath
+        // us and can still fix.
+        level: 'warn' as const,
+      })),
+    );
+
+    // §10's validator warning, raised on every read so it appears at write time
+    // (a write re-reads the folder) and on an external edit alike.
+    diagnostics.push(...validateIntegrationAllowRules(definition));
+
     return {
       ok: true,
       agent: {
         definition,
         persona,
         dir,
+        skills,
         contentHash: contentHash(text, persona, avatarBytes),
         archivedAt,
         diagnostics,
@@ -447,6 +479,10 @@ export function createRosterStore(options: RosterStoreOptions): RosterStore {
       } catch {
         return false;
       }
+    },
+
+    skillNames(id) {
+      return listSkillNames(agentDir(id));
     },
 
     load(id) {

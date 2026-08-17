@@ -307,6 +307,16 @@ The correct inert configuration on this SDK is **`tools: []`** ("Disable all bui
 optionally keeping `allowedTools: []`, plus the `mcpServers`/`settingSources`/`skills` emptiness §12.2
 already specifies. **DESIGN §12.2 should be corrected before M8 implements it.**
 
+### D6 — the two corrections the sibling spikes addressed to roster: **applied in M5**
+
+Runner SDK-NOTES C2 (a bare `AskUserQuestion` in `allowedTools` auto-approves before `canUseTool` and
+silently disables the question bridge) and orchestrator SDK-NOTES C1 (only `Edit(path)` scopes file
+edits; `Write`/`NotebookEdit`/`MultiEdit` path rules are inert, and `Edit(*)` collapses to a bare
+auto-approve) are both implemented in `src/modules/roster/sdkRules.ts` and applied per layer by
+`compilePermissions` before composition — so `AskUserQuestion` is forced into the `ask` bucket with a
+diagnostic, file scopes are emitted as `Edit(path)`, inert allow rules are surfaced as diagnostics,
+and `Edit(*)` is never emitted.
+
 ---
 
 ## 7. Assumptions that remain unverified (static reading cannot settle them)

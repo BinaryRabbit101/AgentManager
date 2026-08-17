@@ -110,6 +110,9 @@ export function createRosterModule(
         bus: ctx.bus,
         clock: ctx.clock,
         bootDiagnostics: bootstrap.diagnostics,
+        // §10's `{ secretRef, resolved }` badge. The read-only face: this
+        // service probes for presence and never reveals a value.
+        secrets: ctx.secrets,
       });
 
       const loaded = service.load();

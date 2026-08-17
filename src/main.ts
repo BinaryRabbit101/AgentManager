@@ -65,7 +65,7 @@ import { createLogging, type Logging } from './logging/index.js';
 import { createOrchestratorModule } from './modules/orchestrator/index.js';
 import { createProjectsModule } from './modules/projects/index.js';
 import { createRosterModule } from './modules/roster/index.js';
-import { createRunnerModule } from './modules/runner/index.js';
+import { createRunnerModule, type RunnerModuleOptions } from './modules/runner/index.js';
 import {
   createSecretStore,
   warnOnAnthropicApiKeyOverride,
@@ -299,6 +299,13 @@ export interface BootOptions {
   readonly exit?: (code: number) => void;
   /** Where the fatal report goes when there is no logger yet. */
   readonly io?: RunIo;
+  /**
+   * Passed through to `createRunnerModule` — the SDK `query` seam and the
+   * internals hook. Tests and demo scripts inject a scripted query here to
+   * drive full session lifecycles through the real composition root without a
+   * token or a subprocess.
+   */
+  readonly runner?: RunnerModuleOptions;
 }
 
 /** A running service. M8 hangs the HTTP server off this; M9 the process lifecycle. */
@@ -344,6 +351,7 @@ async function buildModuleList(options: {
   readonly secrets: () => SecretStoreHandle;
   readonly secretConditions: () => readonly SecretsHealthCondition[];
   readonly http: HttpModuleOptions;
+  readonly runner?: RunnerModuleOptions | undefined;
   readonly additional: readonly Module[];
   readonly log: Logger;
 }): Promise<readonly Module[]> {
@@ -354,7 +362,7 @@ async function buildModuleList(options: {
     createHttpModule(options.http),
     createRosterModule(options.storage),
     createProjectsModule(options.storage),
-    createRunnerModule(options.storage),
+    createRunnerModule(options.storage, options.runner),
   ];
 
   // §6.2's gate, and the one this module is *designed* to be absent behind:
@@ -514,6 +522,7 @@ export async function boot(options: BootOptions = {}): Promise<BootedService> {
           ? {}
           : { heartbeatMs: options.http.heartbeatMs }),
       },
+      runner: options.runner,
       additional: options.additionalModules ?? [],
       log,
     });

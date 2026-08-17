@@ -30,6 +30,7 @@
  * history, and persisting it would put a row in `events` per drag, which is the
  * very cost §2.2 moved board order out of git to avoid.
  */
+import type { SecretResolver } from '../../secrets/index.js';
 import type { AgentsRepository, SessionsRepository } from '../../storage/index.js';
 import { isoTimestamp, type Clock } from '../../storage/time.js';
 import type { EventBus } from '../types.js';
@@ -43,7 +44,9 @@ import {
 } from './avatar.js';
 import type { Diagnostic } from './contracts.js';
 import { duplicateAgentId, duplicateDefinition } from './duplicate.js';
+import { RosterValidationError } from './errors.js';
 import { agentIdProblem } from './ids.js';
+import { integrationCredentialStatus, type IntegrationCredentialStatus } from './integrations.js';
 import { parseAgentDefinition } from './parse.js';
 import { AGENT_SCHEMA_VERSION, immutableFieldViolations, type AgentDefinition } from './schema.js';
 import {
@@ -56,6 +59,7 @@ import {
   RosterServiceError,
   UnknownBoardOrderIdError,
 } from './serviceErrors.js';
+import { validateSkills } from './skills.js';
 import { mintAgentId } from './slug.js';
 import { AVATAR_FILENAME, type ResolvedAgent, type RosterStore } from './store.js';
 import { createRosterRegistry, type RegistryChange, type RosterRegistry } from './registry.js';
@@ -83,6 +87,18 @@ export interface AgentView {
   readonly archivedAt: string | null;
   /** Always usable: the endpoint generates a placeholder when there is no file. */
   readonly avatarUrl: string;
+  /**
+   * `{ secretRef, resolved }` per credential the agent's integrations reference
+   * (§10) — **never a value**. Present only on the endpoints that resolve it
+   * (`GET /agents`, `GET /agents/:id`), because probing the secret store is
+   * asynchronous and the rest of the service is not.
+   */
+  readonly credentials?: readonly IntegrationCredentialStatus[] | undefined;
+  /**
+   * The UI-facing badge field of §10: "so the UI can show a 'needs credential'
+   * badge on the card". Present exactly when {@link AgentView.credentials} is.
+   */
+  readonly needsCredentials?: boolean | undefined;
 }
 
 /** `GET /agents` — "list; includes `uiState` and any `diagnostics`" (§9.1). */
@@ -117,6 +133,20 @@ export interface RosterService {
   list(): RosterListView;
   /** Live or archived — §9.3 keeps an archived definition readable for display. */
   get(id: string): AgentView;
+  /**
+   * {@link RosterService.get} plus §10's `{ secretRef, resolved }` block.
+   *
+   * Separate, and asynchronous, because resolving a reference means asking
+   * foundation's secret store and the rest of this service is synchronous by
+   * design (§2.3: reads are a map iteration). Nothing here reveals a value — the
+   * probe answers a boolean and drops the `Secret`.
+   */
+  getWithCredentials(id: string): Promise<AgentView>;
+  /** {@link RosterService.list} with the same block on every agent — the board
+   *  is where §10's "needs credential" badge is shown. */
+  listWithCredentials(): Promise<RosterListView>;
+  /** The block on its own. */
+  credentials(id: string): Promise<readonly IntegrationCredentialStatus[]>;
   create(body: unknown): AgentView;
   patch(id: string, body: unknown): AgentView;
   duplicate(id: string, body: unknown): AgentView;
@@ -160,6 +190,13 @@ export interface RosterServiceOptions {
   readonly clock?: Clock;
   /** Raised before the service existed (a git that would not run, §2.1). */
   readonly bootDiagnostics?: readonly Diagnostic[];
+  /**
+   * Foundation's read-only secret face (§3.2), used for one thing only: turning
+   * a `secretRef` into the boolean §10's badge needs. Absent in a build without
+   * secrets, in which case every ref reports `resolved: false` — which is the
+   * honest answer, since nothing can resolve it.
+   */
+  readonly secrets?: SecretResolver;
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +306,33 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
   // Writes
   // -------------------------------------------------------------------------
 
+  /**
+   * §7.2's exact-name check, at write time.
+   *
+   * M5: "`skills.mode: "declared"` with a name that has no folder is rejected at
+   * write time with a message naming the missing folder — **not at launch**."
+   * The SDK throws before the process starts when it is handed a skill name it
+   * cannot find, and a launch failure is the worst possible moment to discover a
+   * typo in a definition the API was in a position to refuse.
+   *
+   * This is the API's gate only. A folder that arrives by hand-edit or `git
+   * pull` cannot be refused — there is nobody to refuse — so the store turns the
+   * same check into a diagnostic and the compiler drops the name at launch.
+   */
+  function requireSkillFolders(definition: AgentDefinition, source: string): void {
+    const diagnostics = validateSkills(
+      definition,
+      store.skillNames(definition.id),
+      store.agentDir(definition.id),
+    );
+    if (diagnostics.length === 0) return;
+    throw new RosterValidationError(
+      `agent "${definition.id}" declares ${String(diagnostics.length)} skill(s) with no folder`,
+      diagnostics.map((diagnostic) => ({ path: 'skills.names', message: diagnostic.message })),
+      source,
+    );
+  }
+
   function persist(definition: AgentDefinition, persona: string | undefined): ResolvedAgent {
     const written = store.write(definition, persona);
     registry.apply(written);
@@ -294,6 +358,44 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
     },
 
     get: (id) => viewOf(requireKnown(id)),
+
+    async credentials(id) {
+      const agent = requireKnown(id);
+      if (options.secrets === undefined) {
+        // No store to ask: report every ref as unresolved rather than as
+        // resolved-by-default. A badge that is wrong in the reassuring direction
+        // is worse than one that is wrong in the alarming direction.
+        return integrationCredentialStatus(agent.definition, {
+          get: () => Promise.resolve(undefined),
+        });
+      }
+      return integrationCredentialStatus(agent.definition, options.secrets);
+    },
+
+    async listWithCredentials() {
+      const view = service.list();
+      const agents = await Promise.all(
+        view.agents.map(async (agent) => {
+          const credentials = await service.credentials(agent.definition.id);
+          return {
+            ...agent,
+            credentials,
+            needsCredentials: credentials.some((credential) => !credential.resolved),
+          };
+        }),
+      );
+      return { ...view, agents };
+    },
+
+    async getWithCredentials(id) {
+      const view = viewOf(requireKnown(id));
+      const credentials = await service.credentials(id);
+      return {
+        ...view,
+        credentials,
+        needsCredentials: credentials.some((credential) => !credential.resolved),
+      };
+    },
 
     create(body) {
       const { record, personaText } = splitBody(body);
@@ -340,6 +442,8 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
         'POST /api/roster/agents',
       );
 
+      requireSkillFolders(definition, 'POST /api/roster/agents');
+
       // An empty `persona.md` rather than none: the definition names the file
       // (§3), and a definition pointing at a file that is not there loads with a
       // warning for something the API just created.
@@ -376,6 +480,7 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
       const next = parseAgentDefinition(merged, `PATCH /api/roster/agents/${id}`);
       const violations = immutableFieldViolations(existing.definition, next);
       if (violations.length > 0) throw new ImmutableFieldError(violations);
+      requireSkillFolders(next, `PATCH /api/roster/agents/${id}`);
 
       const written = persist(next, personaText);
       settle('updated', [id]);

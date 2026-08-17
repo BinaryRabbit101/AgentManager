@@ -94,6 +94,22 @@ async function putBytes<T>(path: string, bytes: Buffer, contentType: string): Pr
 
 const get = <T>(path: string): Promise<Answer<T>> => call<T>('GET', path);
 
+/**
+ * Writes the `email-responder` fixture straight into the booted library — the
+ * one M1 fixture that carries an integration with a `secretRef`.
+ *
+ * Written to disk rather than posted, because the API mints its own `meta` and
+ * this is about the definition the fixture states, refs and all.
+ */
+function writeMailbox(booted: BootedService): void {
+  const definition = loadFixture('email-responder');
+  const dir = join(booted.paths.library, 'agents', definition.id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'agent.json'), serialiseAgentDefinition(definition), 'utf8');
+  writeFileSync(join(dir, 'persona.md'), 'Answer the mail.', 'utf8');
+  booted.runtime.registry.require<RosterService>(ROSTER_SERVICE)?.reload();
+}
+
 beforeEach(() => {
   // A data root whose path contains a space, so every boot exercises M2's
   // Windows path requirement rather than a separate test doing it once.
@@ -436,6 +452,88 @@ describe('secrets (§10)', () => {
     expect(JSON.stringify(one.body)).toContain('mcp.gmail.token');
     expect(JSON.stringify(one.body)).not.toContain('PLANTED-SECRET-VALUE');
     expect(JSON.stringify(all.body)).not.toContain('PLANTED-SECRET-VALUE');
+  });
+
+  it('reports { secretRef, resolved: true } when the credential is there (M6)', async () => {
+    const booted = await bootCore({
+      env: { AGENTMANAGER_SECRET_mcp__gmail__token: 'ya29.PLANTED-SECRET-VALUE' },
+    });
+    writeMailbox(booted);
+
+    const one = await get<AgentView>('/api/roster/agents/marcus-inbox');
+
+    expect(one.body.credentials).toEqual([
+      expect.objectContaining({
+        integration: 'gmail',
+        key: 'GMAIL_TOKEN',
+        secretRef: 'mcp.gmail.token',
+        resolved: true,
+      }),
+    ]);
+    expect(one.body.needsCredentials).toBe(false);
+    expect(JSON.stringify(one.body)).not.toContain('PLANTED-SECRET-VALUE');
+  });
+
+  it('returns resolved: false and the badge field for a missing credential (M6)', async () => {
+    const booted = await bootCore();
+    writeMailbox(booted);
+
+    const one = await get<AgentView>('/api/roster/agents/marcus-inbox');
+    const all = await get<RosterListView>('/api/roster/agents');
+
+    expect(one.body.credentials?.[0]).toMatchObject({
+      secretRef: 'mcp.gmail.token',
+      resolved: false,
+    });
+    expect(one.body.needsCredentials).toBe(true);
+    // The board carries the same badge — that is where the card lives.
+    expect(
+      all.body.agents.find((agent) => agent.definition.id === 'marcus-inbox')?.needsCredentials,
+    ).toBe(true);
+  });
+
+  // M6's acceptance says "the ref absent from every API response and every log
+  // line". Read literally that contradicts §10, which *requires* the API to
+  // return `{ secretRef, resolved }` so the UI can badge a missing credential —
+  // and the M3 test above asserts the ref is there. So the property under test
+  // is the resolved **value**: it is what must not reach a response or a log.
+  it('keeps the resolved value out of every log line, not only out of the response (M6)', async () => {
+    const captured: string[] = [];
+    const booted = await bootCore({
+      env: { AGENTMANAGER_SECRET_mcp__gmail__token: 'ya29.PLANTED-SECRET-VALUE' },
+      pretty: true,
+      writePretty: (chunk) => captured.push(chunk),
+    });
+    writeMailbox(booted);
+
+    await get<AgentView>('/api/roster/agents/marcus-inbox');
+    await get<RosterListView>('/api/roster/agents');
+
+    const logged = captured.join('');
+    expect(logged.length).toBeGreaterThan(0);
+    expect(logged).not.toContain('PLANTED-SECRET-VALUE');
+  });
+
+  it('warns at write time when an integration has no matching mcp__<server>__* rule (M6)', async () => {
+    await bootCore();
+    const created = await call<AgentView>('POST', '/api/roster/agents', {
+      name: 'Unwired',
+      specialty: 'email-response',
+      integrations: {
+        gmail: { transport: 'stdio', command: 'npx', args: ['-y', '@example/gmail-mcp'] },
+      },
+      permissions: { allow: ['Read'] },
+    });
+
+    expect(created.status).toBe(201);
+    expect(created.body.diagnostics).toEqual([
+      expect.objectContaining({
+        level: 'warn',
+        code: 'roster.integration.no-allow-rule',
+        path: 'integrations.gmail',
+      }),
+    ]);
+    expect(created.body.diagnostics[0]?.message).toContain('mcp__gmail__*');
   });
 });
 

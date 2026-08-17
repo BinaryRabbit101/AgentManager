@@ -14,6 +14,7 @@ import {
   DEFAULT_PERMISSION_MODE,
   MUTATING_TOOL_DENY_RULES,
   compilePermissions,
+  grantTool,
   outcomeForTool,
   removesToolDefinition,
 } from './permissions.js';
@@ -508,5 +509,143 @@ describe('bypassPermissions (and auto) are unreachable', () => {
   it('the ladder itself contains neither member', () => {
     expect(PERMISSION_MODES).not.toContain('bypassPermissions');
     expect(PERMISSION_MODES).not.toContain('auto');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two SDK-spike corrections, at composition level
+// ---------------------------------------------------------------------------
+
+/**
+ * `sdkRules.test.ts` proves the rewrites rule by rule. What matters here is that
+ * they happen **before** the algebra runs, because `allow` is an intersection
+ * and an intersection between a rewritten rule and an un-rewritten one would
+ * silently drop both.
+ */
+describe('AskUserQuestion never reaches the allow set (runner SDK-NOTES C2)', () => {
+  it('lifts a baseline allow into ask, so the question bridge survives', () => {
+    const compiled = compilePermissions(
+      { allow: ['Read', 'AskUserQuestion'] },
+      undefined,
+      FREE_ASSIGNMENT,
+      OPEN_POLICY,
+    );
+
+    expect(compiled.effective.allow).toEqual(['Read']);
+    expect(compiled.effective.ask).toContain('AskUserQuestion');
+    expect(codesOf(compiled.diagnostics)).toContain(
+      'roster.permissions.ask-user-question-not-auto-approved',
+    );
+  });
+
+  it('lifts it from any layer — project override, assignment scope, elevation', () => {
+    const layers: readonly [ProjectPermissionLayer | undefined, AssignmentPermissionLayer][] = [
+      [{ permissions: { allow: ['AskUserQuestion'] } }, FREE_ASSIGNMENT],
+      [undefined, { write: true, scopeRules: { allow: ['AskUserQuestion'] } }],
+      [{ elevation: { allow: ['AskUserQuestion'], reason: 'let it ask' } }, FREE_ASSIGNMENT],
+    ];
+
+    for (const [project, assignment] of layers) {
+      const compiled = compilePermissions(
+        { allow: ['AskUserQuestion', 'Read'] },
+        project,
+        assignment,
+        OPEN_POLICY,
+      );
+      expect(compiled.effective.allow).not.toContain('AskUserQuestion');
+      expect(compiled.effective.ask).toContain('AskUserQuestion');
+    }
+  });
+
+  it('still lets a definition deny it outright', () => {
+    const compiled = compilePermissions(
+      { deny: ['AskUserQuestion'] },
+      undefined,
+      FREE_ASSIGNMENT,
+      OPEN_POLICY,
+    );
+    expect(compiled.effective.deny).toContain('AskUserQuestion');
+    expect(removesToolDefinition(compiled.effective, 'AskUserQuestion')).toBe(true);
+  });
+});
+
+describe('file scopes are expressed as Edit(path) (orchestrator SDK-NOTES C1)', () => {
+  it('intersects a Write(path) assignment scope against an Edit baseline', () => {
+    const compiled = compilePermissions(
+      { allow: ['Edit'] },
+      undefined,
+      { write: true, scopeRules: { allow: ['Write(./services/billing/**)'] } },
+      OPEN_POLICY,
+    );
+
+    // Without the rewrite the two rules would be incomparable and the scope
+    // would be discarded as an attempt to widen.
+    expect(compiled.effective.allow).toEqual(['Edit(./services/billing/**)']);
+    expect(codesOf(compiled.diagnostics)).toContain('roster.permissions.inert-file-rule');
+  });
+
+  it('carries the complement deny on the Edit form, which is the half that matters', () => {
+    const compiled = compilePermissions(
+      { allow: ['Edit(./docs/**)'] },
+      undefined,
+      { write: true, scopeRules: { deny: ['Write(./services/**)'] } },
+      OPEN_POLICY,
+    );
+    expect(compiled.effective.deny).toContain('Edit(./services/**)');
+    expect(compiled.effective.deny).toContain('Write(./services/**)');
+  });
+
+  it('never puts Edit(*) in the compiled allow set', () => {
+    const compiled = compilePermissions(
+      { allow: ['Edit(*)', 'Read'] },
+      undefined,
+      FREE_ASSIGNMENT,
+      OPEN_POLICY,
+    );
+    expect(compiled.effective.allow).toEqual(['Read']);
+    expect(compiled.effective.allow).not.toContain('Edit');
+    expect(codesOf(compiled.diagnostics)).toContain(
+      'roster.permissions.wildcard-file-scope-dropped',
+    );
+  });
+
+  it('normalises policy.globalDeny too, so foundation cannot state an inert rule', () => {
+    const compiled = compilePermissions(undefined, undefined, FREE_ASSIGNMENT, {
+      allowPermissionElevation: true,
+      globalDeny: ['MultiEdit(C:/Windows/**)'],
+    });
+    expect(compiled.effective.deny).toContain('Edit(C:/Windows/**)');
+  });
+});
+
+describe('grantTool — the compiler’s own auto-approvals', () => {
+  it('adds a rule no layer declared, sorted into the allow set', () => {
+    const compiled = compilePermissions(
+      { allow: ['Read'] },
+      undefined,
+      FREE_ASSIGNMENT,
+      OPEN_POLICY,
+    );
+    expect(grantTool(compiled, 'Skill').effective.allow).toEqual(['Read', 'Skill']);
+  });
+
+  it('refuses to override a deny', () => {
+    const denied = compilePermissions(
+      { allow: ['Read'], deny: ['Skill'] },
+      undefined,
+      FREE_ASSIGNMENT,
+      OPEN_POLICY,
+    );
+    expect(grantTool(denied, 'Skill').effective.allow).toEqual(['Read']);
+  });
+
+  it('is a no-op when the rule is already granted', () => {
+    const compiled = compilePermissions(
+      { allow: ['Skill'] },
+      undefined,
+      FREE_ASSIGNMENT,
+      OPEN_POLICY,
+    );
+    expect(grantTool(compiled, 'Skill')).toBe(compiled);
   });
 });
