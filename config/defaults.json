@@ -12,7 +12,29 @@
   "remote": {
     "bind": "tailscale",
     "port": 7478,
-    "hostnameHint": null
+    "hostnameHint": null,
+    "detect": {
+      "cli": null,
+      "pollMs": 30000,
+      "retryMaxMs": 120000
+    },
+    "token": {
+      "ttlDays": 90,
+      "maxActive": 10
+    },
+    "auth": {
+      "maxFailures": 10,
+      "failWindowMs": 300000,
+      "blockMs": 900000
+    },
+    "stream": {
+      "ticketTtlSec": 30,
+      "heartbeatMs": 30000
+    },
+    "agentAccess": {
+      "ttlHours": 72
+    },
+    "browseRateLimitPerMin": 60
   },
   "modules": {
     "remote": {

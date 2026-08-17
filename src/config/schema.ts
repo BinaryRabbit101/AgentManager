@@ -18,6 +18,12 @@ import {
   ORCHESTRATOR_CONFIG_DEFAULTS,
   orchestratorConfigSchema,
 } from '../modules/orchestrator/config.js';
+// `config.ts` only — never `../modules/remote/index.js`. The remote *module* is
+// reached through a dynamic import behind the edition gate (§6.2); its
+// configuration namespace has to be in the composed schema in both editions,
+// because that is what lets the work edition *reject* `modules.remote.enabled`
+// instead of merely ignoring it. `config.ts` holds no listener and no load probe.
+import { REMOTE_CONFIG_DEFAULTS, remoteConfigSchema } from '../modules/remote/config.js';
 import { RUNNER_CONFIG_DEFAULTS, runnerConfigSchema } from '../modules/runner/config.js';
 
 import { ConfigSchemaRegistry } from './registry.js';
@@ -53,11 +59,17 @@ export const foundationConfigShape = {
     bind: nonEmpty,
     port,
   }),
-  remote: z.strictObject({
-    bind: nonEmpty,
-    port,
-    hostnameHint: nonEmpty.nullable(),
-  }),
+  /**
+   * Contributed by the remote element (remote DESIGN §11). Foundation §2.3's
+   * three keys — `bind`, `port`, `hostnameHint` — are the first three entries of
+   * that schema and keep the exact meaning and defaults they had while foundation
+   * shipped them alone; `bind` is additionally narrowed to the literal
+   * `"tailscale"`, because a config-editable bind address would be a hole through
+   * architecture D5. The shape lives in `src/modules/remote/config.ts` so the
+   * element owns it, and is registered from here for the same reason `runner` and
+   * `orchestrator` are — one namespace, one contribution.
+   */
+  remote: remoteConfigSchema,
   modules: z.strictObject({
     remote: z.strictObject({ enabled: z.boolean() }),
     orchestrator: z.strictObject({ enabled: z.boolean() }),
@@ -133,7 +145,7 @@ const foundationDefaults: { readonly [K in keyof typeof foundationConfigShape]: 
   dataRoot: null,
   library: { root: null, watch: true },
   http: { bind: '127.0.0.1', port: 7477 },
-  remote: { bind: 'tailscale', port: 7478, hostnameHint: null },
+  remote: REMOTE_CONFIG_DEFAULTS,
   modules: { remote: { enabled: false }, orchestrator: { enabled: true } },
   runner: RUNNER_CONFIG_DEFAULTS,
   projects: { root: null, worktreesRoot: null, browseRoots: null },
@@ -189,7 +201,10 @@ export function createFoundationRegistry(): ConfigSchemaRegistry {
       namespace,
       schema: foundationConfigShape[namespace],
       defaults: foundationDefaults[namespace],
-      owner: namespace === 'orchestrator' || namespace === 'runner' ? namespace : 'foundation',
+      owner:
+        namespace === 'orchestrator' || namespace === 'runner' || namespace === 'remote'
+          ? namespace
+          : 'foundation',
     });
   }
   registry.registerInvariant(workEditionRemoteInvariant);

@@ -1,0 +1,30 @@
+-- 0001_last_used_peer.sql — the remote element's one column (remote DESIGN §4.1),
+-- shipped under foundation §1.3's element-migration mechanism.
+--
+-- `remote_tokens` itself lives in foundation's `0001_init.sql`: the table exists
+-- in both editions (harmless) because foundation owns the schema, and only this
+-- module ever reads it. What foundation could not know is which *device* last
+-- presented a token, so remote adds it here, next to the code that writes it.
+--
+-- Applied inside a transaction opened by the runner: no BEGIN/COMMIT here, and
+-- no `IF NOT EXISTS` — the runner tracks applied versions in `schema_migrations`
+-- under the module id and never re-runs a version, so a defensive guard would
+-- only hide a genuine collision.
+
+-- ---------------------------------------------------------------------------
+-- remote_tokens.last_used_peer — "which device last used this token?" (§4.1)
+--
+-- The peer IP as the socket reported it, and, when the cached `tailscale status
+-- --json` peer map resolves it, the tailnet node name alongside — for example
+-- `100.101.102.103 (pixel-9)`. One text column rather than two, because the node
+-- name is best-effort enrichment (§9.3) that is frequently absent, and a nullable
+-- second column would invite code that treats it as identity.
+--
+-- It is an **audit** field and never an authentication input: §9.3 is explicit
+-- that "if the map is stale or absent, the request proceeds and the field is
+-- null". Nothing may branch on it.
+--
+-- Nullable because a token that has never been used has no peer, which is a
+-- meaningful state the token list shows ("never used").
+-- ---------------------------------------------------------------------------
+ALTER TABLE remote_tokens ADD COLUMN last_used_peer TEXT;

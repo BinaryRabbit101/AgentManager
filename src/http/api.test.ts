@@ -88,6 +88,13 @@ async function bootApi(options: BootOptions = {}): Promise<BootedService> {
     // Ephemeral port: the schema requires a real port number (and should), so
     // the test seam is a boot option rather than configuration.
     http: { port: 0, heartbeatMs: 0, ...options.http },
+    // The home-edition case below loads the real remote module, whose detector
+    // would otherwise read this machine's adapters. Injected so no test run binds
+    // a socket beyond loopback, on any developer's box.
+    remote: {
+      detect: { locateCli: () => undefined, networkInterfaces: () => ({}) },
+      ...options.remote,
+    },
     argv: ['--set', 'secrets.provider=env', ...(options.argv ?? [])],
   });
   service = booted;

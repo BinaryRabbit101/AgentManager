@@ -23,6 +23,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { findInstallRoot } from '../config/index.js';
 import { isDatabaseOpen } from '../storage/index.js';
 import type { Module } from '../modules/index.js';
+// Type-only: importing the remote module's `index.ts` here would evaluate its load
+// probe and defeat what `main.test.ts` measures. `options.ts` runs nothing.
+import type { RemoteModuleOptions } from '../modules/remote/options.js';
 import { boot, type BootOptions, type BootedService, type RunIo } from '../main.js';
 
 import {
@@ -42,6 +45,16 @@ const repoRoot = findInstallRoot(resolve(import.meta.dirname, '..'));
 const tailnetOnly: ListenerObservation = {
   source: 'handles',
   listeners: [{ address: '100.101.102.103', port: 7478, family: 'IPv4' }],
+};
+
+/**
+ * A machine with no Tailscale at all: no CLI to spawn, no adapters to enumerate.
+ *
+ * Keeps these tests independent of whether the box running them is on a tailnet,
+ * which is the difference between an assertion and a coincidence.
+ */
+const noTailscale: RemoteModuleOptions = {
+  detect: { locateCli: () => undefined, networkInterfaces: () => ({}) },
 };
 
 function capture(): RunIo & { lines: string[]; errors: string[] } {
@@ -161,8 +174,11 @@ describe('the bind-time invariant through a real boot (§6.3)', () => {
   });
 
   it('accepts a home-edition listener the remote module publishes as its own', async () => {
-    // The contract the remote element will satisfy: a service on the registry
-    // whose `boundAddress()` matches the socket the OS reports.
+    // The contract the remote element satisfies: a service on the registry whose
+    // `boundAddress()` matches the socket the OS reports. Asserted here against a
+    // *fixture* claim rather than the real module, which is why the real one is
+    // switched off — this test is about foundation reading the claim, and remote's
+    // own listener has its own tests for producing one.
     const claim: Module = {
       id: 'fixture-remote',
       dependsOn: [],
@@ -176,7 +192,7 @@ describe('the bind-time invariant through a real boot (§6.3)', () => {
     };
 
     const service = await bootTest({
-      argv: ['--edition', 'home'],
+      argv: ['--edition', 'home', '--set', 'modules.remote.enabled=false'],
       additionalModules: [claim],
       listeners: () => tailnetOnly,
     });
@@ -202,7 +218,7 @@ describe('the bind-time invariant through a real boot (§6.3)', () => {
     };
 
     const failure = await bootTest({
-      argv: ['--edition', 'home'],
+      argv: ['--edition', 'home', '--set', 'modules.remote.enabled=false'],
       additionalModules: [claim],
       listeners: () => tailnetOnly,
       io: capture(),
@@ -212,9 +228,12 @@ describe('the bind-time invariant through a real boot (§6.3)', () => {
   });
 
   it('treats the home edition with no remote listener exactly like the work edition', async () => {
-    // The placeholder remote module provides no service, so `home` with remote
-    // enabled is as closed as `work` — which is what M11 will pin.
-    const service = await bootTest({ argv: ['--edition', 'home'] });
+    // The remote module is loaded and running, and has no Tailscale address to
+    // bind, so `boundAddress()` answers `null` and `home` is as closed as `work` —
+    // which is what M11 will pin. Detection is injected rather than left to the
+    // machine: on a developer's box that *is* on a tailnet this test would
+    // otherwise assert the opposite of what it says.
+    const service = await bootTest({ argv: ['--edition', 'home'], remote: noTailscale });
     expect(service.runtime.order).toContain('remote');
     expect(service.bind.remote).toBeNull();
     expect(service.bind.nonLoopback).toEqual([]);

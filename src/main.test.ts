@@ -22,6 +22,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { findInstallRoot } from './config/index.js';
 import { isDatabaseOpen } from './storage/index.js';
+// Type-only, deliberately: importing the remote module's `index.ts` here would
+// evaluate its load probe and destroy the very count this file asserts on.
+import type { RemoteModuleOptions } from './modules/remote/options.js';
 import {
   CriticalModuleFailureError,
   moduleLoadCount,
@@ -161,6 +164,18 @@ afterEach(async () => {
  * `http.port: 0` binds the M8 listener to an ephemeral port, so a test run never
  * competes for the configured 7477 or with another test file.
  */
+/**
+ * A machine with no Tailscale at all: no CLI to spawn, no adapters to enumerate.
+ *
+ * The home-edition boots below load the real remote module, and its default
+ * detector reads this machine. Injecting "nothing found" is what keeps them about
+ * the composition root rather than about whether the developer is on a tailnet —
+ * and stops a test run opening a socket beyond loopback.
+ */
+const noTailscale: RemoteModuleOptions = {
+  detect: { locateCli: () => undefined, networkInterfaces: () => ({}) },
+};
+
 async function bootTest(options: BootOptions = {}): Promise<BootedService> {
   const service = await boot({
     installRoot: repoRoot,
@@ -172,6 +187,7 @@ async function bootTest(options: BootOptions = {}): Promise<BootedService> {
     exit: (code) => void exitCodes.push(code),
     ...options,
     http: { port: 0, ...options.http },
+    remote: { ...noTailscale, ...options.remote },
     argv: ['--set', 'secrets.provider=env', ...(options.argv ?? [])],
   });
   booted.push(service);

@@ -53,6 +53,12 @@ async function bootCore(options: BootOptions = {}): Promise<BootedService> {
     exit: () => {},
     ...options,
     http: { port: 0, heartbeatMs: 0, ...options.http },
+    // The home-edition case loads the real remote module; injecting "no Tailscale"
+    // keeps this suite off the machine's adapters and off any non-loopback socket.
+    remote: {
+      detect: { locateCli: () => undefined, networkInterfaces: () => ({}) },
+      ...options.remote,
+    },
     argv: ['--set', 'secrets.provider=env', ...(options.argv ?? [])],
   });
   service = booted;

@@ -5,7 +5,8 @@
  * const modules = [storage, secrets, http, roster, projects, runner];
  * if (config.modules.orchestrator.enabled) modules.push(orchestrator);
  * if (config.edition === 'home' && config.modules.remote.enabled) {
- *   modules.push((await import('./modules/remote')).default);   // dynamic import
+ *   const remote = await import('./modules/remote/index.js');            // dynamic
+ *   modules.push(remote.createRemoteModule({ accessLogger }, options.remote));
  * }
  * ```
  *
@@ -65,6 +66,11 @@ import { createLogging, type Logging } from './logging/index.js';
 import { createOrchestratorModule } from './modules/orchestrator/index.js';
 import { createProjectsModule } from './modules/projects/index.js';
 import { createRosterModule } from './modules/roster/index.js';
+// Type-only, and from `options.ts` rather than from the module's `index.ts`:
+// `import type` is erased, and the file it points at contains no load probe, no
+// listener and nothing that runs, so the work edition's "never imported" guarantee
+// holds even against a bundler that resolved the edge (foundation §6.2).
+import type { RemoteModuleOptions } from './modules/remote/options.js';
 import { createRunnerModule, type RunnerModuleOptions } from './modules/runner/index.js';
 import {
   createSecretStore,
@@ -306,6 +312,16 @@ export interface BootOptions {
    * token or a subprocess.
    */
   readonly runner?: RunnerModuleOptions;
+  /**
+   * Passed through to `createRemoteModule` — Tailscale detection, the listener's
+   * timers and jitter, and a port override.
+   *
+   * Every remote test injects detection here rather than depending on whether the
+   * machine running the suite happens to be on a tailnet; `port: 0` is the same
+   * ephemeral-port escape hatch {@link BootOptions.http} provides, for the same
+   * reason (the schema requires a real port number, and rightly so).
+   */
+  readonly remote?: RemoteModuleOptions;
 }
 
 /** A running service. M8 hangs the HTTP server off this; M9 the process lifecycle. */
@@ -352,6 +368,9 @@ async function buildModuleList(options: {
   readonly secretConditions: () => readonly SecretsHealthCondition[];
   readonly http: HttpModuleOptions;
   readonly runner?: RunnerModuleOptions | undefined;
+  readonly remote?: RemoteModuleOptions | undefined;
+  /** `access.log`'s stream, which remote's second listener writes to as well. */
+  readonly accessLogger: Logger;
   readonly additional: readonly Module[];
   readonly log: Logger;
 }): Promise<readonly Module[]> {
@@ -374,8 +393,16 @@ async function buildModuleList(options: {
   if (config.modules.orchestrator.enabled) modules.push(createOrchestratorModule(options.storage));
 
   if (config.edition === 'home' && config.modules.remote.enabled) {
-    const loaded = (await import('./modules/remote/index.js')) as { default: Module };
-    modules.push(loaded.default);
+    const loaded = (await import('./modules/remote/index.js')) as {
+      createRemoteModule: (
+        deps: { readonly accessLogger: Logger },
+        options?: RemoteModuleOptions,
+      ) => Module;
+    };
+    // `access.log` is not on `ModuleContext` (modules get `ctx.logger`, which is
+    // `core.log`), and remote is the second listener on the same route table, so
+    // its request lines belong on the same stream with the same redaction chain.
+    modules.push(loaded.createRemoteModule({ accessLogger: options.accessLogger }, options.remote));
     options.log.info('remote module loaded (edition "home", modules.remote.enabled)');
   } else {
     options.log.debug(
@@ -523,6 +550,8 @@ export async function boot(options: BootOptions = {}): Promise<BootedService> {
           : { heartbeatMs: options.http.heartbeatMs }),
       },
       runner: options.runner,
+      remote: options.remote,
+      accessLogger: logging.accessLogger,
       additional: options.additionalModules ?? [],
       log,
     });
