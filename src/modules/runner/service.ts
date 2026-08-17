@@ -1,28 +1,39 @@
 /**
- * `RunnerService` — the in-process face of runner DESIGN §11.2, as far as M1,
- * M2 and M3 take it.
+ * `RunnerService` — the in-process face of runner DESIGN §11.2, as far as M1–M6
+ * take it.
  *
- * §11.2's full interface also carries `steer`, `pause`, `resume`,
- * `continueFrom`, `stop`, `queueState` and `usageWindows`. Those need session
- * control (M6), the scheduler (M5) and metering (M4), and are **absent rather
- * than stubbed**: a method that resolves without doing anything is a contract
- * another element can build against and then discover is a lie.
+ * §11.2's full interface also carries `continueFrom` and `usageWindows`. Those
+ * need crash recovery (M9) and usage windows (M11), and are **absent rather than
+ * stubbed**: a method that resolves without doing anything is a contract another
+ * element can build against and then discover is a lie.
  *
- * What is here is exactly what M1–M3 make true — the launch path, the session
- * record, and the two transcript reads that §11.1 and §11.2 insist are one
- * reader.
+ * ## Why `stop` landing here changes something elsewhere
+ *
+ * Orchestrator's `hasLauncher()` probes for `startSession` **and** `stop`
+ * together (orchestrator `ports.ts`), so this milestone is the one that turns
+ * `POST /api/assignments/solo` from a `503 runner_unavailable` into a real
+ * launch, and turns `closeAssignment` into something that actually stops the
+ * sessions it closes. That is asserted end to end from orchestrator's side.
  */
 import type { SessionStatus } from '../../storage/index.js';
 
 import { LaunchUnavailableError } from './errors.js';
-import type { LaunchChain, StartSessionRequest, StartSessionResult } from './launch.js';
+import type {
+  LaunchChain,
+  SessionControlResult,
+  StartSessionRequest,
+  StartSessionResult,
+  SteerOptions,
+  SteerResult,
+} from './launch.js';
+import type { ExitReason } from './status.js';
 import { bandRank, type QueueEntry, type QueueState } from './scheduler.js';
 import { TERMINAL_STATUSES } from './status.js';
 import type { RunnerSessionRecord, SessionRepository } from './repository.js';
 import type { ReadForwardOptions, TranscriptPage, TranscriptReader } from './transcriptReader.js';
 import type { SessionUsageTotals, UsageRepository } from './usage.js';
 
-export type { StartSessionRequest, StartSessionResult };
+export type { SessionControlResult, StartSessionRequest, StartSessionResult, SteerResult };
 
 /** What `GET /api/sessions/:id` answers with (§11.1: "record + usage + queue position"). */
 export interface SessionDetail {
@@ -60,6 +71,34 @@ export interface RunnerService {
    * launch path does not depend on anyone calling it.
    */
   awaitSettled(sessionId: string): Promise<RunnerSessionRecord>;
+  /**
+   * §4.3: deliver a message into a running session, optionally superseding the
+   * turn in flight. A non-`running` session is a typed 409 — the one control
+   * verb that is deliberately **not** idempotent, because a steer that silently
+   * went nowhere is a message the user believes landed.
+   *
+   * Returns more than §11.2's `Promise<void>`: SDK-NOTES **G4**'s `still_queued`
+   * receipt is a fact no other call can surface.
+   */
+  steer(sessionId: string, text: string, options?: SteerOptions): Promise<SteerResult>;
+  /**
+   * §2.2's `running → paused`: `interrupt()` + `close()`, the slot released, the
+   * workspace lease kept, `sdk_session_id` already recorded. Idempotent.
+   */
+  pause(sessionId: string, reason?: ExitReason): Promise<SessionControlResult>;
+  /** §9.4 path 1: the same row, the same transcript, `resume`. Idempotent. */
+  resume(sessionId: string): Promise<SessionControlResult>;
+  /**
+   * Stop, from any live status: `interrupted` / `user_stopped` for a running or
+   * paused session, `user_cancelled` for one that never started. Idempotent, and
+   * it leaves no subprocess behind (§9.1).
+   *
+   * Orchestrator calls this on the sessions of an assignment it is closing
+   * (orchestrator R6); the reason it passes is recorded, never interpreted.
+   */
+  stop(sessionId: string, reason?: string): Promise<SessionControlResult>;
+  /** `POST /api/sessions/:id/pin` — projects' retention exemption (§11.1). */
+  setPinned(sessionId: string, pinned: boolean): SessionControlResult;
   /** The session row, §3.5's columns included. */
   getSession(sessionId: string): Promise<RunnerSessionRecord | undefined>;
   /** §11.1's `GET /api/sessions/:id`: the record, its usage, its queue position. */
@@ -138,6 +177,15 @@ export function createRunnerService(options: RunnerServiceOptions): RunnerServic
 
     awaitSettled: (sessionId) =>
       Promise.resolve().then(() => launchChain().awaitSettled(sessionId)),
+
+    steer: (sessionId, text, steerOptions) =>
+      Promise.resolve().then(() => launchChain().steer(sessionId, text, steerOptions)),
+    pause: (sessionId, reason) =>
+      Promise.resolve().then(() => launchChain().pause(sessionId, reason)),
+    resume: (sessionId) => Promise.resolve().then(() => launchChain().resume(sessionId)),
+    stop: (sessionId, reason) =>
+      Promise.resolve().then(() => launchChain().stop(sessionId, reason)),
+    setPinned: (sessionId, pinned) => launchChain().setPinned(sessionId, pinned),
 
     getSession: (sessionId) => Promise.resolve(sessions.get(sessionId)),
 

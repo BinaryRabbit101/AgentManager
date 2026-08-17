@@ -39,6 +39,7 @@
  * L1–L8, L10, L11, L13, L15 and L16 are engine behaviour end to end and stay
  * exactly as M0 wrote them.
  */
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -754,6 +755,56 @@ describe.skipIf(!hasToken)('SDK live behaviour (SDK-NOTES §11)', () => {
 
       console.log('[L11] usage per assistant message id:', [...byId.entries()]);
       expect(byId.size).toBeGreaterThan(0);
+    },
+  );
+
+  it(
+    'M6 — Stop leaves no live claude subprocess: process count before and after',
+    { timeout: 300_000 },
+    async () => {
+      // Runner IMPLEMENTATION M6: "Stop yields interrupted / user_stopped and
+      // **never leaves a live subprocess — asserted by process count before and
+      // after**." The mechanism (interrupt → close → abort, no handle left) is
+      // proven against the fake in `sessionControl.test.ts`; only the *process*
+      // half needs a real engine, so it lives here with the rest of §11.
+      const count = (): number => {
+        const listed = execFileSync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            '@(Get-Process -Name claude -ErrorAction SilentlyContinue).Count',
+          ],
+          { encoding: 'utf8' },
+        );
+        return Number(listed.trim());
+      };
+
+      const before = count();
+      const input = new InputQueue();
+      input.push('Count slowly from 1 to 500, one number per line.');
+      const session = query({ prompt: input, options: liveOptions({ maxTurns: 1 }) });
+
+      let stopped = false;
+      for await (const message of session) {
+        if (!stopped && message.type === 'assistant') {
+          stopped = true;
+          // §9.1's sequence, exactly as `windDown` runs it.
+          await session.interrupt();
+          input.close();
+          session.close();
+          break;
+        }
+      }
+
+      // The child is reaped asynchronously; give it the same graceful window
+      // runner does before asserting.
+      await new Promise((resolve) => setTimeout(resolve, 10_000));
+      const after = count();
+
+      console.log('[M6] claude processes before/after Stop:', { before, after });
+      expect(after).toBeLessThanOrEqual(before);
     },
   );
 

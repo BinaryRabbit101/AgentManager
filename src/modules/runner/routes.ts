@@ -1,14 +1,29 @@
 /**
- * Runner's HTTP surface as far as M2, M4 and M5 take it (runner DESIGN §11.1).
- * The rest of §11.1's table — the control verbs, the event stream, the listing —
- * arrives with M6, M9 and M10.
+ * Runner's HTTP surface as far as M2, M4, M5 and M6 take it (runner DESIGN
+ * §11.1). The rest of §11.1's table — `/continue`, the event stream, the
+ * listing — arrives with M9 and M10.
  *
  * ```
- * GET /api/sessions/:id             record + usage + queue position   (M4/M5)
- * GET /api/sessions/:id/transcript  ?from=&limit= | ?tail=            (M2)
- * GET /api/runner/queue             the queue panel's state and rows  (M5)
- * PUT /api/runner/capacity          { maxConcurrent }, 1..8, settings (M5)
+ * GET  /api/sessions/:id             record + usage + queue position   (M4/M5)
+ * GET  /api/sessions/:id/transcript  ?from=&limit= | ?tail=            (M2)
+ * POST /api/sessions/:id/steer       { text, interrupt? }              (M6)
+ * POST /api/sessions/:id/pause       { reason? }                       (M6)
+ * POST /api/sessions/:id/resume                                        (M6)
+ * POST /api/sessions/:id/stop        { reason? }                       (M6)
+ * POST /api/sessions/:id/pin         { pinned }                        (M6)
+ * GET  /api/runner/queue             the queue panel's state and rows  (M5)
+ * PUT  /api/runner/capacity          { maxConcurrent }, 1..8, settings (M5)
  * ```
+ *
+ * ## The control verbs are idempotent, and that is a route-level promise
+ *
+ * §11.1: "pausing a paused session, stopping a stopped one, or resuming a
+ * running one returns the current state with 200, not an error. Remote clients
+ * on flaky links retry, and a retry that 409s is a retry that produces a support
+ * ticket." So all four answer `200 { sessionId, status, exitReason, changed }`
+ * and the `changed` flag — not the status code — is what says whether this call
+ * was the one that did it. `steer` is the deliberate exception (§4.3): a message
+ * that silently went nowhere is worse than a 409.
  *
  * `GET /api/sessions/:id` is where §7.3's rule becomes visible: the estimate is
  * called `costUsdEstimate` and nothing on the payload can be read as spend.
@@ -37,6 +52,7 @@ import type { RouteDefinition } from '../types.js';
 
 import { InvalidRequestError, RunnerError, SessionNotFoundError } from './errors.js';
 import type { RunnerService } from './service.js';
+import { isExitReason } from './status.js';
 
 export interface RunnerRoutesDeps {
   readonly service: RunnerService;
@@ -52,6 +68,11 @@ function readInteger(req: RequestContext, name: string): number | undefined {
     throw new InvalidRequestError(`"${name}" must be a non-negative integer.`, name);
   }
   return value;
+}
+
+function readBody(req: RequestContext): Record<string, unknown> {
+  const body = req.body;
+  return typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
 }
 
 export function createRunnerRoutes(deps: RunnerRoutesDeps): readonly RouteDefinition[] {
@@ -104,6 +125,61 @@ export function createRunnerRoutes(deps: RunnerRoutesDeps): readonly RouteDefini
     });
   };
 
+  const steer = async (req: RequestContext, res: ResponseTools): Promise<HttpResult> => {
+    const sessionId = req.params['id'] ?? '';
+    const body = readBody(req);
+    const text = body['text'];
+    if (typeof text !== 'string' || text.trim() === '') {
+      throw new InvalidRequestError('"text" is required and must be a non-empty string.', 'text');
+    }
+    const interrupt = body['interrupt'];
+    if (interrupt !== undefined && typeof interrupt !== 'boolean') {
+      throw new InvalidRequestError(
+        '"interrupt" must be a boolean. False (the default) delivers at the next turn boundary; ' +
+          'true stops the turn in flight first (§4.3).',
+        'interrupt',
+      );
+    }
+    return res.json(await service.steer(sessionId, text, { interrupt: interrupt === true }));
+  };
+
+  const pause = async (req: RequestContext, res: ResponseTools): Promise<HttpResult> => {
+    const sessionId = req.params['id'] ?? '';
+    // §2.3's set is closed, so a caller may only name a reason that is in it.
+    // Omitting it is the ordinary case: a human pressed Pause.
+    const reason: unknown = readBody(req)['reason'];
+    if (reason !== undefined && !isExitReason(reason)) {
+      throw new InvalidRequestError(
+        '"reason" must be one of the exit_reason values of §2.3, or be omitted.',
+        'reason',
+      );
+    }
+    return res.json(await service.pause(sessionId, reason));
+  };
+
+  const resume = async (req: RequestContext, res: ResponseTools): Promise<HttpResult> =>
+    res.json(await service.resume(req.params['id'] ?? ''));
+
+  const stop = async (req: RequestContext, res: ResponseTools): Promise<HttpResult> => {
+    const reason = readBody(req)['reason'];
+    if (reason !== undefined && typeof reason !== 'string') {
+      throw new InvalidRequestError('"reason" must be a string when present.', 'reason');
+    }
+    return res.json(await service.stop(req.params['id'] ?? '', reason));
+  };
+
+  const pin = (req: RequestContext, res: ResponseTools): Promise<HttpResult> => {
+    const pinned = readBody(req)['pinned'];
+    if (typeof pinned !== 'boolean') {
+      throw new InvalidRequestError(
+        '"pinned" must be a boolean. A pinned session is exempt from projects’ transcript ' +
+          'retention sweep (§11.1).',
+        'pinned',
+      );
+    }
+    return Promise.resolve(res.json(service.setPinned(req.params['id'] ?? '', pinned)));
+  };
+
   const queue = (_req: RequestContext, res: ResponseTools): Promise<HttpResult> =>
     Promise.resolve(res.json({ ...service.queueState(), entries: service.queueEntries() }));
 
@@ -135,6 +211,36 @@ export function createRunnerRoutes(deps: RunnerRoutesDeps): readonly RouteDefini
       path: '/api/sessions/:id/transcript',
       description: 'Tail a session transcript by byte offset or from the end (§11.1).',
       handler: (req, res) => guard(() => transcript(req, res), res, logger),
+    },
+    {
+      method: 'POST',
+      path: '/api/sessions/:id/steer',
+      description: 'Deliver a message into a running session, with or without an interrupt (§4.3).',
+      handler: (req, res) => guard(() => steer(req, res), res, logger),
+    },
+    {
+      method: 'POST',
+      path: '/api/sessions/:id/pause',
+      description: 'Pause a running session: the slot is freed, the lease and context kept (§2.2).',
+      handler: (req, res) => guard(() => pause(req, res), res, logger),
+    },
+    {
+      method: 'POST',
+      path: '/api/sessions/:id/resume',
+      description: 'Resume a paused session on the same row and transcript (§9.4).',
+      handler: (req, res) => guard(() => resume(req, res), res, logger),
+    },
+    {
+      method: 'POST',
+      path: '/api/sessions/:id/stop',
+      description: 'Stop a session: interrupted / user_stopped, with no subprocess left (§9.1).',
+      handler: (req, res) => guard(() => stop(req, res), res, logger),
+    },
+    {
+      method: 'POST',
+      path: '/api/sessions/:id/pin',
+      description: 'Pin or unpin a session against projects’ transcript retention (§11.1).',
+      handler: (req, res) => guard(() => pin(req, res), res, logger),
     },
     {
       method: 'GET',

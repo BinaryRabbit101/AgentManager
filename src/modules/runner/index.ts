@@ -75,8 +75,10 @@ export {
   QueueFullError,
   RunnerError,
   SecretUnresolvedError,
+  SessionControlRefusedError,
   SessionExecutionError,
   SessionNotFoundError,
+  SessionNotResumableError,
   SessionStartTimeoutError,
   WorkspaceUnavailableError,
   type LaunchFailure,
@@ -90,13 +92,30 @@ export {
 } from './inputQueue.js';
 export {
   createLaunchChain,
+  RESUME_CONTINUATION,
   type LaunchChain,
   type LaunchChainDeps,
   type LogSink,
+  type SessionControlResult,
   type StartSessionRequest,
   type StartSessionResult,
+  type SteerOptions,
+  type SteerResult,
 } from './launch.js';
 export { createLeaseBook, type LeaseBook, type LeaseBookDeps } from './leases.js';
+export {
+  createLiveSessions,
+  INTERRUPT_RECEIPT_CAPABILITY,
+  readStillQueued,
+  windDown,
+  type ControlIntent,
+  type InterruptReceipt,
+  type LiveSession,
+  type LiveSessionInit,
+  type LiveSessions,
+  type WindDownOptions,
+  type WindDownOutcome,
+} from './liveSessions.js';
 export {
   isInitMessage,
   outcomeForResult,
@@ -118,7 +137,12 @@ export {
   STRIPPABLE_OPTION_PATHS,
   WHITELISTED_OPTION_PATHS,
 } from './optionGuard.js';
-export { runReaderLoop, type ReaderLoopDeps, type ReaderLoopOutcome } from './readerLoop.js';
+export {
+  runReaderLoop,
+  type GuardReason,
+  type ReaderLoopDeps,
+  type ReaderLoopOutcome,
+} from './readerLoop.js';
 export { isReplayMessage, realQuery, type QueryFn, type SdkSession } from './sdk.js';
 export {
   createRunnerModule,

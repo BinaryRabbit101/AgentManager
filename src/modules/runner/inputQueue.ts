@@ -28,7 +28,26 @@
  * M3 pushes one message and closes at the turn boundary; M6 adds steering on
  * top of the same object, which is why the queue owns the whole input lifetime
  * rather than the reader loop calling `Query.streamInput()` per turn.
+ *
+ * ## Two counters and a hold, all three added by M6
+ *
+ * §2.4 step 2 — "if the input queue holds an unsent steer message, keep going" —
+ * cannot be read off `pending`, because SDK-NOTES §2.2 shows the wrapper pumping
+ * the iterable **lazily but immediately**: a pushed message is handed to the
+ * child on the next microtask, so `pending` is back to 0 long before the turn it
+ * started ends. The honest question is "have more messages been pushed than
+ * turns have completed", which is {@link SessionInputQueue.pushed} against the
+ * reader loop's turn count.
+ *
+ * {@link SessionInputQueue.hold} covers the window §4.3 opens and `pushed`
+ * cannot: `steer({interrupt:true})` calls `interrupt()`, waits for the turn to
+ * wind down, and only *then* pushes. Between the interrupted turn's `result` and
+ * that push the counters say "one push, one turn — close", which would end the
+ * session the steer was meant to redirect. A hold taken for the whole verb keeps
+ * the queue open across it.
  */
+import { randomUUID } from 'node:crypto';
+
 import type { SDKUserMessage } from './sdk.js';
 
 /** A base64 image attachment (§4.2). The API accepts them; the UI may ship later. */
@@ -43,11 +62,28 @@ export interface PushOptions {
 }
 
 export interface SessionInputQueue extends AsyncIterable<SDKUserMessage> {
-  push(text: string, options?: PushOptions): void;
+  /**
+   * Queues one user message and returns its `uuid`.
+   *
+   * The uuid is stamped by runner rather than left to the CLI because it is the
+   * only handle on a message once it is inside the engine: SDK-NOTES **G4**'s
+   * interrupt receipt lists `still_queued` **uuids**, and "only uuid-STAMPED
+   * messages appear". An unstamped steer that survives an interrupt is invisible.
+   */
+  push(text: string, options?: PushOptions): string;
   /** Ends the iterable. Idempotent, and one-way. */
   close(): void;
   /** Messages pushed but not yet handed to the SDK. */
   readonly pending: number;
+  /** Every message ever accepted — §2.4 step 2's real question (see the header). */
+  readonly pushed: number;
+  /** Outstanding {@link hold}s. The reader loop must not close while any is open. */
+  readonly holds: number;
+  /**
+   * Keeps the queue open across a multi-step delivery (§4.3's interrupting
+   * steer). Returns the release, which is idempotent.
+   */
+  hold(): () => void;
   readonly closed: boolean;
 }
 
@@ -60,6 +96,8 @@ export function createInputQueue(options: InputQueueOptions = {}): SessionInputQ
   const buffer: SDKUserMessage[] = [];
   let waiter: (() => void) | undefined;
   let closed = false;
+  let pushed = 0;
+  let holds = 0;
 
   function wake(): void {
     const pending = waiter;
@@ -79,18 +117,40 @@ export function createInputQueue(options: InputQueueOptions = {}): SessionInputQ
     get pending(): number {
       return buffer.length;
     },
+    get pushed(): number {
+      return pushed;
+    },
+    get holds(): number {
+      return holds;
+    },
     get closed(): boolean {
       return closed;
     },
 
+    hold() {
+      holds += 1;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        holds -= 1;
+      };
+    },
+
     push(text, pushOptions = {}) {
+      // The uuid is minted before anything can throw, so the caller always gets
+      // the handle it will need to reconcile a G4 receipt against — even for a
+      // push the queue swallowed because it was already closed.
+      const uuid = randomUUID();
       try {
-        if (closed) return;
-        buffer.push(userMessage(text, pushOptions.attachments ?? []));
+        if (closed) return uuid;
+        buffer.push(userMessage(uuid, text, pushOptions.attachments ?? []));
+        pushed += 1;
         wake();
       } catch (error) {
         fail(error);
       }
+      return uuid;
     },
 
     close() {
@@ -125,7 +185,11 @@ export function createInputQueue(options: InputQueueOptions = {}): SessionInputQ
  * writes `session_id: ""` — so runner need not know the id before `init`, which
  * is what lets the initial prompt be queued before `query()` is called.
  */
-function userMessage(text: string, attachments: readonly ImageAttachment[]): SDKUserMessage {
+function userMessage(
+  uuid: string,
+  text: string,
+  attachments: readonly ImageAttachment[],
+): SDKUserMessage {
   const content: Array<
     | { type: 'text'; text: string }
     | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
@@ -142,5 +206,6 @@ function userMessage(text: string, attachments: readonly ImageAttachment[]): SDK
     type: 'user',
     message: { role: 'user', content } as SDKUserMessage['message'],
     parent_tool_use_id: null,
+    uuid: uuid as NonNullable<SDKUserMessage['uuid']>,
   };
 }

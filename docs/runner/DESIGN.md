@@ -150,6 +150,13 @@ Closed set, written on every terminal or paused transition, and carried in `sess
 `question_expired` · `awaiting_answer` · `budget_halt` · `service_shutdown` · `shutdown_forced` ·
 `stale_queue` · `core_restart` · `transcript_cap`
 
+*Amended at M6*: a user-initiated **pause** also records `user_stopped` — the set stays closed, and
+the `paused` status (not the exit reason) is what distinguishes "stopped with intent to continue";
+the exit reason describes only why the run ended. A resumed streaming session that is handed no
+user message takes no turn, so resume path 1 (§9.4) pushes a fixed continuation message
+("paused… continue from where you left off"), recorded in the transcript header — path 2's first
+message remains the user's answer.
+
 ### 2.4 One `result` per turn, not per session
 
 Because streaming-input mode emits a `result` per turn [V], the reader loop must not treat the first

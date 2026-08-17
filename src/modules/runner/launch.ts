@@ -39,6 +39,32 @@
  * closed set. The settle at the bottom writes that reason, a human-readable
  * message on the transcript's `error` line, and `session.ended` — and the API
  * sees the same typed error, with its `status` and `code`.
+ *
+ * ## Session control (M6, §4.3 / §9.1 / §11.1)
+ *
+ * `steer`, `pause`, `resume`, `stop` and `pin` are here rather than in
+ * `service.ts` because four of the five need the live handle registered at step
+ * 9 (`liveSessions.ts`) and the fifth needs the scheduler. Three properties are
+ * load-bearing and are stated once, here, rather than at each verb:
+ *
+ * - **A deliberate wind-down outranks the stream.** When a control verb has set
+ *   an intent, the settle writes that verb's status — not the one the last
+ *   `result` subtype would have mapped to. An interrupted turn's `result` is not
+ *   evidence that the work failed; it is evidence that the interrupt landed.
+ * - **A control verb waits for the row.** Every one of them resolves only once
+ *   the status it caused is written, so §11.1's idempotency rule ("a retry
+ *   returns the current state with 200") is true for a retry that arrives one
+ *   millisecond later, not merely one second later.
+ * - **Pause keeps the lease, stop does not.** §3.1's refcount is released for
+ *   every settle *except* a pause: "paused sessions keep the lease held, which
+ *   is the whole point of pausing rather than stopping".
+ *
+ * The §9.4 resume path is a **resume run on the same row**: a `queued` session
+ * whose `sdk_session_id` is already set is, by construction, one that has run
+ * before, so the chain re-runs from step 3 (assignment context, lease, launch
+ * context, compile — "resuming with stale compiled options would be a permission
+ * bug with a very long fuse") and hands `resume: <sdk_session_id>` to `query()`.
+ * The transcript is reopened rather than replaced, so `seq` continues.
  */
 import type { EventBus } from '../types.js';
 import type {
@@ -74,13 +100,21 @@ import {
   ProviderUnavailableError,
   QueueFullError,
   RunnerError,
+  SessionControlRefusedError,
   SessionExecutionError,
+  SessionNotResumableError,
   SessionStartTimeoutError,
   WorkspaceUnavailableError,
   isLaunchFailure,
 } from './errors.js';
-import { createInputQueue } from './inputQueue.js';
+import { createInputQueue, type ImageAttachment } from './inputQueue.js';
 import type { LeaseBook } from './leases.js';
+import {
+  createLiveSessions,
+  windDown,
+  type InterruptReceipt,
+  type LiveSession,
+} from './liveSessions.js';
 import { classifyRateLimit, outcomeForResult, readRateLimitEvent } from './messages.js';
 import { assertOptionsWhitelisted } from './optionGuard.js';
 import type { RunnerSessionRecord, SessionPriority, SessionRepository } from './repository.js';
@@ -102,6 +136,22 @@ import { createRunMeter, type UsageRepository } from './usage.js';
 /** How much of the child's stderr is kept for a failure message (§3.2, §9.2). */
 const STDERR_TAIL_BYTES = 4096;
 
+/**
+ * What a resumed run says to restart the turn (§9.4 path 1).
+ *
+ * **Raised rather than assumed.** §9.4 specifies a first message only for path 2
+ * (continuing an orphaned session); for a resumed *pause* it says only "same
+ * row, same transcript, `resume: sdk_session_id`". But a streaming-input session
+ * that is handed no user message never takes a turn — SDK-NOTES §2.2's pump
+ * writes one message per iteration and the engine answers messages, not
+ * resumptions — so a resume with an empty queue would replay the conversation
+ * and then sit there. This is the smallest honest message that starts the turn:
+ * it states what happened and adds no new instruction.
+ */
+export const RESUME_CONTINUATION =
+  'This session was paused and has now been resumed. Continue from where you left off — ' +
+  'nothing about the assignment has changed, and no work needs repeating.';
+
 export interface StartSessionRequest {
   readonly assignmentId: string;
   readonly agentId: string;
@@ -121,6 +171,44 @@ export interface StartSessionResult {
   readonly status: SessionStatus;
   /** How many sessions are ahead of this one in its band. */
   readonly queuePosition: number;
+}
+
+/**
+ * What every control verb answers with (§11.1's idempotency rule).
+ *
+ * `changed: false` is the idempotent case — "pausing a paused session, stopping
+ * a stopped one, or resuming a running one returns the current state with 200".
+ * The caller sees the same shape either way and does not have to branch on it.
+ */
+export interface SessionControlResult {
+  readonly sessionId: string;
+  readonly status: SessionStatus;
+  readonly exitReason: string | null;
+  /** False when the session was already in the state the verb asks for. */
+  readonly changed: boolean;
+}
+
+export interface SteerOptions {
+  /** §4.3: "stop that, do this instead". Default `false` — next turn boundary. */
+  readonly interrupt?: boolean | undefined;
+  readonly attachments?: readonly unknown[] | undefined;
+}
+
+/**
+ * The outcome of a steer, including SDK-NOTES **G4**'s receipt.
+ *
+ * Additive to §11.2's `steer(): Promise<void>`: `stillQueued` is the one fact a
+ * caller cannot get any other way, and a UI that cannot say "your earlier steer
+ * is still going to run" is a UI that lets the agent surprise its user.
+ */
+export interface SteerResult extends SessionControlResult {
+  readonly interrupted: boolean;
+  /** The uuid the steered message was stamped with. */
+  readonly messageUuid: string;
+  /** G4: queued messages that survive the interrupt and WILL still run. */
+  readonly stillQueued: readonly string[];
+  /** False when this CLI does not advertise `interrupt_receipt_v1` (G4). */
+  readonly receiptSupported: boolean;
 }
 
 export type LogSink = (
@@ -183,6 +271,21 @@ export interface LaunchChain {
    * path depends on anyone calling it.
    */
   awaitSettled(sessionId: string): Promise<RunnerSessionRecord>;
+  /**
+   * §4.3: push a message into a **running** session, optionally superseding the
+   * turn in flight. Steering anything but a `running` session is a typed 409.
+   */
+  steer(sessionId: string, text: string, options?: SteerOptions): Promise<SteerResult>;
+  /** §2.2 `running → paused`: `interrupt()` + `close()`, slot freed, lease kept. */
+  pause(sessionId: string, exitReason?: ExitReason): Promise<SessionControlResult>;
+  /** §9.4 path 1: the same row, the same transcript, `resume: <sdk_session_id>`. */
+  resume(sessionId: string): Promise<SessionControlResult>;
+  /** §2.2's Stop, from any live status. Leaves no subprocess behind (§9.1). */
+  stop(sessionId: string, reason?: string): Promise<SessionControlResult>;
+  /** `POST /api/sessions/:id/pin` — projects' retention exemption (§11.1). */
+  setPinned(sessionId: string, pinned: boolean): SessionControlResult;
+  /** Sessions with a live `Query` handle. The "no subprocess left" assertion. */
+  liveSessionIds(): readonly string[];
   /** `assignment.closed` from orchestrator: release the lease (§15.1-5). */
   onAssignmentClosed(assignmentId: string): Promise<void>;
   /** `workspace.released` from projects: re-try blocked queue entries (§6.2). */
@@ -204,6 +307,8 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
   const log: LogSink = deps.log ?? ((): void => {});
 
   const settled = new Map<string, Array<(record: RunnerSessionRecord) => void>>();
+  /** The `Query` handles, input queues and abort controllers of §4.3 / §9.1. */
+  const liveSessions = createLiveSessions();
 
   // -------------------------------------------------------------------------
   // Events (§10) — the three lifecycle events the launch chain owns. The full
@@ -305,15 +410,7 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
 
   /** A queued session that will never start, settled without a transcript. */
   function failQueued(sessionId: string, exitReason: ExitReason, message: string): void {
-    const record = sessions.get(sessionId);
-    if (record === undefined || TERMINAL_STATUSES.has(record.status)) return;
-    finish(sessionId, undefined, 'failed', exitReason, {
-      prompt: sessions.input(sessionId)?.prompt ?? '',
-      lastAssistantText: null,
-      turns: 0,
-      message,
-    });
-    notifySettled(sessionId);
+    failQueuedAs(sessionId, 'failed', exitReason, message);
   }
 
   // -------------------------------------------------------------------------
@@ -324,9 +421,17 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     let session = sessions.require(sessionId);
     const prompt = sessions.input(sessionId)?.prompt ?? '';
     let transcript: SessionTranscript | undefined;
+    let live: LiveSession | undefined;
     let stderrTail = '';
     let lastAssistantText: string | null = null;
     let turns = 0;
+
+    // §9.4 path 1, decided from the row rather than from memory: a `queued`
+    // session that already carries an `sdk_session_id` has run before, so this
+    // is a resume. Reading it off the row is what makes a resume survive the
+    // restart M9 will have to handle, and it is the only signal that does.
+    const priorSdkSessionId = session.sdkSessionId;
+    const isResumeRun = priorSdkSessionId !== null;
 
     try {
       // --- step 3: assignment context ------------------------------------
@@ -424,6 +529,10 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       });
       const options: SdkOptions = {
         ...authed,
+        // §9.4 / SDK-NOTES G3: `resume` and `sessionId` are mutually exclusive
+        // unless `forkSession` is set, so the chain sets **at most one** and
+        // runner never sets `sessionId`.
+        ...(isResumeRun ? { resume: priorSdkSessionId } : {}),
         abortController: abort,
         canUseTool: createDefaultDenyCanUseTool({
           policy: compiled.policy,
@@ -471,6 +580,13 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         },
         diagnostics: compiled.diagnostics,
         resumedFrom: session.resumedFrom,
+        // The resume half of §9.4, on the same file as the run it continues:
+        // the header records that a new `query()` began, which conversation it
+        // replayed and what it said to restart the turn, and `seq` carries on
+        // from the last line (§8.1, M2).
+        ...(isResumeRun
+          ? { resumedSdkSessionId: priorSdkSessionId, resumeMessage: RESUME_CONTINUATION }
+          : {}),
         // §5.6: a `dontAsk` session has no question bridge at all.
         questionBridge: compiled.policy.humanMayApprove ? 'enabled' : 'disabled',
       });
@@ -484,8 +600,15 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
           });
         },
       });
-      input.push(prompt);
+      // A resumed run replays the conversation rather than restating it, so the
+      // original prompt is pushed on the first run only — pushing it again would
+      // ask the agent to redo the work it was paused in the middle of. It still
+      // needs *something*: a streaming session that is handed no user message
+      // takes no turn, so the resume says what happened, exactly as §9.4's other
+      // path does for a session that was orphaned.
+      input.push(isResumeRun ? RESUME_CONTINUATION : prompt);
       const sdkSession = deps.query({ prompt: input, options });
+      live = liveSessions.open({ sessionId, input, sdk: sdkSession, transcript, abort });
 
       // --- metering (§7, M4) ------------------------------------------------
       // One meter per `query()` call, because that is the only grain
@@ -521,12 +644,23 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       });
 
       // --- step 10: running, then the reader loop of §2.4 -------------------
+      const openLive = live;
       const outcome = await runReaderLoop({
         session: sdkSession,
         input,
         transcript,
         startTimeoutMs: config.startTimeoutMs,
+        // §12's two guards. The SDK has neither (SDK-NOTES §9.1), so both are
+        // measured here and settled by §2.3's own `exit_reason` below.
+        idleTimeoutMs: config.idleTimeoutMs,
+        wallClockMs: config.wallClockMaxMinutes * 60_000,
         abort,
+        onTurnEnd: () => {
+          openLive.noteTurnEnd();
+        },
+        onGuard: (guard) => {
+          log('warn', 'a session guard tripped and ended the session', { sessionId, guard });
+        },
         onMessage: (message) => {
           // Live deltas, deduped by assistant `message.id` (§7.1). Metering is
           // never allowed to end a session: a token count that cannot be written
@@ -554,6 +688,9 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         onInit: (facts) => {
           // §6.4: "reset by any successful session start".
           scheduler.noteStarted();
+          // SDK-NOTES G4: whether `interrupt()` can answer with a receipt at all
+          // is a per-CLI-build fact, and `init` is where it is advertised.
+          openLive.capabilities = facts.capabilities;
           session = sessions.transition(sessionId, 'running', {
             sdkSessionId: facts.sdkSessionId,
             model: facts.model,
@@ -577,12 +714,68 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
             },
             true,
           );
+          if (isResumeRun) {
+            // §10's `session.resumed`, with both ids: SDK-NOTES A1 says a plain
+            // `resume` should preserve the id, but it is inferred rather than
+            // observed (L1), so the design carries both and this reports both.
+            emit(
+              'session.resumed',
+              session,
+              {
+                mode: 'same-session',
+                resumedFrom: session.resumedFrom,
+                sdkSessionId: facts.sdkSessionId,
+                priorSdkSessionId,
+              },
+              true,
+            );
+          }
         },
       });
+      live.markFinished();
 
       lastAssistantText = outcome.lastAssistantText;
       turns = outcome.turns;
       if (turns > 0) sessions.patch(sessionId, { turns });
+
+      // A deliberate wind-down outranks whatever the stream did on its way out
+      // (see the header). The interrupted turn's `result` is evidence that the
+      // interrupt landed, not that the work failed.
+      if (live.intent === 'pause') {
+        settlePaused(sessionId, transcript, live.exitReason ?? 'user_stopped', {
+          prompt,
+          lastAssistantText,
+          turns,
+          forced: live.forced,
+        });
+        return;
+      }
+      if (live.intent === 'stop') {
+        finish(sessionId, transcript, 'interrupted', live.exitReason ?? 'user_stopped', {
+          prompt,
+          lastAssistantText,
+          turns,
+          message: live.forced
+            ? 'Stopped by the user; the session did not wind down in time and was aborted.'
+            : 'Stopped by the user.',
+        });
+        return;
+      }
+      if (outcome.guard !== undefined) {
+        // §12's deadlines, each with its own `exit_reason` from §2.3.
+        finish(sessionId, transcript, 'failed', outcome.guard, {
+          prompt,
+          lastAssistantText,
+          turns,
+          message:
+            outcome.guard === 'idle_timeout'
+              ? `The agent produced no output for ${String(config.idleTimeoutMs)} ms ` +
+                '(runner.idleTimeoutMs) and the session was stopped.'
+              : `The session ran for longer than runner.wallClockMaxMinutes ` +
+                `(${String(config.wallClockMaxMinutes)} minutes) and was stopped.`,
+        });
+        return;
+      }
 
       if (!outcome.sawInit) {
         throw new SessionStartTimeoutError(
@@ -625,6 +818,7 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         durationMs: outcome.lastResult.durationMs,
       });
     } catch (error) {
+      live?.markFinished();
       const exitReason: ExitReason = isLaunchFailure(error)
         ? (error.exitReason as ExitReason)
         : 'launch_failed';
@@ -649,9 +843,23 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         });
       }
     } finally {
-      // The lease survives unless this was the assignment's last session and the
-      // assignment is no longer open (§3.1's safety net).
-      await leases.releaseSession(session.assignmentId, sessionId);
+      // Releasing the handle resolves `settled`, so a control verb blocked on it
+      // sees the status it caused — and it must therefore happen *after* the
+      // settle above, never before.
+      const held = liveSessions.release(sessionId);
+      if (held?.intent === 'pause') {
+        // §3.1: "paused sessions keep the lease held, which is the whole point
+        // of pausing rather than stopping". Dropping the refcount here would let
+        // the safety net release the tree the resume is going to land in.
+        log('debug', 'session paused; its workspace lease is deliberately kept', {
+          sessionId,
+          assignmentId: session.assignmentId,
+        });
+      } else {
+        // The lease survives unless this was the assignment's last session and
+        // the assignment is no longer open (§3.1's safety net).
+        await leases.releaseSession(session.assignmentId, sessionId);
+      }
     }
   }
 
@@ -791,6 +999,61 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
   }
 
   /**
+   * §2.2's `running → paused`: stop **with** intent to continue.
+   *
+   * Deliberately not {@link finish}: a pause is not terminal, its transcript is
+   * reopened by the resume rather than replaced, and the event is
+   * `session.paused` — which is what tells the UI a Resume button belongs there
+   * and tells projects' timeline the assignment is still running (§2.2).
+   */
+  function settlePaused(
+    sessionId: string,
+    transcript: SessionTranscript | undefined,
+    exitReason: ExitReason,
+    detail: {
+      readonly prompt: string;
+      readonly lastAssistantText: string | null;
+      readonly turns: number;
+      readonly forced: boolean;
+    },
+  ): void {
+    const before = sessions.require(sessionId);
+    const summary = composeSummary({
+      prompt: detail.prompt,
+      status: 'paused',
+      lastAssistantText: detail.lastAssistantText,
+    });
+    // §9.3's honesty: what makes this resumable is the recorded SDK session id,
+    // and nothing else runner holds.
+    const resumable = before.sdkSessionId !== null;
+
+    transcript?.append('session.end', {
+      status: 'paused',
+      exitReason,
+      turns: detail.turns,
+      resumable,
+      sdkSessionId: before.sdkSessionId,
+      forced: detail.forced,
+      summary,
+    });
+    transcript?.close();
+
+    const record = sessions.transition(sessionId, 'paused', { exitReason, summary });
+    emit(
+      'session.paused',
+      record,
+      {
+        reason: exitReason,
+        resumable,
+        sdkSessionId: record.sdkSessionId,
+        forced: detail.forced,
+        transcriptBytes: record.transcriptBytes,
+      },
+      true,
+    );
+  }
+
+  /**
    * Runs a metering write, and never lets it end a session.
    *
    * The write is transactional and its failures are real — SDK-NOTES C1's
@@ -809,6 +1072,274 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         code: error instanceof RunnerError ? error.code : undefined,
       });
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Session control (§4.3, §9.1, §11.1) — M6
+  // -------------------------------------------------------------------------
+
+  /** The shape every verb answers with, read fresh off the row. */
+  function stateOf(sessionId: string, changed: boolean): SessionControlResult {
+    const record = sessions.require(sessionId);
+    return {
+      sessionId,
+      status: record.status,
+      exitReason: record.exitReason,
+      changed,
+    };
+  }
+
+  async function steer(
+    sessionId: string,
+    text: string,
+    steerOptions: SteerOptions = {},
+  ): Promise<SteerResult> {
+    const record = sessions.require(sessionId);
+    // §4.3: "Steering a session that is not `running` is a typed 409, not a
+    // silent no-op." Deliberately *not* idempotent — unlike pause/stop/resume,
+    // a steer that quietly went nowhere is a message the user believes landed.
+    if (record.status !== 'running') {
+      throw new SessionControlRefusedError(
+        'steer',
+        sessionId,
+        record.status,
+        `it is "${record.status}", and only a running session has a turn to steer (§4.3). ` +
+          (record.status === 'paused'
+            ? 'Resume it first.'
+            : 'Start a new session to continue this work.'),
+      );
+    }
+    const live = liveSessions.get(sessionId);
+    if (live === undefined) {
+      throw new SessionControlRefusedError(
+        'steer',
+        sessionId,
+        record.status,
+        'it has no live agent process. The row will settle on its own shortly.',
+      );
+    }
+
+    const interrupting = steerOptions.interrupt === true;
+    // The hold is what keeps §2.4 step 3 from closing the input queue between
+    // the interrupted turn's `result` and this push — see `inputQueue.ts`.
+    const release = live.input.hold();
+    let receipt: InterruptReceipt = { supported: false, stillQueued: [] };
+    let messageUuid: string;
+    try {
+      if (interrupting) {
+        receipt = await live.interrupt();
+        // §4.3: "wait for the turn to wind down (bounded by
+        // runner.gracefulInterruptMs), then push".
+        await live.awaitTurnBoundary(config.gracefulInterruptMs);
+      }
+      messageUuid = live.input.push(
+        text,
+        steerOptions.attachments === undefined
+          ? {}
+          : { attachments: steerOptions.attachments as readonly ImageAttachment[] },
+      );
+    } finally {
+      release();
+    }
+
+    if (interrupting && receipt.stillQueued.length > 0) {
+      // SDK-NOTES G4, surfaced rather than swallowed: these WILL run after the
+      // message that was meant to supersede them.
+      log('warn', 'an interrupt left queued user messages that will still run', {
+        sessionId,
+        stillQueued: receipt.stillQueued,
+      });
+    }
+
+    live.transcript.append('steer', {
+      text,
+      interrupted: interrupting,
+      messageUuid,
+      // Recorded even when empty, because "empty" and "this CLI cannot say" are
+      // different facts and only one of them is reassuring (G4).
+      stillQueued: receipt.stillQueued,
+      receiptSupported: receipt.supported,
+      ...(receipt.error === undefined ? {} : { interruptError: receipt.error }),
+    });
+    emit(
+      'session.steered',
+      record,
+      {
+        text,
+        interrupted: interrupting,
+        messageUuid,
+        stillQueued: receipt.stillQueued,
+        receiptSupported: receipt.supported,
+      },
+      true,
+    );
+
+    return {
+      ...stateOf(sessionId, true),
+      interrupted: interrupting,
+      messageUuid,
+      stillQueued: receipt.stillQueued,
+      receiptSupported: receipt.supported,
+    };
+  }
+
+  async function pause(
+    sessionId: string,
+    exitReason: ExitReason = 'user_stopped',
+  ): Promise<SessionControlResult> {
+    const record = sessions.require(sessionId);
+    // §11.1's idempotency rule: already there, or already over, is a 200.
+    if (record.status === 'paused' || TERMINAL_STATUSES.has(record.status)) {
+      return stateOf(sessionId, false);
+    }
+    if (record.status !== 'running') {
+      throw new SessionControlRefusedError(
+        'pause',
+        sessionId,
+        record.status,
+        '§2.2 has no "queued" → "paused" arrow: a queued session has nothing to suspend. ' +
+          'Stop it instead, and start it again when you want it.',
+      );
+    }
+
+    const live = liveSessions.get(sessionId);
+    if (live === undefined) {
+      // Nothing to interrupt, so there is nothing this verb can honestly do —
+      // the row is about to settle on its own.
+      throw new SessionControlRefusedError(
+        'pause',
+        sessionId,
+        record.status,
+        'it has no live agent process, so there is nothing to suspend and resume.',
+      );
+    }
+
+    await windDown(live, {
+      intent: 'pause',
+      gracefulInterruptMs: config.gracefulInterruptMs,
+      exitReason,
+    });
+    await live.settled;
+    return stateOf(sessionId, true);
+  }
+
+  function resume(sessionId: string): Promise<SessionControlResult> {
+    return Promise.resolve().then(() => {
+      const record = sessions.require(sessionId);
+      if (record.status === 'queued' || record.status === 'running') {
+        return stateOf(sessionId, false);
+      }
+      if (TERMINAL_STATUSES.has(record.status)) {
+        throw new SessionControlRefusedError(
+          'resume',
+          sessionId,
+          record.status,
+          `"${record.status}" is terminal (§2.2). Continuing this work is a new session with ` +
+            'resumed_from, which is what the Continue action does (§9.4).',
+        );
+      }
+      if (record.sdkSessionId === null) {
+        throw new SessionNotResumableError(
+          sessionId,
+          'no SDK session id was ever recorded for it, so there is no conversation to replay (§9.3).',
+        );
+      }
+
+      // §9.4 path 1: the **same** row, back into the queue. `queued_at` is not
+      // re-dated (it is not patchable, deliberately), so a resumed session takes
+      // its old place at the head of its band rather than the back of the queue.
+      const requeued = sessions.transition(sessionId, 'queued', { blockedReason: null });
+      log('info', 'a paused session was re-queued for resume', {
+        sessionId,
+        sdkSessionId: requeued.sdkSessionId,
+      });
+      scheduler.evaluate();
+      return stateOf(sessionId, true);
+    });
+  }
+
+  async function stop(sessionId: string, reason?: string): Promise<SessionControlResult> {
+    const record = sessions.require(sessionId);
+    if (TERMINAL_STATUSES.has(record.status)) return stateOf(sessionId, false);
+
+    if (record.status === 'queued') {
+      // §2.2: "User cancels a queued session" → `interrupted` / `user_cancelled`.
+      // No transcript exists — the file opens at step 8, after the lease.
+      failQueuedAs(
+        sessionId,
+        'interrupted',
+        'user_cancelled',
+        reason ?? 'Cancelled before it started.',
+      );
+      return stateOf(sessionId, true);
+    }
+
+    if (record.status === 'paused') {
+      // §2.2's `paused → interrupted`: "user discards a paused session".
+      const summary = composeSummary({
+        prompt: sessions.input(sessionId)?.prompt ?? '',
+        status: 'interrupted',
+      });
+      sessions.transition(sessionId, 'interrupted', { exitReason: 'user_stopped', summary });
+      const after = sessions.require(sessionId);
+      emit(
+        'session.ended',
+        after,
+        {
+          status: 'interrupted',
+          exitReason: 'user_stopped',
+          turns: after.turns,
+          permissionDenials: 0,
+          summary,
+          transcriptBytes: after.transcriptBytes,
+          message: reason ?? 'Discarded by the user while paused.',
+        },
+        true,
+      );
+      return stateOf(sessionId, true);
+    }
+
+    const live = liveSessions.get(sessionId);
+    if (live === undefined) {
+      // `running` with no handle: the process is already gone, so the honest
+      // outcome is the one Stop asks for rather than a refusal the caller can do
+      // nothing about.
+      finish(sessionId, undefined, 'interrupted', 'user_stopped', {
+        prompt: sessions.input(sessionId)?.prompt ?? '',
+        lastAssistantText: null,
+        turns: record.turns,
+        message: reason ?? 'Stopped by the user.',
+      });
+      notifySettled(sessionId);
+      return stateOf(sessionId, true);
+    }
+
+    await windDown(live, {
+      intent: 'stop',
+      gracefulInterruptMs: config.gracefulInterruptMs,
+      exitReason: 'user_stopped',
+    });
+    await live.settled;
+    return stateOf(sessionId, true);
+  }
+
+  /** A queued session settled without a transcript, to a caller-chosen status. */
+  function failQueuedAs(
+    sessionId: string,
+    status: SessionStatus,
+    exitReason: ExitReason,
+    message: string,
+  ): void {
+    const record = sessions.get(sessionId);
+    if (record === undefined || TERMINAL_STATUSES.has(record.status)) return;
+    finish(sessionId, undefined, status, exitReason, {
+      prompt: sessions.input(sessionId)?.prompt ?? '',
+      lastAssistantText: null,
+      turns: 0,
+      message,
+    });
+    notifySettled(sessionId);
+    scheduler.evaluate();
   }
 
   function requireProjects(): ProjectsProvider {
@@ -883,6 +1414,21 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         settled.set(sessionId, waiters);
       });
     },
+
+    steer,
+    pause,
+    resume,
+    stop,
+
+    setPinned(sessionId, pinned) {
+      // §11.1's pin: projects' retention exemption, and nothing more. It is not
+      // a status change, so it needs no arrow and works in any status — pinning
+      // a *finished* session is in fact the common case.
+      sessions.patch(sessionId, { pinned });
+      return stateOf(sessionId, true);
+    },
+
+    liveSessionIds: () => liveSessions.ids(),
 
     async onAssignmentClosed(assignmentId) {
       await leases.releaseAssignment(assignmentId);

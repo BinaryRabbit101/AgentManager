@@ -561,6 +561,245 @@ export function gatedQuery(): GatedQuery {
   };
 }
 
+// ---------------------------------------------------------------------------
+// The controllable query — M6's session-control verbs
+// ---------------------------------------------------------------------------
+
+/**
+ * One live session under {@link controllableQuery}'s control.
+ *
+ * `gatedQuery` proves things about sessions that *overlap*; this proves things
+ * about a session the test drives **turn by turn**, which is what every M6
+ * criterion is: a steer lands between two turns, a pause happens during one, a
+ * guard fires because nothing happened for a while.
+ */
+export interface ControllableSession {
+  readonly index: number;
+  readonly sdkSessionId: string;
+  /** `options.resume` this call was given — `null` on a fresh launch (§9.4). */
+  readonly resume: string | null;
+  /** Every user message runner pushed, in the order the pump took them. */
+  readonly received: readonly SDKUserMessage[];
+  /**
+   * An ordered log of what runner did to this session: `input:<text>`,
+   * `interrupt`, `close`, `abort`.
+   *
+   * The order is the assertion for §4.3's interrupting steer — "the current turn
+   * stops… and the steered message is the next thing the agent sees" is a claim
+   * about sequence, and a counter cannot express it.
+   */
+  readonly log: readonly string[];
+  /** Resolves once `count` input messages have been pumped out of the queue. */
+  awaitInput(count: number): Promise<void>;
+  /** Resolves once the consumer has processed `system/init` — the row is `running`. */
+  started(): Promise<void>;
+  /** Yields messages into the live stream, in order, one microtask apart. */
+  emit(...messages: readonly SDKMessage[]): Promise<void>;
+  /** Completes the generator. Idempotent. */
+  end(): void;
+  readonly interrupts: number;
+  readonly closes: number;
+  readonly aborted: boolean;
+}
+
+export interface ControllableQueryOptions {
+  /** `system/init.capabilities` — SDK-NOTES §4.2 / G4. */
+  readonly capabilities?: readonly string[];
+  /** What `interrupt()` resolves with. Omit for `undefined` (an older CLI). */
+  readonly interruptReceipt?: (index: number) => unknown;
+  /**
+   * A session that ignores `interrupt()` and `close()` — §9.1 step 3's
+   * straggler, which only the `AbortController` can end.
+   */
+  readonly ignoreControl?: boolean;
+  readonly onCall?: (args: { prompt: AsyncIterable<SDKUserMessage>; options: SdkOptions }) => void;
+}
+
+export interface ControllableQuery {
+  readonly query: QueryFn;
+  readonly sessions: readonly ControllableSession[];
+  /** Resolves once `count` calls have reported `system/init`. */
+  started(count: number): Promise<void>;
+  /** Ends every session, now and hereafter — the drain at the end of a test. */
+  endAll(): void;
+}
+
+export function controllableQuery(options: ControllableQueryOptions = {}): ControllableQuery {
+  const sessions: ControllableSession[] = [];
+  let startedCount = 0;
+  const startWaiters: { count: number; resolve: () => void }[] = [];
+  let draining = false;
+
+  function noteStarted(): void {
+    startedCount += 1;
+    for (const waiter of [...startWaiters]) {
+      if (startedCount < waiter.count) continue;
+      startWaiters.splice(startWaiters.indexOf(waiter), 1);
+      waiter.resolve();
+    }
+  }
+
+  const query: QueryFn = (args) => {
+    options.onCall?.(args);
+    const index = sessions.length;
+    const sdkSessionId =
+      args.options.resume ?? `9f2a2b64-1f3e-4a6b-9a41-00000000${String(index).padStart(4, '0')}`;
+
+    const outbound: SDKMessage[] = [];
+    const received: SDKUserMessage[] = [];
+    const log: string[] = [];
+    const inputWaiters: { count: number; resolve: () => void }[] = [];
+    let ended = false;
+    let wake: (() => void) | undefined;
+
+    function pump(): void {
+      const waiter = wake;
+      wake = undefined;
+      waiter?.();
+    }
+
+    function end(): void {
+      if (ended) return;
+      ended = true;
+      pump();
+    }
+
+    const signal = args.options.abortController?.signal;
+    signal?.addEventListener('abort', () => {
+      log.push('abort');
+      end();
+    });
+
+    void (async () => {
+      try {
+        for await (const message of args.prompt) {
+          received.push(message);
+          log.push(`input:${firstText(message)}`);
+          for (const waiter of [...inputWaiters]) {
+            if (received.length < waiter.count) continue;
+            inputWaiters.splice(inputWaiters.indexOf(waiter), 1);
+            waiter.resolve();
+          }
+        }
+      } catch {
+        // The queue never throws (§4.2); if it ever did, the SDK would abort.
+      }
+      // SDK-NOTES §2.2: "closing the queue closes the child's stdin… the
+      // documented, correct way to wind a session down, and it is one-way". A
+      // fake whose generator outlived its own stdin would make §9.1's graceful
+      // window untestable — every pause would look like a straggler.
+      if (options.ignoreControl !== true) end();
+    })();
+
+    async function* replay(): AsyncGenerator<SDKMessage, void> {
+      yield fakeInit({
+        sessionId: sdkSessionId,
+        ...(options.capabilities === undefined ? {} : { capabilities: [...options.capabilities] }),
+      });
+      noteStarted();
+      for (;;) {
+        const next = outbound.shift();
+        if (next !== undefined) {
+          yield next;
+          continue;
+        }
+        if (ended) return;
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+      }
+    }
+
+    const handle: ControllableSession = {
+      index,
+      sdkSessionId,
+      resume: args.options.resume ?? null,
+      received,
+      log,
+      awaitInput(count) {
+        if (received.length >= count) return Promise.resolve();
+        return new Promise<void>((resolve) => {
+          inputWaiters.push({ count, resolve });
+        });
+      },
+      started: () => started(index + 1),
+      async emit(...messages) {
+        for (const message of messages) {
+          outbound.push(message);
+          pump();
+          // Two turns of the microtask queue: one for the generator to wake,
+          // one for the reader loop to have written what it read.
+          await Promise.resolve();
+          await Promise.resolve();
+        }
+      },
+      end,
+      get interrupts(): number {
+        return log.filter((entry) => entry === 'interrupt').length;
+      },
+      get closes(): number {
+        return log.filter((entry) => entry === 'close').length;
+      },
+      get aborted(): boolean {
+        return log.includes('abort');
+      },
+    };
+    sessions.push(handle);
+    if (draining) end();
+
+    const generator = replay();
+    return {
+      [Symbol.asyncIterator]: () => generator[Symbol.asyncIterator](),
+      interrupt: () => {
+        log.push('interrupt');
+        return Promise.resolve(options.interruptReceipt?.(index));
+      },
+      close: () => {
+        log.push('close');
+        // SDK-NOTES §4.3: "forcefully ends the query… After calling `close()`,
+        // no further messages will be received." A session flagged
+        // `ignoreControl` is the one that does not, so only the abort ends it.
+        if (options.ignoreControl !== true) end();
+        return Promise.resolve();
+      },
+    };
+  };
+
+  function started(count: number): Promise<void> {
+    if (startedCount >= count) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      startWaiters.push({ count, resolve });
+    });
+  }
+
+  return {
+    query,
+    sessions,
+    started,
+    endAll() {
+      draining = true;
+      for (const session of sessions) session.end();
+    },
+  };
+}
+
+/** The text of a pushed user message, for the ordered log. */
+function firstText(message: SDKUserMessage): string {
+  const content = message.message.content;
+  if (typeof content === 'string') return content;
+  for (const block of content) {
+    if (
+      typeof block === 'object' &&
+      block !== null &&
+      (block as { type?: string }).type === 'text'
+    ) {
+      const text = (block as { text?: unknown }).text;
+      return typeof text === 'string' ? text : '';
+    }
+  }
+  return '';
+}
+
 /** The happy path: init, one assistant turn, a success result, a trailing system line. */
 export function successScript(text = 'All done.'): SDKMessage[] {
   return [

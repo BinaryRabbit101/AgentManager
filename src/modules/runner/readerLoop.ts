@@ -35,6 +35,23 @@
  * - **everything unrecognised** — counted and ignored. §7.4: "the reader loop
  *   tolerates unknown message types by construction", which this version's
  *   38-member open union makes a requirement rather than a courtesy.
+ *
+ * ## The two guards runner owns because the SDK has none (M6, §12)
+ *
+ * SDK-NOTES §9.1: "**No top-level session timeout** — confirmed by absence:
+ * `Options` has no timeout field". So both live here:
+ *
+ * - **`idleTimeoutMs`** — rearmed on **every** message, which is what makes
+ *   §12's "a legitimate long `Bash` call produces no SDK messages at all while
+ *   it runs" survivable: the window is *between* messages, not from the start of
+ *   the turn.
+ * - **`wallClockMs`** — armed once, never rearmed. A session that keeps talking
+ *   forever is exactly the one this exists for.
+ *
+ * Either firing aborts the controller and closes the input queue, which is how
+ * the generator actually ends; the guard name travels out on
+ * {@link ReaderLoopOutcome.guard} so `launch.ts` can settle §2.3's matching
+ * `exit_reason` rather than the result subtype's.
  */
 import type { SessionTranscript } from './transcript.js';
 import type { SessionInputQueue } from './inputQueue.js';
@@ -50,12 +67,19 @@ import {
   type ResultFacts,
 } from './messages.js';
 
+/** §12's two runner-owned deadlines, named as §2.3 names their `exit_reason`. */
+export type GuardReason = 'idle_timeout' | 'wall_clock_timeout';
+
 export interface ReaderLoopDeps {
   readonly session: SdkSession;
   readonly input: SessionInputQueue;
   readonly transcript: SessionTranscript;
   /** §3.2: no `system/init` by then → `failed` / `start_timeout`. */
   readonly startTimeoutMs: number;
+  /** §12: no SDK message of any kind for this long → `failed` / `idle_timeout`. */
+  readonly idleTimeoutMs?: number | undefined;
+  /** §12's `wallClockMaxMinutes`, in milliseconds → `failed` / `wall_clock_timeout`. */
+  readonly wallClockMs?: number | undefined;
   /** Runner owns cancellation (§3.3); the start timeout aborts through it. */
   readonly abort: AbortController;
   /** Fires once, on `system/init`: the `queued → running` transition (§3.1 step 10). */
@@ -64,6 +88,13 @@ export interface ReaderLoopDeps {
   readonly onResult?: (facts: ResultFacts) => void;
   /** Every message, replay-filtered — the seam M4's metering and M10's events use. */
   readonly onMessage?: (message: SDKMessage) => void;
+  /**
+   * A turn ended (§4.3): the edge `steer({interrupt:true})` waits for, bounded
+   * by `gracefulInterruptMs`. Fires after {@link onResult}.
+   */
+  readonly onTurnEnd?: () => void;
+  /** One of §12's deadlines tripped. Fires once, before the abort lands. */
+  readonly onGuard?: (guard: GuardReason) => void;
 }
 
 export interface ReaderLoopOutcome {
@@ -85,6 +116,8 @@ export interface ReaderLoopOutcome {
   readonly error: unknown;
   /** True when `startTimeoutMs` elapsed with no `init`. */
   readonly startTimedOut: boolean;
+  /** Which of §12's deadlines ended this session, if either did. */
+  readonly guard: GuardReason | undefined;
 }
 
 export async function runReaderLoop(deps: ReaderLoopDeps): Promise<ReaderLoopOutcome> {
@@ -99,6 +132,51 @@ export async function runReaderLoop(deps: ReaderLoopDeps): Promise<ReaderLoopOut
   let unmapped = 0;
   let error: unknown;
   let startTimedOut = false;
+  let guard: GuardReason | undefined;
+
+  /**
+   * §12's deadlines, both ending the session the same way the start timeout
+   * does: abort the controller (the SDK transport closes on the signal) and end
+   * the input stream, so the generator completes and `launch.ts` settles.
+   */
+  function trip(reason: GuardReason, message: string): void {
+    if (guard !== undefined) return;
+    guard = reason;
+    deps.onGuard?.(reason);
+    transcript.append('error', { stage: 'guard', code: reason, message });
+    deps.abort.abort(new Error(message));
+    input.close();
+  }
+
+  const wallClockMs = deps.wallClockMs;
+  const wallTimer =
+    wallClockMs !== undefined && wallClockMs > 0
+      ? setTimeout(() => {
+          trip(
+            'wall_clock_timeout',
+            `This session ran for longer than runner.wallClockMaxMinutes (${String(wallClockMs)} ms) ` +
+              'and was stopped. The SDK has no session timeout, so this one is AgentManager’s.',
+          );
+        }, wallClockMs)
+      : undefined;
+  wallTimer?.unref?.();
+
+  const idleTimeoutMs = deps.idleTimeoutMs;
+  let idleTimer: NodeJS.Timeout | undefined;
+  /** Rearmed on every message — the window is *between* messages (§12). */
+  function armIdle(): void {
+    if (idleTimeoutMs === undefined || idleTimeoutMs <= 0) return;
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      trip(
+        'idle_timeout',
+        `This session produced no SDK message for ${String(idleTimeoutMs)} ms and was stopped ` +
+          '(runner.idleTimeoutMs).',
+      );
+    }, idleTimeoutMs);
+    idleTimer.unref?.();
+  }
+  armIdle();
 
   const startTimer = setTimeout(() => {
     if (init !== undefined) return;
@@ -118,6 +196,7 @@ export async function runReaderLoop(deps: ReaderLoopDeps): Promise<ReaderLoopOut
         replaysFiltered += 1;
         continue;
       }
+      armIdle();
       if (turns > 0) afterFirstResult += 1;
       deps.onMessage?.(message);
 
@@ -183,9 +262,14 @@ export async function runReaderLoop(deps: ReaderLoopDeps): Promise<ReaderLoopOut
             lastAssistantText = facts.resultText;
           }
           deps.onResult?.(facts);
-          // §2.4 steps 2–3. M3 pushes one prompt and never steers, so `pending`
-          // is 0 here; M6's steering is what makes the check do work.
-          if (input.pending === 0) input.close();
+          deps.onTurnEnd?.();
+          // §2.4 steps 2–3, as M6 has to state them. `pending` is the wrong
+          // question — SDK-NOTES §2.2's pump hands a pushed message to the child
+          // on the next microtask, so a steer is "pending: 0" while its turn has
+          // not started. The right question is whether every message pushed has
+          // had its turn, plus the hold §4.3's interrupting steer takes while it
+          // waits for this very boundary.
+          if (input.holds === 0 && input.pushed <= turns) input.close();
           break;
         }
         case 'stream_event':
@@ -200,6 +284,8 @@ export async function runReaderLoop(deps: ReaderLoopDeps): Promise<ReaderLoopOut
     error = caught;
   } finally {
     clearTimeout(startTimer);
+    if (wallTimer !== undefined) clearTimeout(wallTimer);
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
     input.close();
   }
 
@@ -214,5 +300,6 @@ export async function runReaderLoop(deps: ReaderLoopDeps): Promise<ReaderLoopOut
     unmapped,
     error,
     startTimedOut,
+    guard,
   };
 }

@@ -319,6 +319,45 @@ export class LaunchUnavailableError extends RunnerError {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Session control (§4.3, §11.1) — M6
+// ---------------------------------------------------------------------------
+
+/**
+ * A control verb aimed at a session whose status has no such arrow (§2.2).
+ *
+ * A 409 rather than a 400, for the reason §11.1 gives the whole verb family:
+ * "the row's state is the reason". Note what this is **not** used for —
+ * pausing a paused session, stopping a stopped one, resuming a running one are
+ * all `200` with the current state, because "a retry that 409s is a retry that
+ * produces a support ticket".
+ */
+export class SessionControlRefusedError extends RunnerError {
+  constructor(verb: string, sessionId: string, status: string, why: string) {
+    super('session_control_refused', `Cannot ${verb} session "${sessionId}": ${why}`, 409, {
+      sessionId,
+      verb,
+      status,
+    });
+  }
+}
+
+/**
+ * §9.3's honesty, as a refusal: a paused session with no `sdk_session_id` has
+ * no conversation to replay, so there is nothing for `resume` to continue.
+ *
+ * Unreachable in practice — a session only reaches `running`, and therefore
+ * `paused`, once `system/init` has been read — which is exactly why it is a
+ * named error rather than a silent relaunch of a different conversation.
+ */
+export class SessionNotResumableError extends RunnerError {
+  constructor(sessionId: string, why: string) {
+    super('session_not_resumable', `Session "${sessionId}" cannot be resumed: ${why}`, 409, {
+      sessionId,
+    });
+  }
+}
+
 /**
  * §3.3's assertion firing: runner changed a compiled option it does not own.
  *
