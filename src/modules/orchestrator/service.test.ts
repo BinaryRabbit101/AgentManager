@@ -234,8 +234,11 @@ describe('createAssignment — the pattern path', () => {
     });
     expect(view.members.map((member) => member.seatOrder)).toEqual([0, 1]);
     expect(result.gate).toBeUndefined();
-    // No session is started: `autoStart` planning is the engine's job (M5).
-    expect(h.runner.started).toEqual([]);
+    // Since M5 the engine takes it from here: `assignment.created` on a pattern
+    // with a driver plans the first turn, and the drafting seat leads (§3.3).
+    expect(h.runner.started).toEqual([
+      expect.objectContaining({ assignmentId: result.assignmentId, agentId: 'ada' }),
+    ]);
   });
 
   it('parks a machine-created write-capable assignment at phase: planned behind a gate', async () => {

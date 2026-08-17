@@ -88,6 +88,21 @@ export interface ProjectsPort {
   readonly linkWorkItems?: WorkItemLinker['linkWorkItems'];
   readonly unlinkWorkItems?: WorkItemLinker['unlinkWorkItems'];
   readonly getWorkItem?: WorkItemLinker['getWorkItem'];
+  /**
+   * Projects §5's launch context, read for **one** field: the workspace `cwd`
+   * that `scope.artifactPath` is relative to (§8.1's `no_progress` breaker
+   * compares artifact hashes, and a hash needs the file).
+   *
+   * Probed rather than required, and a failure is not fatal: an engine that
+   * cannot resolve the workspace records no hash, `no_progress` cannot fire, and
+   * the round cap remains the outer bound. Orchestrator still never computes an
+   * absolute path of its own — it joins projects' `cwd` with the repo-relative
+   * path it was given (§2.5).
+   */
+  readonly getEffectiveLaunchContext?: (
+    projectId: string,
+    assignmentId: string,
+  ) => Promise<{ readonly cwd: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,11 +138,54 @@ export interface SessionLauncher {
   stop(sessionId: string, reason: string): Promise<void>;
 }
 
-export type RunnerPort = Partial<SessionLauncher>;
+/**
+ * §3.2's second row: a seat's **subsequent** turn is `continueFrom`, which mints
+ * a new session row with `resumed_from` and resumes that seat's SDK conversation
+ * (runner §9.4).
+ *
+ * It is on `RunnerService` in runner §11.2 but **not yet implemented** — runner's
+ * own service file states it is "absent rather than stubbed" until runner M9. So
+ * the engine probes for it: with it, round ≥ 2 keeps the skeptic's memory of its
+ * own prior critique and the SDK's prompt cache warm; without it, the engine
+ * starts a fresh session, records `prev_session_id` on the turn row regardless,
+ * and logs the downgrade. What it never does is silently drop the continuation
+ * *fact*, because that is what the conversation view and a later `continueFrom`
+ * both read.
+ */
+export interface SessionContinuation {
+  continueFrom(previousSessionId: string, prompt: string): Promise<StartSessionResult>;
+}
+
+/** The optional transcript read of R3, used to recover a lost live capture (§3.2). */
+export interface TranscriptTailReader {
+  getTranscriptTail(
+    sessionId: string,
+    options?: { maxBytes?: number },
+  ): Promise<{
+    readonly lines: readonly Readonly<Record<string, unknown>>[];
+    readonly pruned: boolean;
+  }>;
+}
+
+export type RunnerPort = Partial<SessionLauncher & SessionContinuation & TranscriptTailReader>;
 
 /** True when this build's runner can actually launch — runner M3 onwards. */
 export function hasLauncher(runner: RunnerPort | undefined): runner is SessionLauncher {
   return typeof runner?.startSession === 'function' && typeof runner.stop === 'function';
+}
+
+/** True when this build's runner ships §3.2's continuation verb — runner M9 onwards. */
+export function hasContinuation(
+  runner: RunnerPort | undefined,
+): runner is RunnerPort & SessionContinuation {
+  return typeof runner?.continueFrom === 'function';
+}
+
+/** True when R3's in-process transcript read is available (runner §11.2). */
+export function hasTranscriptTail(
+  runner: RunnerPort | undefined,
+): runner is RunnerPort & TranscriptTailReader {
+  return typeof runner?.getTranscriptTail === 'function';
 }
 
 /** True when this build's projects can link work items — projects M8 onwards. */

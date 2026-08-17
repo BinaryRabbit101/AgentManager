@@ -1,0 +1,495 @@
+/**
+ * The pure pattern layer (DESIGN §3.1, §3.3; IMPLEMENTATION M5-1/M5-6, M6-1..3).
+ *
+ * M5's first acceptance criterion, verbatim: *"`plan()` is pure: a table-driven
+ * suite feeds turn-row fixtures and asserts the next plan, **with no database and
+ * no runner in the test**."* So this file imports neither — every case is a
+ * literal `AssignmentState` and an expected `PlanResult`. The engine's own tests
+ * (`engine.test.ts`) then prove the same decisions against real rows; the point of
+ * having both is that convergence is decided here, where it can be enumerated.
+ */
+import { describe, expect, it } from 'vitest';
+
+import {
+  isConverged,
+  cardSeatOrder,
+  patternFor,
+  seatsOf,
+  CRITIC_SEAT,
+  DRAFTER_SEAT,
+  NO_BREAKERS,
+  PAIR_PATTERN,
+  PATTERNS,
+  SOLO_PATTERN,
+  type AssignmentState,
+  type PlanResult,
+  type StateMember,
+} from './patterns.js';
+import type { AssignmentRow } from './repository.js';
+import type { TurnReport, TurnRow, TurnStatus, TurnVerdict } from './turns.js';
+
+// ---------------------------------------------------------------------------
+// Fixtures — plain data, no storage
+// ---------------------------------------------------------------------------
+
+const MEMBERS: readonly StateMember[] = [
+  { agentId: 'ada', role: 'architect', seatOrder: 0 },
+  { agentId: 'sam', role: 'skeptic', seatOrder: 1 },
+];
+
+function row(overrides: Partial<AssignmentRow> = {}): AssignmentRow {
+  return {
+    id: 'a1',
+    projectId: 'p1',
+    pattern: 'pair',
+    status: 'open',
+    goal: 'Write the design',
+    scopeJson: null,
+    tokenBudget: 400_000,
+    tokensUsed: 0,
+    roundCap: 3,
+    roundsUsed: 0,
+    createdAt: '2026-08-16T10:00:00.000Z',
+    closedAt: null,
+    closeReason: null,
+    createdBy: 'user',
+    parentAssignmentId: null,
+    leadAgentId: 'ada',
+    write: true,
+    artifactPath: 'docs/x/DESIGN.md',
+    patternConfigJson: '{}',
+    phase: 'running',
+    haltReason: null,
+    updatedAt: null,
+    ...overrides,
+  };
+}
+
+let turnSeq = 0;
+
+function turn(overrides: Partial<TurnRow> & { seat: string; status: TurnStatus }): TurnRow {
+  turnSeq += 1;
+  return {
+    id: `t${String(turnSeq)}`,
+    assignmentId: 'a1',
+    round: 1,
+    agentId: overrides.seat === DRAFTER_SEAT ? 'ada' : 'sam',
+    sessionId: `s${String(turnSeq)}`,
+    prevSessionId: null,
+    report: null,
+    outputText: null,
+    artifactHash: null,
+    startedAt: '2026-08-16T10:00:00.000Z',
+    endedAt: '2026-08-16T10:05:00.000Z',
+    retryOfTurnId: null,
+    ...overrides,
+  };
+}
+
+function report(overrides: Partial<TurnReport> = {}): TurnReport {
+  return {
+    state: 'done',
+    headline: 'Draft complete',
+    artifacts: [{ path: 'docs/x/DESIGN.md' }],
+    at: '2026-08-16T10:05:00.000Z',
+    ...overrides,
+  };
+}
+
+function verdict(overrides: Partial<TurnVerdict> = {}): TurnVerdict {
+  return { decision: 'revise', blocking: [], nonBlocking: [], ...overrides };
+}
+
+function state(
+  turns: readonly TurnRow[],
+  overrides: Partial<AssignmentState> = {},
+): AssignmentState {
+  return {
+    assignment: row(),
+    scope: { paths: ['docs/x/'], artifactPath: 'docs/x/DESIGN.md' },
+    members: MEMBERS,
+    turns,
+    roundsUsed: 0,
+    tokensUsed: 0,
+    budget: 400_000,
+    roundCap: 3,
+    breakers: NO_BREAKERS,
+    ...overrides,
+  };
+}
+
+function plan(turns: readonly TurnRow[], overrides: Partial<AssignmentState> = {}): PlanResult {
+  return PAIR_PATTERN.plan(state(turns, overrides));
+}
+
+// ---------------------------------------------------------------------------
+
+describe('the pattern registry (M5-1)', () => {
+  it('ships exactly the two patterns with a driver, and names their drivers', () => {
+    expect(PATTERNS.map((pattern) => [pattern.id, pattern.driver])).toEqual([
+      ['solo', 'none'],
+      ['pair', 'sequential'],
+    ]);
+    expect(patternFor('review')).toBeUndefined();
+    expect(patternFor('overseer')).toBeUndefined();
+  });
+
+  it('declares what a pair requires: an artifact, a round cap and a budget', () => {
+    expect(PAIR_PATTERN.requires).toEqual({
+      artifactPath: true,
+      roundCap: true,
+      tokenBudget: true,
+    });
+    expect(PAIR_PATTERN.seats.map((seat) => seat.key)).toEqual([DRAFTER_SEAT, CRITIC_SEAT]);
+    expect(PAIR_PATTERN.seats[0]?.roles).toEqual(['architect', 'implementer']);
+    expect(PAIR_PATTERN.seats[1]?.roles).toEqual(['skeptic']);
+  });
+
+  it('orders the card critic-first, which is not the launch order (§6.2)', () => {
+    expect(cardSeatOrder('pair')).toEqual([CRITIC_SEAT, DRAFTER_SEAT]);
+    expect(PAIR_PATTERN.seats.map((seat) => seat.key)).not.toEqual(cardSeatOrder('pair'));
+  });
+});
+
+describe('solo has no driver, and that is the abstraction working (M5-6)', () => {
+  it('plans nothing, ever — not even for a first turn', () => {
+    expect(SOLO_PATTERN.plan(state([]))).toEqual({ wait: true, reason: 'no_driver' });
+    expect(SOLO_PATTERN.plan(state([turn({ seat: 'solo', status: 'reported' })]))).toEqual({
+      wait: true,
+      reason: 'no_driver',
+    });
+  });
+});
+
+describe('pair.validate (M6-1)', () => {
+  it('refuses a pair with no skeptic and a pair with no drafter, naming the seat', () => {
+    expect(PAIR_PATTERN.validate({}, [MEMBERS[0] as StateMember])[0]).toMatchObject({
+      level: 'error',
+      code: 'seat_unfilled',
+    });
+    expect(PAIR_PATTERN.validate({}, [MEMBERS[1] as StateMember])[0]).toMatchObject({
+      code: 'seat_unfilled',
+    });
+    expect(PAIR_PATTERN.validate({}, MEMBERS)).toEqual([]);
+  });
+
+  it('refuses a convergence rule this build does not ship', () => {
+    expect(PAIR_PATTERN.validate({ convergence: 'both-agree' }, MEMBERS)).toEqual([
+      expect.objectContaining({ code: 'unsupported_convergence' }),
+    ]);
+    expect(PAIR_PATTERN.validate({ convergence: 'critic-accepts' }, MEMBERS)).toEqual([]);
+  });
+
+  it('maps members onto seats by role, in seat order', () => {
+    expect(seatsOf(MEMBERS)).toEqual({ drafter: MEMBERS[0], critic: MEMBERS[1] });
+    // An implementer may hold the drafting seat too (§3.3's "architect **or**
+    // implementer").
+    expect(
+      seatsOf([
+        { agentId: 'ivy', role: 'implementer', seatOrder: 0 },
+        { agentId: 'sam', role: 'skeptic', seatOrder: 1 },
+      ]).drafter?.agentId,
+    ).toBe('ivy');
+  });
+});
+
+describe('§3.3’s turn table, row by row (M6-2)', () => {
+  it('no turns → round 1, drafter, a fresh session', () => {
+    expect(plan([])).toEqual({
+      seat: DRAFTER_SEAT,
+      agentId: 'ada',
+      round: 1,
+      prompt: { intent: 'draft', seat: DRAFTER_SEAT, round: 1 },
+      priority: 'normal',
+    });
+  });
+
+  it('drafter reported → the critic, same round, carrying the headline and the artifact', () => {
+    const drafted = turn({
+      seat: DRAFTER_SEAT,
+      status: 'reported',
+      report: report({ headline: 'Draft complete: 4 sections' }),
+      outputText: 'I wrote four sections.',
+    });
+    const next = plan([drafted]);
+    expect(next).toMatchObject({
+      seat: CRITIC_SEAT,
+      agentId: 'sam',
+      round: 1,
+      prompt: {
+        intent: 'critique',
+        handoff: { seat: DRAFTER_SEAT, agentId: 'ada', headline: 'Draft complete: 4 sections' },
+      },
+    });
+  });
+
+  it('critic revises → round + 1, drafter, with the blocking issues verbatim', () => {
+    const blocking = [{ severity: 'high', summary: 'No rollback path for step 3' }];
+    const turns = [
+      turn({ seat: DRAFTER_SEAT, status: 'reported', report: report() }),
+      turn({
+        seat: CRITIC_SEAT,
+        status: 'reported',
+        report: report({ verdict: verdict({ decision: 'revise', blocking }) }),
+      }),
+    ];
+    expect(plan(turns)).toMatchObject({
+      seat: DRAFTER_SEAT,
+      round: 2,
+      prompt: { intent: 'revise', blocking },
+    });
+  });
+
+  it('a seat’s second turn continues its own previous session (§3.2)', () => {
+    const turns = [
+      turn({ seat: DRAFTER_SEAT, status: 'reported', report: report(), sessionId: 'draft-1' }),
+      turn({
+        seat: CRITIC_SEAT,
+        status: 'reported',
+        sessionId: 'critic-1',
+        report: report({ verdict: verdict({ decision: 'revise' }) }),
+      }),
+    ];
+    // Round 2's drafter turn resumes `draft-1`, not `critic-1`: a continuation is
+    // per seat, which is what makes the skeptic remember its own prior critique.
+    expect(plan(turns)).toMatchObject({ continueFromSessionId: 'draft-1' });
+
+    const round2 = [
+      ...turns,
+      turn({
+        seat: DRAFTER_SEAT,
+        round: 2,
+        status: 'reported',
+        report: report(),
+        sessionId: 'draft-2',
+      }),
+    ];
+    expect(plan(round2)).toMatchObject({ seat: CRITIC_SEAT, continueFromSessionId: 'critic-1' });
+  });
+
+  it('a turn already in flight is a wait, not a second plan', () => {
+    expect(plan([turn({ seat: DRAFTER_SEAT, status: 'running' })])).toEqual({
+      wait: true,
+      reason: 'turn_in_flight',
+    });
+    expect(plan([turn({ seat: DRAFTER_SEAT, status: 'planned' })])).toEqual({
+      wait: true,
+      reason: 'turn_in_flight',
+    });
+  });
+});
+
+describe('convergence: the LLM proposes, the rule decides (M6-3)', () => {
+  const accepted = (over: Partial<TurnVerdict>): TurnRow =>
+    turn({
+      seat: CRITIC_SEAT,
+      status: 'reported',
+      report: report({ verdict: verdict({ decision: 'accept', ...over }) }),
+    });
+
+  it('converges on accept with an empty blocking list', () => {
+    const turns = [
+      turn({ seat: DRAFTER_SEAT, status: 'reported', report: report() }),
+      accepted({}),
+    ];
+    expect(plan(turns)).toMatchObject({ done: true, closeReason: 'converged' });
+    expect(isConverged(turns[1] as TurnRow)).toBe(true);
+  });
+
+  it('does NOT converge on "accept" carrying blocking issues — the words lose to the structure', () => {
+    const critic = accepted({
+      blocking: [{ severity: 'high', summary: 'still no rollback path' }],
+    });
+    const turns = [turn({ seat: DRAFTER_SEAT, status: 'reported', report: report() }), critic];
+    expect(isConverged(critic)).toBe(false);
+    expect(plan(turns)).toMatchObject({
+      seat: DRAFTER_SEAT,
+      round: 2,
+      prompt: { intent: 'revise' },
+    });
+  });
+
+  it('does not converge on a critic turn with no verdict at all', () => {
+    const critic = turn({ seat: CRITIC_SEAT, status: 'reported', report: report() });
+    expect(isConverged(critic)).toBe(false);
+  });
+
+  it('terminates round_cap when another round would exceed the cap', () => {
+    const turns = [
+      turn({ seat: DRAFTER_SEAT, round: 3, status: 'reported', report: report() }),
+      turn({
+        seat: CRITIC_SEAT,
+        round: 3,
+        status: 'reported',
+        report: report({ verdict: verdict({ decision: 'revise' }) }),
+      }),
+    ];
+    expect(plan(turns, { roundCap: 3 })).toMatchObject({ done: true, closeReason: 'round_cap' });
+    // Raise the cap and the same state plans another round instead — which is
+    // what the card's "run one more round" option does.
+    expect(plan(turns, { roundCap: 4 })).toMatchObject({ seat: DRAFTER_SEAT, round: 4 });
+  });
+
+  it('an assignment with no cap never terminates for the cap', () => {
+    const turns = [
+      turn({ seat: DRAFTER_SEAT, round: 9, status: 'reported', report: report() }),
+      turn({
+        seat: CRITIC_SEAT,
+        round: 9,
+        status: 'reported',
+        report: report({ verdict: verdict({ decision: 'revise' }) }),
+      }),
+    ];
+    expect(plan(turns, { roundCap: null })).toMatchObject({ round: 10 });
+  });
+});
+
+describe('the breakers §3.3’s table states (M6-2)', () => {
+  it('halts no_progress on an unchanged artifact hash while claiming a revision', () => {
+    const turns = [
+      turn({ seat: DRAFTER_SEAT, status: 'reported', report: report(), artifactHash: 'h1' }),
+      turn({
+        seat: CRITIC_SEAT,
+        status: 'reported',
+        report: report({ verdict: verdict({ decision: 'revise' }) }),
+      }),
+      turn({
+        seat: DRAFTER_SEAT,
+        round: 2,
+        status: 'reported',
+        report: report({ headline: 'Revised' }),
+        artifactHash: 'h1',
+      }),
+    ];
+    expect(plan(turns)).toEqual({ halt: true, haltReason: 'no_progress' });
+  });
+
+  it('does not halt when the hash changed, and cannot halt when there is no hash', () => {
+    const base = [
+      turn({ seat: DRAFTER_SEAT, status: 'reported', report: report(), artifactHash: 'h1' }),
+      turn({
+        seat: CRITIC_SEAT,
+        status: 'reported',
+        report: report({ verdict: verdict({ decision: 'revise' }) }),
+      }),
+    ];
+    expect(
+      plan([
+        ...base,
+        turn({
+          seat: DRAFTER_SEAT,
+          round: 2,
+          status: 'reported',
+          report: report(),
+          artifactHash: 'h2',
+        }),
+      ]),
+    ).toMatchObject({ seat: CRITIC_SEAT, round: 2 });
+    // A null hash can never equal the previous one, so the breaker does not fire
+    // rather than firing wrongly (`engine.ts`'s `hashArtifact`).
+    expect(
+      plan([
+        ...base,
+        turn({
+          seat: DRAFTER_SEAT,
+          round: 2,
+          status: 'reported',
+          report: report(),
+          artifactHash: null,
+        }),
+      ]),
+    ).toMatchObject({ seat: CRITIC_SEAT });
+  });
+
+  it('re-plans the same seat once for an unstructured turn, then halts no_report', () => {
+    const once = [turn({ seat: DRAFTER_SEAT, status: 'unstructured' })];
+    const retry = plan(once);
+    expect(retry).toMatchObject({
+      seat: DRAFTER_SEAT,
+      round: 1,
+      prompt: { intent: 'retry', retryOfTurnId: (once[0] as TurnRow).id },
+    });
+
+    const twice = [...once, turn({ seat: DRAFTER_SEAT, status: 'unstructured' })];
+    expect(plan(twice)).toEqual({ halt: true, haltReason: 'no_report' });
+  });
+
+  it('halts turn_failures on two consecutive failed turns, and retries after one', () => {
+    expect(plan([turn({ seat: DRAFTER_SEAT, status: 'failed' })])).toMatchObject({
+      seat: DRAFTER_SEAT,
+      prompt: { intent: 'retry' },
+    });
+    expect(
+      plan([
+        turn({ seat: DRAFTER_SEAT, status: 'failed' }),
+        turn({ seat: DRAFTER_SEAT, status: 'failed' }),
+      ]),
+    ).toEqual({ halt: true, haltReason: 'turn_failures' });
+  });
+});
+
+describe('a blocked seat waits for the user, then resumes (§3.3, §4.4)', () => {
+  const blocked = (): TurnRow =>
+    turn({
+      seat: DRAFTER_SEAT,
+      status: 'blocked',
+      report: report({ state: 'blocked', headline: 'waiting on a decision' }),
+      endedAt: '2026-08-16T10:05:00.000Z',
+    });
+
+  it('waits while the card is open', () => {
+    expect(
+      plan([blocked()], {
+        openQuestion: { id: 'q1', seat: DRAFTER_SEAT, prompt: 'Disk or DB?' },
+      }),
+    ).toEqual({ wait: true, reason: 'awaiting_answer' });
+  });
+
+  it('re-plans the same seat and round with the answer prepended', () => {
+    expect(
+      plan([blocked()], {
+        openQuestion: {
+          id: 'q1',
+          seat: DRAFTER_SEAT,
+          prompt: 'Disk or DB?',
+          answerText: 'disk',
+          answeredAt: '2026-08-16T10:06:00.000Z',
+        },
+      }),
+    ).toMatchObject({
+      seat: DRAFTER_SEAT,
+      round: 1,
+      prompt: { intent: 'answered', answer: { question: 'Disk or DB?', text: 'disk' } },
+    });
+  });
+
+  it('ignores an answer that landed before the seat blocked', () => {
+    expect(
+      plan([blocked()], {
+        openQuestion: {
+          id: 'q0',
+          seat: DRAFTER_SEAT,
+          prompt: 'An older question',
+          answerText: 'yes',
+          answeredAt: '2026-08-16T09:00:00.000Z',
+        },
+      }),
+    ).toEqual({ wait: true, reason: 'awaiting_answer' });
+  });
+});
+
+describe('purity', () => {
+  it('never mutates the state it is given, and answers the same twice', () => {
+    const turns = [turn({ seat: DRAFTER_SEAT, status: 'reported', report: report() })];
+    const input = state(turns);
+    const snapshot = JSON.stringify(input);
+    const first = PAIR_PATTERN.plan(input);
+    const second = PAIR_PATTERN.plan(input);
+    expect(JSON.stringify(input)).toBe(snapshot);
+    expect(first).toEqual(second);
+  });
+
+  it('waits rather than guessing when a seat is unfilled', () => {
+    expect(plan([], { members: [] })).toEqual({ wait: true, reason: 'no_members' });
+  });
+});

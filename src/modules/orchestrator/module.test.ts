@@ -25,13 +25,18 @@
  * alternative — restating the SDK's message shapes here — would be a second
  * copy of a fixture that exists to be kept in step with the pinned SDK.
  */
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { boot, type BootOptions, type BootedService } from '../../main.js';
-import { controllableQuery, scriptedQuery, successScript } from '../runner/__tests__/fakeQuery.js';
+import {
+  controllableQuery,
+  fakeResult,
+  scriptedQuery,
+  successScript,
+} from '../runner/__tests__/fakeQuery.js';
 
 import { ORCHESTRATOR_MODULE_ID, ORCHESTRATOR_SERVICE } from './module.js';
 import type { AssignmentService } from './types.js';
@@ -107,6 +112,16 @@ async function untilTerminal(
     if (Date.now() > deadline) {
       throw new Error(`session ${sessionId} did not settle: ${JSON.stringify(answer.body)}`);
     }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/** Polls a predicate until it holds — the engine's loop is event-driven. */
+async function waitFor(predicate: () => boolean, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return;
+    if (Date.now() > deadline) throw new Error('the engine did not reach the expected state');
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
@@ -239,8 +254,8 @@ describe('configuration (M0-2)', () => {
   });
 });
 
-describe('routes (M1-7, M2-6)', () => {
-  it('mounts exactly M1’s six assignment routes and M2’s three question routes', async () => {
+describe('routes (M1-7, M2-6, M5-1, M6-6)', () => {
+  it('mounts M1’s six assignment routes, M2’s three question routes and M5/M6’s three', async () => {
     const booted = await bootCore();
     const mine = booted.runtime.routes.routes
       .filter((route) => route.moduleId === ORCHESTRATOR_MODULE_ID)
@@ -249,10 +264,13 @@ describe('routes (M1-7, M2-6)', () => {
     expect(mine).toEqual([
       'GET /api/assignments',
       'GET /api/assignments/:id',
+      'GET /api/assignments/:id/conversation',
+      'GET /api/patterns',
       'GET /api/questions',
       'GET /api/questions/:id',
       'PATCH /api/assignments/:id',
       'POST /api/assignments',
+      'POST /api/assignments/:id/advance',
       'POST /api/assignments/:id/close',
       'POST /api/assignments/solo',
       'POST /api/questions/:id/answer',
@@ -415,6 +433,231 @@ describe('routes (M1-7, M2-6)', () => {
     });
     expect(refused.status).toBe(404);
     expect(refused.body.error).toBe('agent_not_found');
+  });
+});
+
+describe('the adversarial pair, end to end (M6’s acceptance scenario)', () => {
+  /**
+   * > An architect and a skeptic are assigned to write `docs/<x>/DESIGN.md` with a
+   * > 3-round cap and a 400 k budget. The architect drafts the file; the skeptic
+   * > critiques it with blocking issues; the architect revises; the skeptic
+   * > accepts. The assignment closes `converged`, the file exists, the
+   * > conversation endpoint renders six turns and the handoffs in order,
+   * > `tokens_used` is under budget, and the whole run needed **no** user
+   * > interaction.
+   *
+   * Everything below the SDK is real: the composition root, the listener,
+   * roster's library on disk, projects' workspace lease, runner's launch chain and
+   * queue, orchestrator's engine, prompt composition, turn table and mailbox. Two
+   * things are stood in for, and both are named rather than hidden:
+   *
+   * 1. **`query()` is scripted** — the same seam every runner test uses.
+   * 2. **The agents' tool calls are made in process**, through the *real*
+   *    `getSessionToolset` handlers on the registry, because roster's mount of
+   *    `options.mcpServers.agentmanager` (R1) is roster M7 and has not shipped. A
+   *    scripted SDK has no MCP client, so there is no path from a fake `query()`
+   *    through a transport to the handler; what this asserts is everything on
+   *    *our* side of that boundary, and `toolset.test.ts` separately drives the
+   *    same handlers over a real MCP transport.
+   */
+  it('runs six turns to convergence with no user interaction', { timeout: 60_000 }, async () => {
+    const held = controllableQuery();
+    const booted = await bootCore({
+      runner: { query: held.query },
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-fixture' },
+    });
+
+    const folder = join(workspaceDir.path, 'Pair');
+    mkdirSync(join(folder, 'docs', 'x'), { recursive: true });
+    const project = await call<{ id: string }>('POST', '/api/projects', { localPath: folder });
+    expect(project.status).toBe(201);
+
+    const architect = await call<{ definition: { id: string } }>('POST', '/api/roster/agents', {
+      name: 'Ada Architect',
+      specialty: 'documentation',
+      capabilities: { roles: ['architect'] },
+      personaText: '# Ada\n\nDesign carefully.\n',
+    });
+    const skeptic = await call<{ definition: { id: string } }>('POST', '/api/roster/agents', {
+      name: 'Sam Skeptic',
+      specialty: 'code-review',
+      capabilities: { roles: ['skeptic'] },
+      personaText: '# Sam\n\nBe hard to please.\n',
+    });
+    expect([architect.status, skeptic.status]).toEqual([201, 201]);
+    const adaId = architect.body.definition.id;
+    const samId = skeptic.body.definition.id;
+
+    const patterns = await call<{ patterns: { id: string; driver: string }[] }>(
+      'GET',
+      '/api/patterns',
+    );
+    expect(patterns.body.patterns.find((pattern) => pattern.id === 'pair')?.driver).toBe(
+      'sequential',
+    );
+
+    const created = await call<{ assignmentId: string; phase: string }>(
+      'POST',
+      '/api/assignments',
+      {
+        projectId: project.body.id,
+        pattern: 'pair',
+        goal: 'Write the design for x',
+        members: [
+          { agentId: adaId, role: 'architect' },
+          { agentId: samId, role: 'skeptic' },
+        ],
+        scope: {
+          paths: ['docs/x/'],
+          description: 'the x design docs',
+          artifactPath: 'docs/x/DESIGN.md',
+        },
+        write: true,
+        roundCap: 3,
+        tokenBudget: 400_000,
+      },
+    );
+    expect(created.status).toBe(201);
+    const assignmentId = created.body.assignmentId;
+
+    /** The turn the engine currently has in flight, straight out of the table. */
+    const activeTurn = (): { id: string; seat: string; agent_id: string; session_id: string } => {
+      const turn = booted.storage.db
+        .prepare<[string], { id: string; seat: string; agent_id: string; session_id: string }>(
+          "SELECT id, seat, agent_id, session_id FROM assignment_turns WHERE assignment_id = ? AND status = 'running'",
+        )
+        .get(assignmentId);
+      if (turn === undefined) throw new Error('no turn is in flight');
+      return turn;
+    };
+
+    const service = booted.runtime.registry.require<AssignmentService>(ORCHESTRATOR_SERVICE);
+    const toolset = (agentId: string): { call: (name: string, args: object) => Promise<unknown> } =>
+      service?.getSessionToolset?.({ assignmentId, agentId }) as {
+        call: (name: string, args: object) => Promise<unknown>;
+      };
+
+    const artifact = join(folder, 'docs', 'x', 'DESIGN.md');
+    const seatsSeen: string[] = [];
+
+    // Three rounds: revise, revise, accept. Nothing here answers a question,
+    // because the run must need no user interaction.
+    for (let round = 1; round <= 3; round += 1) {
+      for (const seat of ['drafter', 'critic'] as const) {
+        const index = seatsSeen.length;
+        await held.started(index + 1);
+        // The row becomes `running` a tick after `query()` is called.
+        await waitFor(() => activeTurn().seat === seat);
+        const turn = activeTurn();
+        seatsSeen.push(turn.seat);
+
+        if (seat === 'drafter') {
+          // The drafter's whole job is writing the artifact file.
+          writeFileSync(artifact, `# Design\n\nRevision ${String(round)}.\n`, 'utf8');
+          await toolset(turn.agent_id).call('report_status', {
+            state: 'done',
+            headline: `Draft revision ${String(round)}`,
+            artifacts: [{ path: 'docs/x/DESIGN.md', kind: 'doc' }],
+          });
+          await toolset(turn.agent_id).call('send_to_agent', {
+            to: samId,
+            kind: 'handoff',
+            body: `Revision ${String(round)} is ready; section 4 is the risky one.`,
+          });
+        } else if (round < 3) {
+          await toolset(turn.agent_id).call('report_status', {
+            state: 'done',
+            headline: `Round ${String(round)}: blocking issues`,
+            verdict: {
+              decision: 'revise',
+              blocking: [{ severity: 'high', summary: 'No rollback path for step 3' }],
+              nonBlocking: ['naming nit in §2'],
+            },
+          });
+        } else {
+          await toolset(turn.agent_id).call('report_status', {
+            state: 'done',
+            headline: 'Accepted',
+            verdict: { decision: 'accept', blocking: [], nonBlocking: [] },
+          });
+        }
+
+        await held.sessions[index]?.emit(fakeResult({ text: 'done' }));
+        held.sessions[index]?.end();
+        await untilTerminal(turn.session_id);
+        await waitFor(() =>
+          round === 3 && seat === 'critic'
+            ? booted.storage.db
+                .prepare<[string], { status: string }>(
+                  'SELECT status FROM assignments WHERE id = ?',
+                )
+                .get(assignmentId)?.status === 'closed'
+            : (() => {
+                try {
+                  return activeTurn().session_id !== turn.session_id;
+                } catch {
+                  return false;
+                }
+              })(),
+        );
+      }
+    }
+
+    expect(seatsSeen).toEqual(['drafter', 'critic', 'drafter', 'critic', 'drafter', 'critic']);
+
+    // The assignment converged, and §2.2's one exception gave it its own phase.
+    const assignment = await call<{
+      status: string;
+      phase: string;
+      closeReason: string;
+      roundsUsed: number;
+      tokensUsed: number;
+      tokenBudget: number;
+    }>('GET', `/api/assignments/${assignmentId}`);
+    expect(assignment.body).toMatchObject({
+      status: 'closed',
+      phase: 'converged',
+      closeReason: 'converged',
+      roundsUsed: 3,
+    });
+    expect(assignment.body.tokensUsed).toBeLessThan(assignment.body.tokenBudget);
+
+    // The file exists, which is the point of requiring an artifact path.
+    expect(existsSync(artifact)).toBe(true);
+
+    // The conversation endpoint renders six turns and the handoffs in order.
+    const conversation = await call<{
+      rounds: {
+        round: number;
+        entries: { type: string; seat?: string; kind?: string; delivery?: string }[];
+      }[];
+    }>('GET', `/api/assignments/${assignmentId}/conversation`);
+    expect(conversation.status).toBe(200);
+    const turnEntries = conversation.body.rounds.flatMap((round) =>
+      round.entries.filter((entry) => entry.type === 'turn'),
+    );
+    expect(turnEntries.map((entry) => entry.seat)).toEqual([
+      'drafter',
+      'critic',
+      'drafter',
+      'critic',
+      'drafter',
+      'critic',
+    ]);
+    expect(conversation.body.rounds.map((round) => round.round)).toEqual([1, 2, 3]);
+    const handoffs = conversation.body.rounds.flatMap((round) =>
+      round.entries.filter((entry) => entry.type === 'message'),
+    );
+    expect(handoffs).toHaveLength(3);
+    expect(handoffs.every((entry) => entry.kind === 'handoff')).toBe(true);
+    // Each handoff was inlined into the critic's launch in its own round — §5.1's
+    // first row ("has a turn planned or running later in the pattern"), which is
+    // the only delivery an agent ever gets.
+    expect(handoffs.map((entry) => entry.delivery)).toEqual(['inlined', 'inlined', 'inlined']);
+
+    // No user interaction was needed: the inbox is empty from first to last.
+    const questions = await call<{ questions: unknown[] }>('GET', '/api/questions?status=open');
+    expect(questions.body.questions).toEqual([]);
   });
 });
 

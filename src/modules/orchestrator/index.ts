@@ -56,6 +56,79 @@ export {
   type RecommendationView,
 } from './questions.js';
 export { createQuestionRoutes, type QuestionRoutesDeps } from './questionRoutes.js';
+
+// --- M5/M6: the pattern engine and the adversarial pair --------------------
+
+export {
+  cardSeatOrder,
+  isConverged,
+  patternFor,
+  seatsOf,
+  CRITIC_SEAT,
+  DRAFTER_SEAT,
+  HALT_REASONS,
+  PAIR_PATTERN,
+  PATTERNS,
+  SOLO_PATTERN,
+  type AssignmentState,
+  type BreakerCounters,
+  type HaltReason,
+  type PatternConfig,
+  type PatternDef,
+  type PatternSummary,
+  type PlanResult,
+  type PromptSpec,
+  type SeatDef,
+  type Termination,
+  type TurnPlan,
+} from './patterns.js';
+export {
+  createPatternEngine,
+  ROUND_CAP_CARD,
+  ROUND_CAP_OPTIONS,
+  type AdvanceOutcome,
+  type PatternEngine,
+  type PatternEngineOptions,
+  type TurnReconciliation,
+} from './engine.js';
+export { createEngineRoutes, type EngineRoutesDeps } from './engineRoutes.js';
+export {
+  createTurnRepository,
+  TurnAlreadyActiveError,
+  TURN_STATUSES,
+  type BlockingIssue,
+  type TurnReport,
+  type TurnRepository,
+  type TurnRow,
+  type TurnStatus,
+  type TurnVerdict,
+} from './turns.js';
+export {
+  createMailboxRepository,
+  MESSAGE_KINDS,
+  type Delivery,
+  type InlinedMail,
+  type MailboxRepository,
+  type MessageKind,
+  type MessageView,
+} from './messages.js';
+export {
+  createToolsetFactory,
+  TOOLSET_SERVER_KEY,
+  WORKER_TOOL_NAMES,
+  type LaunchIdentity,
+  type SessionToolset,
+  type ToolRefusalCode,
+  type ToolResult,
+  type ToolsetFactory,
+} from './toolset.js';
+export { composePrompt, type ComposedPrompt, type ComposePromptInput } from './prompt.js';
+export {
+  createConversationReader,
+  type ConversationEntry,
+  type ConversationRound,
+  type ConversationView,
+} from './conversation.js';
 export { createAssignmentRepository, type AssignmentRepository } from './repository.js';
 export { createAssignmentService, type AssignmentServiceOptions } from './service.js';
 export { createAssignmentRoutes } from './routes.js';
@@ -94,8 +167,10 @@ export type {
   ProjectsPort,
   RosterPort,
   RunnerPort,
+  SessionContinuation,
   SessionLauncher,
   StartSessionRequest,
   StartSessionResult,
+  TranscriptTailReader,
   WorkItemLinker,
 } from './ports.js';

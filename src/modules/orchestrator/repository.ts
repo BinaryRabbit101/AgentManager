@@ -112,6 +112,15 @@ export interface AssignmentRepository {
   openChildBudgetTotal(parentAssignmentId: string): number;
   /** Sets `phase`, and `halt_reason` when one is given. */
   setPhase(id: string, phase: AssignmentPhase, haltReason?: string | null): AssignmentRow;
+  /**
+   * Adds `by` to `rounds_used` (§3.3's round accounting, IMPLEMENTATION M5).
+   *
+   * Delegated to foundation's `addRoundsUsed` rather than written here, for the
+   * reason the whole file exists: `rounds_used` is a base column and gains
+   * nothing from a second writer. The engine calls this exactly once per
+   * completed round.
+   */
+  incrementRounds(id: string, by?: number): AssignmentRow;
   /** The base-column patch of `PATCH /api/assignments/:id` (§11.1). */
   update(
     id: string,
@@ -320,6 +329,12 @@ export function createAssignmentRepository(
 
     setPhase(id, phase, haltReason) {
       setPhaseStatement.run(phase, haltReason ?? null, isoTimestamp(clock()), id);
+      return hydrate(id);
+    },
+
+    incrementRounds(id, by = 1) {
+      assignments.addRoundsUsed(id, by);
+      touch.run(isoTimestamp(clock()), id);
       return hydrate(id);
     },
 

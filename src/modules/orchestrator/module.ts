@@ -44,11 +44,17 @@
 import type { Storage } from '../../storage/index.js';
 import type { Module, ModuleContext, ModuleHandle } from '../types.js';
 
+import { createConversationReader } from './conversation.js';
+import { createPatternEngine, type PatternEngine } from './engine.js';
+import { createEngineRoutes } from './engineRoutes.js';
+import { createMailboxRepository, type MailboxRepository } from './messages.js';
 import { createQuestionInbox, type QuestionInbox } from './questions.js';
 import { createQuestionRoutes } from './questionRoutes.js';
 import { createAssignmentRepository, type AssignmentRepository } from './repository.js';
 import { createAssignmentRoutes } from './routes.js';
 import { createAssignmentService } from './service.js';
+import { createToolsetFactory, type ToolsetFactory } from './toolset.js';
+import { createTurnRepository, type TurnRepository } from './turns.js';
 import type { ProjectsPort, RosterPort, RunnerPort } from './ports.js';
 import type { AssignmentService } from './types.js';
 
@@ -64,6 +70,14 @@ export interface OrchestratorInternals {
   readonly service: AssignmentService;
   /** M2's inbox and `QuestionBridge`. */
   readonly inbox: QuestionInbox;
+  /** M5's `assignment_turns` repository. */
+  readonly turns: TurnRepository;
+  /** M5/M6's mailbox (the M4 slice §5 needs). */
+  readonly mailbox: MailboxRepository;
+  /** M5's pattern engine. */
+  readonly engine: PatternEngine;
+  /** §4.1's per-launch toolset factory. */
+  readonly toolset: ToolsetFactory;
 }
 
 export interface OrchestratorModuleOptions {
@@ -87,15 +101,31 @@ export function createOrchestratorModule(
         clock: ctx.clock,
       });
 
-      // M2's inbox is built *after* the service, because §6.5's expiry
-      // consequences call `closeAssignment`; the service reaches it back through
-      // a getter on this holder, which is what keeps the two from being a
-      // constructor cycle.
-      const built: { inbox?: QuestionInbox } = {};
+      const turns = createTurnRepository({
+        db: open.db,
+        clock: ctx.clock,
+        log: (message, detail) => {
+          ctx.logger.warn(detail ?? {}, message);
+        },
+      });
+
+      const mailbox = createMailboxRepository({
+        db: open.db,
+        messages: ctx.store.messages,
+        clock: ctx.clock,
+      });
+
+      // M2's inbox and M5's toolset are both built *after* the service — the
+      // inbox because §6.5's expiry consequences call `closeAssignment`, and the
+      // toolset because its `request_user_decision` needs the inbox. The service
+      // reaches both back through getters on this holder, which is what keeps
+      // three mutually-dependent objects from being a constructor cycle.
+      const built: { inbox?: QuestionInbox; toolset?: ToolsetFactory } = {};
 
       const service = createAssignmentService({
         repository,
         inbox: () => built.inbox,
+        toolset: () => built.toolset,
         sessions: ctx.store.sessions,
         questions: ctx.store.questions,
         bus: ctx.bus,
@@ -139,10 +169,58 @@ export function createOrchestratorModule(
 
       built.inbox = inbox;
 
+      const toolset = createToolsetFactory({
+        assignments: repository,
+        turns,
+        mailbox,
+        bus: ctx.bus,
+        clock: ctx.clock,
+        config: ctx.config.orchestrator,
+        inbox: () => built.inbox,
+        // §12: runner owns both question timings; orchestrator **reads** them.
+        holdMs: ctx.config.runner.question.holdMs,
+        expireHours: ctx.config.runner.question.expireHours,
+        log: (message, detail) => {
+          ctx.logger.debug(detail ?? {}, message);
+        },
+      });
+      built.toolset = toolset;
+
+      const engine = createPatternEngine({
+        repository,
+        turns,
+        mailbox,
+        sessions: ctx.store.sessions,
+        service: () => service,
+        inbox: () => built.inbox,
+        runner: () => ctx.require<RunnerPort>('runner'),
+        projects: () => ctx.require<ProjectsPort>('projects'),
+        bus: ctx.bus,
+        clock: ctx.clock,
+        config: ctx.config.orchestrator,
+        expireHours: ctx.config.runner.question.expireHours,
+        log: (level, message, detail) => {
+          ctx.logger[level](detail ?? {}, message);
+        },
+      });
+      // The loop is entirely event-driven (§3.1), so subscribing *is* starting
+      // it. Done in `init` rather than `start()` because the boot task below runs
+      // before any `start()` and already needs the loop live.
+      const detach = engine.attach();
+
+      const conversation = createConversationReader({
+        repository,
+        turns,
+        mailbox,
+        inbox: () => built.inbox,
+        config: ctx.config.orchestrator,
+      });
+
       ctx.provide(ORCHESTRATOR_SERVICE, service);
       ctx.registerRoutes(createAssignmentRoutes({ service, logger: ctx.logger }));
       ctx.registerRoutes(createQuestionRoutes({ inbox, logger: ctx.logger }));
-      options.onReady?.({ repository, service, inbox });
+      ctx.registerRoutes(createEngineRoutes({ engine, service, conversation, logger: ctx.logger }));
+      options.onReady?.({ repository, service, inbox, turns, mailbox, engine, toolset });
 
       // IMPLEMENTATION M1-6. A boot task, not `start()`: foundation runs it
       // after storage is up and *before* any listener binds (foundation §4.2),
@@ -178,6 +256,19 @@ export function createOrchestratorModule(
         }
       }, 'orchestrator:expire-questions');
 
+      // IMPLEMENTATION M5-5. Runs after M1's phase reconciliation, so an
+      // assignment closed for an archived project is never re-entered: a turn is
+      // only failed and re-planned for an assignment that is still `open`.
+      ctx.registerBootTask(async () => {
+        const result = await engine.reconcileOnBoot();
+        if (result.failedTurns.length > 0 || result.resumed.length > 0) {
+          ctx.logger.info(
+            { failedTurns: result.failedTurns.length, resumed: result.resumed.length },
+            'turns from a previous run were reconciled and the pattern loop re-entered',
+          );
+        }
+      }, 'orchestrator:reconcile-turns');
+
       ctx.logger.info(
         {
           maxConcurrentPerAgent: ctx.config.orchestrator.assignment.maxConcurrentPerAgent,
@@ -187,16 +278,22 @@ export function createOrchestratorModule(
       );
 
       return {
+        stop: () => {
+          // The loop is its subscriptions; dropping them is how it stops. Without
+          // this a second boot in one process (every test that reboots) would
+          // drive the same assignment from two engines.
+          detach();
+        },
         health: () => {
           const open_ = repository.list({ status: 'open' });
           return {
             status: 'ok',
             detail: {
               openAssignments: open_.length,
-              // The two numbers an assignment panel needs before the pattern
-              // engine (M5) exists to report anything richer.
               halted: open_.filter((row) => row.phase === 'halted').length,
               awaitingUser: open_.filter((row) => row.phase === 'awaiting_user').length,
+              // M5's own number: how many assignments have a turn in flight.
+              turnsInFlight: open_.filter((row) => turns.active(row.id) !== undefined).length,
             },
           };
         },

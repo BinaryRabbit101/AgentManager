@@ -49,6 +49,7 @@ import {
 import type { QuestionInbox } from './questions.js';
 import type { AssignmentRepository, AssignmentRow } from './repository.js';
 import { emitScopeRules } from './scopeRules.js';
+import type { SessionToolset, ToolsetFactory } from './toolset.js';
 import {
   isMachineCreated,
   validateCreateAssignment,
@@ -106,6 +107,13 @@ export interface AssignmentServiceOptions {
    * cancel rows on its own.
    */
   readonly inbox?: (() => QuestionInbox | undefined) | undefined;
+  /**
+   * §4.1's toolset factory, resolved lazily for the same reason the inbox is: it
+   * is built after this service, because its tools write turn rows the engine
+   * planned. Absent in a build with no toolset, which is the case roster's
+   * rule-dropping diagnostic already covers (§4.1).
+   */
+  readonly toolset?: (() => ToolsetFactory | undefined) | undefined;
   readonly log?: (message: string, detail?: Record<string, unknown>) => void;
 }
 
@@ -631,6 +639,15 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
     },
     get questions(): QuestionInbox | undefined {
       return options.inbox?.();
+    },
+
+    // Roster reaches this through `ctx.require('orchestrator')` during
+    // `compileSession` (R1). A getter, so a build with no toolset reports the
+    // capability as *absent* rather than as a function that refuses.
+    get getSessionToolset(): ToolsetFactory | undefined {
+      const factory = options.toolset?.();
+      if (factory === undefined) return undefined;
+      return (launch): SessionToolset => factory(launch);
     },
 
     get(id) {

@@ -109,7 +109,16 @@ export interface QuestionOption {
 }
 
 export interface AskRequest {
-  readonly sessionId: string;
+  /**
+   * The session the ask belongs to, or `null` when nothing is asking.
+   *
+   * Runner §5.2 always has one. Orchestrator's own cards — a round-cap choice, a
+   * breaker halt — are raised by the *engine*, which is not a session, and
+   * `questions.session_id` is a nullable foreign key precisely so that case has a
+   * value rather than a lie. An empty string is normalised to `null` for the same
+   * reason: it is not a session id, and the key would refuse it.
+   */
+  readonly sessionId: string | null;
   readonly assignmentId: string;
   readonly agentId: string;
   readonly kind: QuestionKind;
@@ -525,7 +534,7 @@ export function createQuestionInbox(options: QuestionInboxOptions): QuestionInbo
 
       const record = questions.open({
         assignmentId: request.assignmentId,
-        sessionId: request.sessionId,
+        sessionId: request.sessionId === '' ? null : request.sessionId,
         kind: request.kind,
         prompt: request.prompt,
         options: envelope,

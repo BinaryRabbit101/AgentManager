@@ -10,6 +10,7 @@
 import type { AssignmentPattern, AssignmentRole, AssignmentStatus } from '../../storage/index.js';
 
 import type { QuestionInbox } from './questions.js';
+import type { ToolsetFactory } from './toolset.js';
 
 export type { AssignmentPattern, AssignmentRole, AssignmentStatus };
 
@@ -252,14 +253,14 @@ export interface ListAssignmentsQuery {
 // ---------------------------------------------------------------------------
 
 /**
- * As far as M1 and M2 take §2.3's interface.
+ * §2.3's interface as far as M1, M2 and M5/M6 take it.
  *
- * `getSessionToolset` (M4) is **absent rather than stubbed**: a method that
- * resolves without doing anything is a contract another element builds against
- * and then discovers is a lie. Runner's §11.3 already says what to do when a
- * capability is missing — its degraded question fallback keys on exactly that
- * absence, which is why {@link AssignmentService.questionBridge} is optional
- * rather than a no-op implementation.
+ * `getSessionToolset` is present from M5/M6, because the pair's convergence rule
+ * has no other input than `report_status` — but it exposes only the **four worker
+ * tools** M5 and M6 need (`toolset.ts`), not §4.3's six. That is stated on the
+ * method rather than implied by its presence, for the reason the rest of this
+ * interface is: "a method that resolves without doing anything is a contract
+ * another element builds against and then discovers is a lie".
  */
 export interface AssignmentService {
   /**
@@ -284,6 +285,16 @@ export interface AssignmentService {
   update(id: string, patch: AssignmentPatch): AssignmentView;
   /** The boot task of IMPLEMENTATION M1-6, exposed so a test can drive it. */
   reconcileOnBoot(): Promise<BootReconciliation>;
+  /**
+   * §4.1's per-launch MCP toolset, which roster mounts at
+   * `options.mcpServers.agentmanager` (R1).
+   *
+   * A **new** instance every call — SDK-NOTES G2: an instance is single-use, and a
+   * reused one yields "a session that believes it has the toolset and gets no
+   * answers". `undefined` in a build with no toolset wired, which is the same
+   * absence `require('orchestrator')` returning undefined already means to roster.
+   */
+  readonly getSessionToolset?: ToolsetFactory | undefined;
 }
 
 export interface BootReconciliation {
