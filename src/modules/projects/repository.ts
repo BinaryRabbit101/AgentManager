@@ -84,6 +84,14 @@ export interface UpdateProjectPatch {
   readonly workspacePolicy?: WorkspacePolicy;
   readonly defaults?: ProjectDefaults;
   readonly retention?: RetentionSettings | null;
+  /**
+   * `null` is §2.3's **restore** — the only way back off the board.
+   *
+   * Patchable rather than hidden behind `archive()` because archiving and
+   * restoring are one column read two ways, and a `restore()` that could not
+   * clear what `archive()` set would be two owners of one value.
+   */
+  readonly archivedAt?: string | null;
 }
 
 export interface ListProjectsOptions {
@@ -308,6 +316,8 @@ export function createProjectRepository(options: ProjectRepositoryOptions): Proj
           ...(patch.retention === undefined
             ? {}
             : { retentionJson: serializeRetention(patch.retention) }),
+          // `null` is meaningful here too: it is the restore (§2.3).
+          ...(patch.archivedAt === undefined ? {} : { archivedAt: patch.archivedAt }),
         });
         if (patch.defaults !== undefined) replaceAgents(id, patch.defaults.agentIds);
         return mustGet(id);

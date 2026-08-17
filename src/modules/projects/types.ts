@@ -104,6 +104,58 @@ export const BUILT_IN_RETENTION_DEFAULTS: RetentionDefaults = Object.freeze({
 });
 
 // ---------------------------------------------------------------------------
+// Work items (§1.5, §7.2 — "a deliberately thin list")
+// ---------------------------------------------------------------------------
+
+export type WorkItemKind = 'bug' | 'feature' | 'chore' | 'question';
+export const WORK_ITEM_KINDS = ['bug', 'feature', 'chore', 'question'] as const;
+
+export type WorkItemStatus = 'open' | 'in_progress' | 'done' | 'dropped';
+export const WORK_ITEM_STATUSES = ['open', 'in_progress', 'done', 'dropped'] as const;
+
+/** `overseer` is an orchestrated decomposition; everything else is the user's. */
+export type WorkItemSource = 'user' | 'overseer';
+export const WORK_ITEM_SOURCES = ['user', 'overseer'] as const;
+
+export function isWorkItemKind(value: unknown): value is WorkItemKind {
+  return WORK_ITEM_KINDS.includes(value as WorkItemKind);
+}
+
+export function isWorkItemStatus(value: unknown): value is WorkItemStatus {
+  return WORK_ITEM_STATUSES.includes(value as WorkItemStatus);
+}
+
+export function isWorkItemSource(value: unknown): value is WorkItemSource {
+  return WORK_ITEM_SOURCES.includes(value as WorkItemSource);
+}
+
+/**
+ * One backlog entry (§1.5).
+ *
+ * There is deliberately no priority, no assignee, no label and no dependency:
+ * §7.2 — "anything richer is a tracker, which this is not trying to be". `rank`
+ * is manual ordering and nothing else, and the agents come from the assignment.
+ */
+export interface WorkItem {
+  readonly id: string;
+  readonly projectId: ProjectId;
+  readonly kind: WorkItemKind;
+  /** Required, one line. */
+  readonly title: string;
+  /** Markdown, may be empty. */
+  readonly body: string;
+  readonly status: WorkItemStatus;
+  /** REAL, so an item can be dropped between two neighbours without renumbering. */
+  readonly rank: number;
+  /** Optional hint, repo-relative. */
+  readonly scopePaths: readonly string[];
+  readonly source: WorkItemSource;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly closedAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Workspace leases (§1.6, §4)
 // ---------------------------------------------------------------------------
 
@@ -140,6 +192,15 @@ export interface WorkspaceLease {
   readonly state: WorkspaceLeaseState;
   readonly acquiredAt: string;
   readonly releasedAt: string | null;
+  /**
+   * The assignment's repo-relative scope paths, as `acquireWorkspace` was given
+   * them (§4.3; M7).
+   *
+   * Stored rather than held in memory because both consumers outlive the call:
+   * `getEffectiveLaunchContext` rewrites them per session (§1.3), and the
+   * overlap warning compares them across assignments. Empty means whole-project.
+   */
+  readonly scopePaths: readonly string[];
 }
 
 /**
@@ -229,6 +290,16 @@ export interface LaunchContext {
   readonly elevation?: PermissionElevation;
   /** Resolved `instructionsPath` text → roster §4's fourth system-prompt slot. */
   readonly instructions?: string;
+  /**
+   * The assignment's path scopes, rewritten onto {@link LaunchContext.cwd}
+   * (§1.3; M7).
+   *
+   * Absent for a whole-project assignment — never `Edit(*)`, which collapses to
+   * the bare tool name and auto-approves every file edit (orchestrator
+   * SDK-NOTES C1-3). Like everything else here these are **input rules** for
+   * roster's `compilePermissions`, not an effective set.
+   */
+  readonly scopeRules?: { readonly allow: readonly string[] };
   readonly workspace: WorkspaceLease;
 }
 

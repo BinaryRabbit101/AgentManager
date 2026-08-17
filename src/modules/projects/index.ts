@@ -1,22 +1,22 @@
 /**
  * The projects element — the registry of the things agents get pointed at.
  *
- * Milestones landed here: **M1** (schema, path identity, slug generation, the
- * typed repository, module registration), **M2** (register an existing folder:
- * inspect + create), **M4** (defaults, permission override storage, environment
- * entries and the launch-context call) and **M6** (workspace leases: the primary
- * tree, git worktrees, orphan reconciliation).
+ * Every v1 milestone through M9 is landed here: **M1** (schema, path identity,
+ * slug generation, the typed repository, module registration), **M2** (register
+ * an existing folder: inspect + create), **M3** (clone from a repo URL, as a
+ * tracked background job with streamed progress), **M4** (defaults, permission
+ * override storage, environment entries and the launch-context call), **M5**
+ * (the activity timeline and transcript retention), **M6** (workspace leases:
+ * the primary tree, git worktrees, orphan reconciliation), **M7** (scope
+ * rewriting onto the leased workspace and the overlap warning), **M8** (the
+ * backlog and its derived statuses) and **M9** (archive/restore, remove,
+ * relocate, the derived health payload, and `GET /api/fs/browse`).
  *
- * M3's clone flow, M5's activity timeline and retention, M7's scope rewriting,
- * M8's work items and M9's lifecycle endpoints are deliberately not here — the
- * tables they need exist (`migrations/projects/0001_registry.sql`), the code
- * does not.
- *
- * `GET /api/fs/browse` (`browse.ts`) is the exception, and it is pulled forward
- * on purpose: it was scheduled with M9, but ui M2's quick-add is the *only*
- * consumer it has and cannot register a folder from a browser without it (ui
- * §8.1). It is implemented to §2.1's rules in full — resolve first, compare
- * second; escaping entries omitted; UNC refused — rather than as a stub.
+ * Three files are worth knowing about before reading any of the others:
+ * `types.ts` holds the vocabulary and defines nothing anybody else owns;
+ * `service.ts` is what `ctx.require('projects')` answers with; and `scope.ts`
+ * is the one place a permission-shaped string is produced — as **input** for
+ * roster's compiler, never as an effective set (§1.3, §7.6).
  */
 export {
   createProjectsModule,
@@ -30,7 +30,73 @@ export {
   type CreateProjectRequest,
   type ProjectsService,
   type ProjectsServiceOptions,
+  type RemoveProjectOptions,
+  type RemoveProjectResult,
 } from './service.js';
+
+export {
+  createCloneService,
+  createGitCloneRunner,
+  defaultTargetPath,
+  parseCloneProgress,
+  type CloneOutcome,
+  type CloneProgress,
+  type CloneProjectRequest,
+  type CloneService,
+  type CloneServiceOptions,
+  type CloneStarted,
+  type GitCloneRunner,
+  type RepoInspection,
+} from './clone.js';
+
+export { parseRepoUrl, type ParsedRepoUrl, type RepoUrlScheme } from './repoUrl.js';
+
+export {
+  deriveOutcome,
+  readProjectActivity,
+  DEFAULT_ACTIVITY_LIMIT,
+  MAX_ACTIVITY_LIMIT,
+  type ActivityDeps,
+  type ActivityOptions,
+  type ActivitySession,
+  type AssignmentOutcome,
+  type ProjectActivityEntry,
+  type ProjectActivityPage,
+} from './activity.js';
+
+export {
+  effectiveRetention,
+  pruneProject,
+  runRetention,
+  transcriptAge,
+  RETENTION_INTERVAL_MS,
+  type ProjectPruneResult,
+  type RetentionDeps,
+  type RetentionRunResult,
+} from './retention.js';
+
+export {
+  findScopeOverlaps,
+  normaliseScopePath,
+  overlappingPrefixes,
+  rewriteScopeRules,
+  summariseScope,
+  toRuleRoot,
+  type NormalisedScopePath,
+  type ScopeClaim,
+  type ScopeOverlap,
+  type WorkspaceScopeRules,
+} from './scope.js';
+
+export {
+  createWorkItemRepository,
+  type CreateWorkItemInput,
+  type ListWorkItemsOptions,
+  type UpdateWorkItemPatch,
+  type WorkItemRepository,
+} from './workItems.js';
+
+export { deriveProjectHealth, type HealthDeps } from './health.js';
 
 export {
   createProjectRepository,
@@ -167,10 +233,12 @@ export {
 } from './git.js';
 
 export {
+  CloneTargetExistsError,
   DuplicateProjectError,
   ForbiddenEnvNameError,
   GitWorktreePathError,
   InvalidPathError,
+  InvalidRepoUrlError,
   InvalidRequestError,
   MissingElevationReasonError,
   NestedProjectError,
@@ -178,25 +246,37 @@ export {
   PathNotDirectoryError,
   PathNotFoundError,
   PathNotWritableError,
+  ProjectHasHistoryError,
   ProjectNotFoundError,
   ProjectNotLaunchableError,
+  ProjectNotMissingError,
   ProjectsError,
   SlugExhaustedError,
+  WorkItemNotFoundError,
+  WorkItemProjectMismatchError,
   WorkspaceLeaseNotFoundError,
   WorkspaceNotLeasedError,
+  WorktreesOutstandingError,
   type NestingRelation,
 } from './errors.js';
 
 export {
   isProjectStatus,
   isVcs,
+  isWorkItemKind,
+  isWorkItemSource,
+  isWorkItemStatus,
   isWorkspaceKind,
   isWorkspaceLeaseState,
   isWorkspacePolicy,
   isWorkspaceRefusal,
+  projectLaunchBlock,
   BUILT_IN_RETENTION_DEFAULTS,
   PROJECT_STATUSES,
   VCS_KINDS,
+  WORK_ITEM_KINDS,
+  WORK_ITEM_SOURCES,
+  WORK_ITEM_STATUSES,
   WORKSPACE_KINDS,
   WORKSPACE_LEASE_STATES,
   WORKSPACE_POLICIES,
@@ -214,6 +294,10 @@ export {
   type RetentionDefaults,
   type RetentionSettings,
   type Vcs,
+  type WorkItem,
+  type WorkItemKind,
+  type WorkItemSource,
+  type WorkItemStatus,
   type WorkspaceKind,
   type WorkspaceLease,
   type WorkspaceLeaseState,

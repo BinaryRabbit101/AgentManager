@@ -191,7 +191,9 @@ describe('permissionElevation (§1.2)', () => {
       defaults: { permissionElevation: { allow: ['Bash(git push*)'], reason: 'because' } },
     });
 
-    const codes = h.service.health(project.id).conditions.map((condition) => condition.code);
+    const codes = (await h.service.health(project.id)).conditions.map(
+      (condition) => condition.code,
+    );
     expect(codes).toContain('elevation-refused');
   });
 
@@ -201,7 +203,7 @@ describe('permissionElevation (§1.2)', () => {
       defaults: { permissionElevation: { allow: ['Bash(git push*)'], reason: 'because' } },
     });
 
-    expect(h.service.health(project.id).conditions).toEqual([]);
+    expect((await h.service.health(project.id)).conditions).toEqual([]);
   });
 });
 
@@ -333,9 +335,9 @@ describe('default agents (§1.2 — lazy drop)', () => {
     const reread = harness.service.get(project.id);
     expect(reread.defaults.agentIds).toEqual(['priya-bugfix', 'marcus-review']);
 
-    const stale = harness.service
-      .health(project.id)
-      .conditions.find((condition) => condition.code === 'stale-agents');
+    const stale = (await harness.service.health(project.id)).conditions.find(
+      (condition) => condition.code === 'stale-agents',
+    );
     expect(stale?.detail?.['agentIds']).toEqual(['gone-agent']);
     expect(stale?.message).toContain('gone-agent');
 

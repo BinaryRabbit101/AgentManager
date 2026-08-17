@@ -37,6 +37,8 @@ export interface CreateLeaseInput {
   readonly baseCommit?: string | null;
   readonly write: boolean;
   readonly acquiredAt?: string;
+  /** Repo-relative scopes (§4.3; M7). Omitted means whole-project. */
+  readonly scopePaths?: readonly string[];
 }
 
 export interface WorkspaceLeaseRepository {
@@ -62,6 +64,14 @@ export interface WorkspaceLeaseRepository {
   setState(id: string, state: WorkspaceLeaseState, at?: string): WorkspaceLease;
   /** Puts an adopted lease back into `active` and clears `released_at`. */
   reactivate(id: string, at?: string): WorkspaceLease;
+  /**
+   * Replaces the lease's scope paths (§4.3; M7).
+   *
+   * Needed by the adoption path of §4.4: an assignment re-acquiring the lease it
+   * already had may state a different scope than it did the first time, and a
+   * stale set would rewrite the *wrong* rules onto the workspace.
+   */
+  setScopePaths(id: string, scopePaths: readonly string[]): WorkspaceLease;
   delete(id: string): boolean;
 }
 
@@ -77,10 +87,32 @@ interface LeaseRow {
   readonly state: string;
   readonly acquired_at: string;
   readonly released_at: string | null;
+  readonly scope_paths_json: string;
 }
 
 const COLUMNS =
-  'id, project_id, assignment_id, kind, path, branch, base_commit, "write", state, acquired_at, released_at';
+  'id, project_id, assignment_id, kind, path, branch, base_commit, "write", state, acquired_at, ' +
+  'released_at, scope_paths_json';
+
+/**
+ * Reads `scope_paths_json` back into a string list.
+ *
+ * Total, like every other stored-blob read in this element: a column somebody
+ * hand-edited must not make a lease unreadable, and "no scope" is the
+ * conservative reading — it produces no scope rules and treats the assignment as
+ * whole-project for the overlap warning, which warns more rather than less.
+ */
+function toScopePaths(json: string | null): readonly string[] {
+  if (json === null || json.trim().length === 0) return [];
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
 
 function toLease(row: LeaseRow): WorkspaceLease {
   return {
@@ -98,6 +130,7 @@ function toLease(row: LeaseRow): WorkspaceLease {
     state: isWorkspaceLeaseState(row.state) ? row.state : 'orphaned',
     acquiredAt: row.acquired_at,
     releasedAt: row.released_at,
+    scopePaths: toScopePaths(row.scope_paths_json),
   };
 }
 
@@ -106,11 +139,12 @@ export function createWorkspaceLeaseRepository(
   clock: Clock,
 ): WorkspaceLeaseRepository {
   const insert = db.prepare<
-    [string, string, string, string, string, string | null, string | null, number, string]
+    [string, string, string, string, string, string | null, string | null, number, string, string]
   >(
     `INSERT INTO workspace_leases
-       (id, project_id, assignment_id, kind, path, branch, base_commit, "write", state, acquired_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+       (id, project_id, assignment_id, kind, path, branch, base_commit, "write", state,
+        acquired_at, scope_paths_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
   );
   const selectById = db.prepare<[string], LeaseRow>(
     `SELECT ${COLUMNS} FROM workspace_leases WHERE id = ?`,
@@ -140,6 +174,9 @@ export function createWorkspaceLeaseRepository(
   const updateReactivate = db.prepare<[string, string]>(
     "UPDATE workspace_leases SET state = 'active', released_at = NULL, acquired_at = ? WHERE id = ?",
   );
+  const updateScopePaths = db.prepare<[string, string]>(
+    'UPDATE workspace_leases SET scope_paths_json = ? WHERE id = ?',
+  );
   const deleteById = db.prepare<[string]>('DELETE FROM workspace_leases WHERE id = ?');
 
   function mustGet(id: string): WorkspaceLease {
@@ -163,6 +200,7 @@ export function createWorkspaceLeaseRepository(
         input.baseCommit ?? null,
         input.write ? 1 : 0,
         input.acquiredAt ?? isoTimestamp(clock()),
+        JSON.stringify([...(input.scopePaths ?? [])]),
       );
       return mustGet(id);
     },
@@ -200,6 +238,11 @@ export function createWorkspaceLeaseRepository(
 
     reactivate: (id, at) => {
       updateReactivate.run(at ?? isoTimestamp(clock()), id);
+      return mustGet(id);
+    },
+
+    setScopePaths: (id, scopePaths) => {
+      updateScopePaths.run(JSON.stringify([...scopePaths]), id);
       return mustGet(id);
     },
 

@@ -12,7 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { findInstallRoot } from '../../../config/index.js';
 import { openStorage, type EventsRepository, type Storage } from '../../../storage/index.js';
@@ -25,7 +25,9 @@ import { createWorkspaceLeaseRepository, type WorkspaceLeaseRepository } from '.
 import { createKeyedMutex } from '../mutex.js';
 import { createWorkspaceService, type WorkspaceService } from '../workspaces.js';
 import type { CommandResult, CommandRunner } from '../worktree.js';
-import { BUILT_IN_RETENTION_DEFAULTS } from '../types.js';
+import { BUILT_IN_RETENTION_DEFAULTS, type RetentionDefaults } from '../types.js';
+import { createCloneService, type CloneService, type GitCloneRunner } from '../clone.js';
+import { createWorkItemRepository, type WorkItemRepository } from '../workItems.js';
 
 /** The repository root, which also holds the shipped `migrations/` tree. */
 export const repoRoot = findInstallRoot(dirname(fileURLToPath(import.meta.url)));
@@ -95,10 +97,37 @@ export interface TestHarness {
   readonly repository: ProjectRepository;
   readonly leases: WorkspaceLeaseRepository;
   readonly workspaces: WorkspaceService;
+  readonly workItems: WorkItemRepository;
+  readonly clone: CloneService;
   readonly service: ProjectsService;
+  readonly bus: EventBus;
   readonly events: AppEvent[];
   readonly dataRoot: string;
   readonly worktreesRoot: string;
+  readonly projectsRoot: string;
+}
+
+/**
+ * A clone runner that answers from a script instead of running git.
+ *
+ * The M3 tests that need a *real* clone use a real bare repository behind a
+ * `file://` URL and the real runner; this one exists for the failure paths —
+ * an authentication rejection cannot be provoked from a local fixture, and
+ * inventing a credential prompt to fail would be a test of the invention.
+ */
+export function scriptedCloneRunner(
+  answer: (args: readonly string[]) => { ok: boolean; stdout?: string; stderr?: string },
+  progressLines: readonly string[] = [],
+): GitCloneRunner {
+  return (args, onStderrLine) => {
+    for (const line of progressLines) onStderrLine(line);
+    const result = answer(args);
+    return Promise.resolve({
+      ok: result.ok,
+      stdout: result.stdout ?? '',
+      stderr: result.stderr ?? '',
+    });
+  };
 }
 
 /** A command runner that records what it was asked to run and always succeeds. */
@@ -138,13 +167,21 @@ export function makeHarness(options: {
   readonly readInstructions?: (absolutePath: string) => string | undefined;
   /** Receives what the module would log — the one-time long-path warning included. */
   readonly onLog?: (level: 'info' | 'warn', message: string) => void;
+  /** §2.2's clone job. Defaults to a runner that refuses, so nothing hits a network. */
+  readonly cloneRunner?: GitCloneRunner;
+  /** `<dataRoot>-projects` unless a test wants somewhere specific. */
+  readonly projectsRoot?: string;
+  readonly retentionDefaults?: RetentionDefaults;
+  /** Frozen by default, so timestamps are assertable; a retention test moves it. */
+  readonly clock?: () => Date;
 }): TestHarness {
   const storage = openTestStorage(options.dataRoot);
-  const clock = (): Date => new Date('2026-08-16T10:00:00.000Z');
+  const clock = options.clock ?? ((): Date => new Date('2026-08-16T10:00:00.000Z'));
+  const retentionDefaults = options.retentionDefaults ?? BUILT_IN_RETENTION_DEFAULTS;
   const repository = createProjectRepository({
     db: storage.db,
     projects: storage.store.projects,
-    retentionDefaults: BUILT_IN_RETENTION_DEFAULTS,
+    retentionDefaults,
     clock,
     ...(options.knownAgent === undefined ? {} : { knownAgent: options.knownAgent }),
   });
@@ -173,12 +210,41 @@ export function makeHarness(options: {
           },
         }),
   });
+  const workItems = createWorkItemRepository(storage.db, clock);
+  const projectsRoot = options.projectsRoot ?? resolve(options.dataRoot, '..', 'projects-root');
+  const clone = createCloneService({
+    repository,
+    bus,
+    projectsRoot,
+    dataRoot: options.dataRoot,
+    registered: () =>
+      repository.list({ includeArchived: true }).map((project) => ({
+        id: project.id,
+        name: project.name,
+        localPath: project.localPath,
+        localPathKey: project.localPathKey,
+      })),
+    git,
+    clone:
+      options.cloneRunner ??
+      scriptedCloneRunner(() => ({ ok: false, stderr: 'fake clone: no runner was configured' })),
+    removeDirectory: { attempts: 3, initialDelayMs: 1 },
+  });
+
   const service = createProjectsService({
     repository,
     workspaces,
+    workItems,
+    clone,
     bus,
     dataRoot: options.dataRoot,
+    sessions: storage.store.sessions,
+    assignments: storage.store.assignments,
+    usage: storage.store.usage,
+    transcripts: storage.store.transcripts,
+    retentionDefaults,
     git,
+    clock,
     ...(options.allowPermissionElevation === undefined
       ? {}
       : { allowPermissionElevation: options.allowPermissionElevation }),
@@ -192,10 +258,14 @@ export function makeHarness(options: {
     repository,
     leases,
     workspaces,
+    workItems,
+    clone,
     service,
+    bus,
     events: emitted,
     dataRoot: options.dataRoot,
     worktreesRoot,
+    projectsRoot,
   };
 }
 
@@ -216,6 +286,22 @@ export function fillWithFiles(directory: string, count: number): void {
   for (let i = 0; i < count; i += 1) {
     writeFileSync(resolve(directory, `file-${String(i).padStart(5, '0')}.txt`), 'x', 'utf8');
   }
+}
+
+/**
+ * Runs `act` and returns the {@link ProjectsError} it threw.
+ *
+ * `expect(fn).toThrowError(expect.objectContaining({ code }))` reads better but
+ * types the matcher as `any`, which the lint rules refuse. Catching the refusal
+ * and asserting on its `code` is the same assertion with a name on it.
+ */
+export function refusalFrom(act: () => unknown): { code?: string; message?: string } {
+  try {
+    act();
+  } catch (error) {
+    return error as { code?: string; message?: string };
+  }
+  throw new Error('expected the call to be refused, but it returned');
 }
 
 /** True when a real `git` executable is on PATH. */
@@ -251,4 +337,25 @@ export function makeGitRepo(directory: string, options: { remote?: string } = {}
   run('add', 'README.md');
   run('commit', '-m', 'initial');
   if (options.remote !== undefined) run('remote', 'add', 'origin', options.remote);
+}
+
+/**
+ * A bare clone of `source`, to serve as a **local** clone origin (M3).
+ *
+ * M3's acceptance says "cloning a small public repo", and a test that reaches
+ * github.com is a test of the network. A bare repository behind a `file://` URL
+ * exercises the same code path — git's transport, `--progress` on stderr, a real
+ * working checkout at the end — without one.
+ */
+export function makeBareRepo(source: string, target: string): string {
+  execFileSync('git', ['clone', '--bare', source, target], {
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  return target;
+}
+
+/** `C:\Temp\fixture.git` → `file:///C:/Temp/fixture.git`. */
+export function fileUrl(path: string): string {
+  return pathToFileURL(path).href;
 }

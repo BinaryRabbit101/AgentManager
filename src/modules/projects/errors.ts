@@ -324,6 +324,161 @@ export class WorkspaceLeaseNotFoundError extends ProjectsError {
   }
 }
 
+/**
+ * The `repoUrl` posted to the clone flow cannot be parsed (§2.2 step 1).
+ *
+ * The reason is carried rather than a bare "invalid URL": the two mistakes
+ * people actually make — pasting a local path, or pasting a web page URL — have
+ * different fixes, and only the message can say which.
+ */
+export class InvalidRepoUrlError extends ProjectsError {
+  override readonly name = 'InvalidRepoUrlError';
+
+  constructor(
+    readonly repoUrl: string,
+    reason: string,
+  ) {
+    super('invalid_repo_url', `"${repoUrl}" is not a repository URL: ${reason}.`, 400, {
+      field: 'repoUrl',
+      repoUrl,
+    });
+  }
+}
+
+/**
+ * The clone target already holds something (§2.2, M3's fourth acceptance:
+ * "target path already exists and is non-empty → refused **before any clone
+ * starts**").
+ *
+ * Refused rather than cloned into a suffixed directory: `git clone` refuses a
+ * non-empty target anyway, and doing it here means no project row is created
+ * and nothing has to be rolled back.
+ */
+export class CloneTargetExistsError extends ProjectsError {
+  override readonly name = 'CloneTargetExistsError';
+
+  constructor(readonly targetPath: string) {
+    super(
+      'clone_target_exists',
+      `${targetPath} already exists and is not empty. Choose another target folder, or register ` +
+        'the existing one with "Add existing folder" instead.',
+      409,
+      { field: 'targetPath', targetPath },
+    );
+  }
+}
+
+/** Nothing is stored under that work-item id (§1.5). */
+export class WorkItemNotFoundError extends ProjectsError {
+  override readonly name = 'WorkItemNotFoundError';
+
+  constructor(readonly workItemId: string) {
+    super('work_item_not_found', `No work item is stored with id ${workItemId}.`, 404, {
+      workItemId,
+    });
+  }
+}
+
+/**
+ * A work item was linked to an assignment on a different project (§1.5).
+ *
+ * "Both calls are idempotent, validate that every item belongs to the
+ * assignment's project" — a cross-project link would put an item `in_progress`
+ * because of work happening somewhere it cannot see.
+ */
+export class WorkItemProjectMismatchError extends ProjectsError {
+  override readonly name = 'WorkItemProjectMismatchError';
+
+  constructor(
+    readonly workItemId: string,
+    readonly workItemProjectId: string,
+    readonly assignmentProjectId: string,
+  ) {
+    super(
+      'work_item_project_mismatch',
+      `Work item ${workItemId} belongs to project ${workItemProjectId}, not to the assignment's ` +
+        `project ${assignmentProjectId}. An assignment may only carry its own project's items (DESIGN §1.5).`,
+      409,
+      { workItemId, workItemProjectId, assignmentProjectId },
+    );
+  }
+}
+
+/**
+ * `POST /api/projects/:id/relocate` was given a path that is not the project
+ * (§2.3's "relocate").
+ *
+ * Relocation re-canonicalises a *new* path onto the same project id, so the
+ * usual registration refusals still apply — and one more: relocating onto a
+ * folder that some other project already claims would produce two rows for one
+ * directory.
+ */
+export class ProjectNotMissingError extends ProjectsError {
+  override readonly name = 'ProjectNotMissingError';
+
+  constructor(
+    readonly projectId: string,
+    readonly localPath: string,
+  ) {
+    super(
+      'project_not_missing',
+      `Project ${projectId} still exists at ${localPath}, so there is nothing to relocate. ` +
+        'Relocation is for a project whose folder has moved or whose drive is unplugged (DESIGN §2.3).',
+      409,
+      { projectId, localPath },
+    );
+  }
+}
+
+/**
+ * Removal was asked for while worktrees are still on disk (§2.3).
+ *
+ * "Remove deletes the registry row, work items, leases and history index **after
+ * confirming outstanding worktrees are cleaned up**." So the refusal names them,
+ * and the caller either cleans them up itself (§4.4's "clean up" action) or
+ * re-sends the request with `cleanupWorktrees`. Deleting the rows first would
+ * leave directories on disk that nothing knows the owner of.
+ */
+export class WorktreesOutstandingError extends ProjectsError {
+  override readonly name = 'WorktreesOutstandingError';
+
+  constructor(
+    readonly projectId: string,
+    readonly worktrees: readonly { id: string; path: string; branch: string | null }[],
+  ) {
+    super(
+      'worktrees_outstanding',
+      `${String(worktrees.length)} worktree(s) for this project are still on disk: ` +
+        `${worktrees.map((worktree) => worktree.path).join(', ')}. Clean them up first, or repeat ` +
+        'the request with cleanupWorktrees=true to remove the ones that hold no unmerged work.',
+      409,
+      { projectId, worktrees: worktrees.map((worktree) => ({ ...worktree })) },
+    );
+  }
+}
+
+/**
+ * The project still has sessions or assignments, so its row cannot be deleted.
+ *
+ * Foundation's decision, not this element's: `projects.delete` runs behind
+ * `ON DELETE RESTRICT` (foundation §1.4, "deleting a project with history is
+ * refused; archive instead"). Translated here so the caller gets the *advice*
+ * rather than a storage-layer error class.
+ */
+export class ProjectHasHistoryError extends ProjectsError {
+  override readonly name = 'ProjectHasHistoryError';
+
+  constructor(readonly projectId: string) {
+    super(
+      'project_has_history',
+      `Project ${projectId} has sessions or assignments recorded against it, so its row cannot be ` +
+        'deleted — that history is what the timeline reads. Archive it instead (DESIGN §2.3).',
+      409,
+      { projectId },
+    );
+  }
+}
+
 /** No free slug was available — 9998 projects share one name. Practically unreachable. */
 export class SlugExhaustedError extends ProjectsError {
   override readonly name = 'SlugExhaustedError';

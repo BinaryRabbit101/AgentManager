@@ -375,9 +375,9 @@ describe.skipIf(!hasGit())('orphan recovery (§4.4)', () => {
     // An orphaned lease was never released, so it carries no releasedAt.
     expect(h.leases.get(worktree.id)?.releasedAt).toBeNull();
 
-    const orphanCondition = h.service
-      .health(project.id)
-      .conditions.find((condition) => condition.code === 'orphaned-worktrees');
+    const orphanCondition = (await h.service.health(project.id)).conditions.find(
+      (condition) => condition.code === 'orphaned-worktrees',
+    );
     expect(orphanCondition?.level).toBe('warn');
     expect(orphanCondition?.message).toContain('2');
 

@@ -33,17 +33,26 @@
  * `project_default_agents`.
  */
 import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 
 import type { Storage } from '../../storage/index.js';
-import type { HealthCondition, Module, ModuleContext, ModuleHandle } from '../types.js';
+import type { HealthCheck, Module, ModuleContext, ModuleHandle } from '../types.js';
 
+import {
+  createCloneService,
+  createGitCloneRunner,
+  type CloneService,
+  type GitCloneRunner,
+} from './clone.js';
 import { createGitRunner, type GitRunner } from './git.js';
 import { createWorkspaceLeaseRepository } from './leases.js';
 import { createKeyedMutex } from './mutex.js';
 import { createProjectRepository, type ProjectRepository } from './repository.js';
+import { RETENTION_INTERVAL_MS } from './retention.js';
 import { createProjectRoutes } from './routes.js';
 import { createProjectsService, type ProjectsService } from './service.js';
 import { BUILT_IN_RETENTION_DEFAULTS, type RetentionDefaults } from './types.js';
+import { createWorkItemRepository, type WorkItemRepository } from './workItems.js';
 import { createWorkspaceService, type WorkspaceService } from './workspaces.js';
 import { createCommandRunner, readLongPathsEnabled, type CommandRunner } from './worktree.js';
 
@@ -67,6 +76,10 @@ export interface ProjectsModuleOptions {
   readonly runCommand?: CommandRunner;
   /** Reads `LongPathsEnabled`; the registry in production, a stub in tests. */
   readonly longPaths?: () => boolean | undefined;
+  /** `git clone --progress` (§2.2); injected so a test needs no network. */
+  readonly cloneRunner?: GitCloneRunner;
+  /** `%USERPROFILE%`, for the documented `projects.root` default. */
+  readonly homeDirectory?: string;
 }
 
 /**
@@ -132,13 +145,50 @@ export function createProjectsModule(
         },
       });
 
+      const workItems: WorkItemRepository = createWorkItemRepository(open.db, ctx.clock);
+
+      // §2.2's default: `%USERPROFILE%\Documents\AgentManager\projects` unless
+      // `projects.root` names somewhere else. Resolved here rather than in
+      // `clone.ts`, which should not have to know what a home directory is.
+      const homeDirectory = options.homeDirectory ?? process.env['USERPROFILE'] ?? homedir();
+      const projectsRoot =
+        ctx.config.projects.root ?? resolve(homeDirectory, 'Documents', 'AgentManager', 'projects');
+
+      const clone: CloneService = createCloneService({
+        repository,
+        bus: ctx.bus,
+        projectsRoot,
+        dataRoot: open.paths.dataRoot,
+        registered: () =>
+          repository.list({ includeArchived: true }).map((project) => ({
+            id: project.id,
+            name: project.name,
+            localPath: project.localPath,
+            localPathKey: project.localPathKey,
+          })),
+        git,
+        clone: options.cloneRunner ?? createGitCloneRunner(),
+        log: (level, message, detail) => {
+          if (level === 'warn') ctx.logger.warn(detail ?? {}, message);
+          else ctx.logger.info(detail ?? {}, message);
+        },
+      });
+
       const service: ProjectsService = createProjectsService({
         repository,
         workspaces,
+        workItems,
+        clone,
         bus: ctx.bus,
         dataRoot: open.paths.dataRoot,
+        sessions: ctx.store.sessions,
+        assignments: ctx.store.assignments,
+        usage: ctx.store.usage,
+        transcripts: ctx.store.transcripts,
+        retentionDefaults: retentionDefaultsFrom(ctx),
         allowPermissionElevation: ctx.config.policy.allowPermissionElevation,
         git,
+        clock: ctx.clock,
         ...(options.probeWritable === undefined ? {} : { probeWritable: options.probeWritable }),
         log: (message, detail) => {
           ctx.logger.warn(detail ?? {}, message);
@@ -146,6 +196,31 @@ export function createProjectsModule(
       });
 
       ctx.provide(PROJECTS_SERVICE, service);
+
+      // §1.1's `lastActivityAt`, and §1.5's `open → in_progress`. Both are
+      // consequences of a session starting, and both are read off the bus rather
+      // than pushed by the runner: runner emits `session.started` with the ids
+      // already populated (runner §10), and a subscription is how a feature
+      // module learns about another's events without importing it (§6.1).
+      const detachSessionStarted = ctx.bus.subscribe(['session.started'], (event) => {
+        const projectId = event.ids.projectId;
+        if (projectId !== undefined) service.noteSessionStarted(projectId);
+        const assignmentId = event.ids.assignmentId;
+        if (assignmentId !== undefined) service.noteAssignmentStarted(assignmentId);
+      });
+
+      // §1.5's other half. Orchestrator calls `unlinkWorkItems` on its close
+      // path, which already returns the items; this covers a close that took
+      // another route — a crash-recovery sweep, say — so an item cannot be
+      // stranded in `in_progress` by an assignment nobody unlinked.
+      const detachAssignmentClosed = ctx.bus.subscribe(['assignment.closed'], (event) => {
+        const assignmentId = event.ids.assignmentId;
+        if (assignmentId === undefined) return;
+        workItems.noteAssignmentEnded(assignmentId, (other) => {
+          const assignment = ctx.store.assignments.get(other);
+          return assignment !== undefined && assignment.status === 'open';
+        });
+      });
       ctx.registerRoutes(
         createProjectRoutes({
           service,
@@ -175,40 +250,80 @@ export function createProjectsModule(
         }
       }, 'projects:reconcile-workspaces');
 
+      // §3.3's daily job. Registered as a boot task *and* a timer: a machine
+      // that is off overnight would otherwise never prune, and the whole point
+      // of the cap is that disk stays bounded on a desktop install.
+      ctx.registerBootTask(() => {
+        const result = service.pruneTranscripts();
+        if (result.pruned > 0) {
+          ctx.logger.info({ pruned: result.pruned }, 'transcripts pruned to retention');
+        }
+      }, 'projects:prune-transcripts');
+
+      let retentionTimer: NodeJS.Timeout | undefined;
+
+      // Per-project health is a *registered check* rather than part of
+      // `ModuleHandle.health()`, which foundation declares synchronous (§6.1):
+      // the `dirty` condition is `git status`, and blocking the event loop on it
+      // for every project on every poll is not a trade worth making. Foundation
+      // merges a check's conditions into this module's entry, so the aggregate
+      // reads exactly as it did before.
+      const projectConditions: HealthCheck = async () => {
+        const conditions = [];
+        for (const project of repository.list({ includeArchived: true })) {
+          for (const condition of (await service.health(project.id)).conditions) {
+            conditions.push({
+              id: `projects.${condition.code}:${project.id}`,
+              level: condition.level,
+              message: `${project.name}: ${condition.message}`,
+            });
+          }
+        }
+        return { status: 'ok' as const, conditions };
+      };
+      ctx.registerHealthCheck(projectConditions, 'projects:conditions');
+
       ctx.logger.info(
         {
           dataRoot: open.paths.dataRoot,
-          projectsRoot: ctx.config.projects.root,
+          projectsRoot,
           worktreesRoot: open.paths.worktrees,
         },
         'project registry ready',
       );
 
       return {
-        health: () => {
-          const projects = repository.list({ includeArchived: true });
-          // Health is derived on read (§2.3), so the aggregate is simply every
-          // project's own conditions, prefixed with the project so a UI banner
-          // can say which one it is about.
-          const conditions: HealthCondition[] = [];
-          for (const project of projects) {
-            for (const condition of service.health(project.id).conditions) {
-              conditions.push({
-                id: `projects.${condition.code}:${project.id}`,
-                level: condition.level,
-                message: `${project.name}: ${condition.message}`,
-              });
+        start: () => {
+          retentionTimer = setInterval(() => {
+            try {
+              const result = service.pruneTranscripts();
+              if (result.pruned > 0) {
+                ctx.logger.info({ pruned: result.pruned }, 'transcripts pruned to retention');
+              }
+            } catch (error) {
+              ctx.logger.warn({ err: error }, 'the transcript retention job failed');
             }
-          }
-          return {
-            // A project with a stale agent id or an orphaned worktree is a
-            // condition to show, not a module that is failing: everything else
-            // about the registry works.
-            status: 'ok',
-            conditions,
-            detail: { projects: projects.length, worktreesRoot: open.paths.worktrees },
-          };
+          }, RETENTION_INTERVAL_MS);
+          // A retention timer must never be the reason the process cannot exit.
+          retentionTimer.unref();
         },
+        stop: () => {
+          if (retentionTimer !== undefined) clearInterval(retentionTimer);
+          retentionTimer = undefined;
+          detachSessionStarted();
+          detachAssignmentClosed();
+        },
+        health: () => ({
+          // A project with a stale agent id or an orphaned worktree is a
+          // condition to show, not a module that is failing: everything else
+          // about the registry works. The conditions themselves arrive from the
+          // registered check above.
+          status: 'ok',
+          detail: {
+            projects: repository.list({ includeArchived: true }).length,
+            worktreesRoot: open.paths.worktrees,
+          },
+        }),
       };
     },
   };

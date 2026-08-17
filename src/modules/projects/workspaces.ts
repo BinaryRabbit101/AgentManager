@@ -46,6 +46,7 @@ import type { GitRunner } from './git.js';
 import type { WorkspaceLeaseRepository } from './leases.js';
 import type { KeyedMutex } from './mutex.js';
 import type { ProjectRepository } from './repository.js';
+import { findScopeOverlaps, type ScopeClaim, type ScopeOverlap } from './scope.js';
 import {
   isWorkspaceRefusal,
   projectLaunchBlock,
@@ -79,10 +80,12 @@ export interface AcquireWorkspaceOptions {
   /** `false` = a read/plan assignment: primary tree, no hold (§4.1). */
   readonly write: boolean;
   /**
-   * Repo-relative scopes, carried for M7's overlap warning.
+   * Repo-relative scopes (§4.3).
    *
-   * Accepted here so the runner's call site is stable; nothing in M6 reads it,
-   * and §4.3's overlap event is M7's.
+   * Recorded on the lease (M7) so that `getEffectiveLaunchContext` can rewrite
+   * them onto the leased workspace root and so that the overlap warning can
+   * compare them against everything else holding the same workspace. Omitted
+   * means whole-project.
    */
   readonly scopePaths?: readonly string[];
   /** §4.4's third refusal: refuse when the primary tree is dirty. */
@@ -241,6 +244,55 @@ export function createWorkspaceService(options: WorkspaceServiceOptions): Worksp
     return 'value' in entry;
   }
 
+  /**
+   * §4.3's overlap warning, emitted after the lease exists (M7).
+   *
+   * **After**, deliberately: the event names the workspace the two assignments
+   * share, and until the lease is written there is no workspace to name. It is
+   * emitted rather than returned because it changes nothing — §7.13: "a
+   * false-positive block would stall legitimate work, while a warning costs
+   * nothing", so acquisition has already succeeded by the time this runs.
+   */
+  function warnOnScopeOverlap(lease: WorkspaceLease): readonly ScopeOverlap[] {
+    const candidate: ScopeClaim = {
+      assignmentId: lease.assignmentId,
+      workspacePath: lease.path,
+      scopePaths: lease.scopePaths,
+    };
+    const active: ScopeClaim[] = leases
+      .list(lease.projectId, { state: 'active' })
+      .filter((other) => other.id !== lease.id)
+      .map((other) => ({
+        assignmentId: other.assignmentId,
+        workspacePath: other.path,
+        scopePaths: other.scopePaths,
+      }));
+
+    const overlaps = findScopeOverlaps(candidate, active);
+    for (const overlap of overlaps) {
+      bus.emit({
+        type: 'project.scope.overlap',
+        ids: { projectId: lease.projectId, assignmentId: lease.assignmentId },
+        // Persisted: the UI shows it on the project page, and a warning that
+        // vanished because nobody was connected is a warning nobody ever sees.
+        persist: true,
+        payload: {
+          projectId: lease.projectId,
+          workspacePath: overlap.workspacePath,
+          assignmentIds: [...overlap.assignmentIds],
+          paths: [...overlap.paths],
+        },
+      });
+      log(
+        'warn',
+        `assignments ${overlap.assignmentIds[0]} and ${overlap.assignmentIds[1]} share ` +
+          `${overlap.workspacePath} with overlapping scopes (${overlap.paths.join(', ')})`,
+        { projectId: lease.projectId },
+      );
+    }
+    return overlaps;
+  }
+
   async function createWorktree(
     project: Project,
     assignmentId: string,
@@ -340,12 +392,18 @@ export function createWorkspaceService(options: WorkspaceServiceOptions): Worksp
       baseCommit,
       write: true,
       acquiredAt: now(),
+      scopePaths: acquire.scopePaths ?? [],
     });
     emit('workspace.acquired', lease);
     return lease;
   }
 
-  function takePrimary(project: Project, assignmentId: string, write: boolean): WorkspaceLease {
+  function takePrimary(
+    project: Project,
+    assignmentId: string,
+    write: boolean,
+    scopePaths: readonly string[],
+  ): WorkspaceLease {
     const lease = leases.create({
       projectId: project.id,
       assignmentId,
@@ -358,6 +416,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions): Worksp
       baseCommit: null,
       write,
       acquiredAt: now(),
+      scopePaths,
     });
     emit('workspace.acquired', lease);
     return lease;
@@ -372,7 +431,8 @@ export function createWorkspaceService(options: WorkspaceServiceOptions): Worksp
     // is checked before policy on purpose — `workspacePolicy: 'worktree'` keeps
     // the *user's checkout* pristine against writers, and a reader writes
     // nothing to keep it pristine against.
-    if (!acquire.write) return takePrimary(project, assignmentId, false);
+    const scopePaths = acquire.scopePaths ?? [];
+    if (!acquire.write) return takePrimary(project, assignmentId, false, scopePaths);
 
     // A non-git project behaves as `shared` regardless of the setting (§4.2).
     const policy = project.vcs === 'git' ? project.workspacePolicy : 'shared';
@@ -384,7 +444,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions): Worksp
       return createWorktree(project, assignmentId, acquire, false);
     }
 
-    if (holder === undefined) return takePrimary(project, assignmentId, true);
+    if (holder === undefined) return takePrimary(project, assignmentId, true, scopePaths);
 
     if (policy === 'shared') {
       return project.vcs === 'git'
@@ -426,15 +486,23 @@ export function createWorkspaceService(options: WorkspaceServiceOptions): Worksp
    * a branch nobody is looking at — and would fail anyway, because
    * `git worktree add` refuses a path that already exists.
    */
-  function adopt(projectId: string, assignmentId: string): WorkspaceLease | undefined {
+  function adopt(
+    projectId: string,
+    assignmentId: string,
+    scopePaths: readonly string[] | undefined,
+  ): WorkspaceLease | undefined {
+    /** The caller's scope wins over the stored one — it is the newer statement. */
+    const withScope = (lease: WorkspaceLease): WorkspaceLease =>
+      scopePaths === undefined ? lease : leases.setScopePaths(lease.id, scopePaths);
+
     const active = leases.activeFor(projectId, assignmentId);
-    if (active !== undefined) return active;
+    if (active !== undefined) return withScope(active);
 
     for (const state of ['orphaned', 'released'] as const) {
       const previous = leases.latestFor(projectId, assignmentId, state);
       if (previous === undefined || previous.kind !== 'worktree') continue;
       if (!existsSync(previous.path)) continue;
-      return leases.reactivate(previous.id, now());
+      return withScope(leases.reactivate(previous.id, now()));
     }
     return undefined;
   }
@@ -544,9 +612,10 @@ export function createWorkspaceService(options: WorkspaceServiceOptions): Worksp
           );
         }
 
-        const existing = adopt(projectId, assignmentId);
+        const existing = adopt(projectId, assignmentId, acquireOptions.scopePaths);
         if (existing !== undefined) {
           emit('workspace.acquired', existing, { adopted: true });
+          warnOnScopeOverlap(existing);
           return existing;
         }
 
@@ -557,7 +626,12 @@ export function createWorkspaceService(options: WorkspaceServiceOptions): Worksp
             code: result.code,
             retryable: result.retryable,
           });
+          return result;
         }
+
+        // §4.3: a warning, after the fact. `acquire` has already succeeded and
+        // nothing below it can change that (§7.13).
+        warnOnScopeOverlap(result);
         return result;
       });
     },

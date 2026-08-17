@@ -20,7 +20,7 @@
  *   because the module registered it, and only in the right phase because
  *   foundation orders it before the listener binds (foundation §4.2).
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -29,7 +29,16 @@ import { boot, type BootOptions, type BootedService } from '../../main.js';
 import { PROJECTS_MODULE_ID, PROJECTS_SERVICE } from './module.js';
 import type { ProjectsService } from './service.js';
 import { isWorkspaceRefusal } from './types.js';
-import { makeDir, makeTempDir, repoRoot, type TempDir } from './__tests__/helpers.js';
+import {
+  fileUrl,
+  hasGit,
+  makeBareRepo,
+  makeDir,
+  makeGitRepo,
+  makeTempDir,
+  repoRoot,
+  type TempDir,
+} from './__tests__/helpers.js';
 
 let dataRootDir: TempDir;
 let workspaceDir: TempDir;
@@ -107,16 +116,25 @@ describe('module registration', () => {
     );
 
     expect(mine.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
-      // Pulled forward from M9 because ui M2's quick-add is its only consumer
-      // and cannot register a folder from a browser without it (ui §8.1).
+      'DELETE /api/projects/:id',
+      // ui M2's quick-add is this one's only consumer, and cannot register a
+      // folder from a browser without it (ui §8.1).
       'GET /api/fs/browse',
       'GET /api/projects',
       'GET /api/projects/:id',
+      'GET /api/projects/:id/activity',
       'GET /api/projects/:id/health',
+      'GET /api/projects/:id/work-items',
       'GET /api/projects/:id/workspaces',
       'PATCH /api/projects/:id',
+      'PATCH /api/work-items/:id',
       'POST /api/projects',
+      'POST /api/projects/:id/archive',
+      'POST /api/projects/:id/relocate',
+      'POST /api/projects/:id/restore',
+      'POST /api/projects/:id/work-items',
       'POST /api/projects/:id/workspaces/:leaseId/cleanup',
+      'POST /api/projects/clone',
       'POST /api/projects/inspect',
     ]);
     // Quick-add has to work from the tailnet browser too (D3).
@@ -137,15 +155,15 @@ describe('the element migration, through boot', () => {
   it('applies after foundation’s set and records itself under module "projects"', async () => {
     const booted = await bootCore();
 
-    expect(booted.storage.setVersions['projects']).toBe(1);
+    expect(booted.storage.setVersions['projects']).toBe(2);
     expect(booted.storage.applied.map((entry) => entry.setId)).toEqual([
       // Foundation's numbered set first, then each element's in module
       // topological order (§1.3) — `roster` sits before `projects`, which sits
       // before `runner`, which sits before `orchestrator`. One entry per
-      // *migration*, so runner appears twice: `0001_runner.sql` and
-      // `0002_usage.sql`.
+      // *migration*, so `projects` and `runner` each appear twice.
       'foundation',
       'roster',
+      'projects',
       'projects',
       'runner',
       'runner',
@@ -154,12 +172,13 @@ describe('the element migration, through boot', () => {
 
     const rows = booted.storage.db
       .prepare<[], { module: string; version: number }>(
-        'SELECT module, version FROM schema_migrations ORDER BY module',
+        'SELECT module, version FROM schema_migrations ORDER BY module, version',
       )
       .all();
     expect(rows).toEqual([
       { module: 'orchestrator', version: 1 },
       { module: 'projects', version: 1 },
+      { module: 'projects', version: 2 },
       { module: 'roster', version: 1 },
       { module: 'runner', version: 1 },
       { module: 'runner', version: 2 },
@@ -174,14 +193,14 @@ describe('the element migration, through boot', () => {
 
     const second = await bootCore();
     expect(second.storage.applied).toEqual([]);
-    expect(second.storage.setVersions['projects']).toBe(1);
+    expect(second.storage.setVersions['projects']).toBe(2);
     expect(
       second.storage.db
         .prepare<[], { n: number }>(
           "SELECT COUNT(*) AS n FROM schema_migrations WHERE module = 'projects'",
         )
         .get()?.n,
-    ).toBe(1);
+    ).toBe(2);
   });
 });
 
@@ -345,7 +364,7 @@ describe('the workspace boot task (M6, DESIGN §4.4)', () => {
     const workspaces = await restarted.listWorkspaces(created.body.id);
     expect(workspaces.map((entry) => entry.state)).toEqual(['orphaned']);
     expect(
-      restarted.health(created.body.id).conditions.map((condition) => condition.code),
+      (await restarted.health(created.body.id)).conditions.map((condition) => condition.code),
     ).toContain('orphaned-worktrees');
 
     // And the tree is free again: the same assignment re-acquires, without a
@@ -358,6 +377,216 @@ describe('the workspace boot task (M6, DESIGN §4.4)', () => {
     expect(
       (await restarted.listWorkspaces(created.body.id)).filter((entry) => entry.state === 'active'),
     ).toHaveLength(1);
+  });
+});
+
+describe('the clone route, over the listener (M3, §2.2)', () => {
+  it.runIf(hasGit())(
+    'registers a cloned repository and flips it to active',
+    async () => {
+      const projectsRoot = resolve(workspaceDir.path, 'projects');
+      await bootCore({
+        argv: ['--set', `projects.root=${JSON.stringify(projectsRoot)}`],
+      });
+
+      const source = resolve(workspaceDir.path, 'origin-source');
+      makeGitRepo(source);
+      const origin = fileUrl(makeBareRepo(source, resolve(workspaceDir.path, 'origin.git')));
+
+      // §2.2 step 1: the form is filled from the URL alone, and the target is
+      // proposed under `projects.root`.
+      const inspected = await post<{ name: string; slug: string; targetPath: string }>(
+        '/api/projects/inspect',
+        { repoUrl: origin },
+      );
+      expect(inspected.status).toBe(200);
+      expect(inspected.body.name).toBe('origin');
+      expect(inspected.body.targetPath).toBe(resolve(projectsRoot, 'origin'));
+
+      const response = await fetch(`${base}/api/projects/clone`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ repoUrl: origin }),
+      });
+      const project = (await response.json()) as { id: string; status: string };
+      // 202: the row exists, the checkout does not yet (§2.2 step 2).
+      expect(response.status).toBe(202);
+      expect(response.headers.get('location')).toBe(`/api/projects/${project.id}`);
+      expect(project.status).toBe('provisioning');
+
+      // The job outlives the request, so the test waits for it the way the UI
+      // does — by asking again.
+      const deadline = Date.now() + 30_000;
+      let current = project.status;
+      while (current === 'provisioning' && Date.now() < deadline) {
+        await new Promise((done) => setTimeout(done, 50));
+        current = (await get<{ status: string }>(`/api/projects/${project.id}`)).body.status;
+      }
+
+      expect(current).toBe('active');
+      const final = await get<{ localPath: string; defaultBranch: string }>(
+        `/api/projects/${project.id}`,
+      );
+      expect(final.body.defaultBranch).toBe('main');
+      expect(existsSync(resolve(final.body.localPath, 'README.md'))).toBe(true);
+    },
+    40_000,
+  );
+
+  it('answers a body with no repoUrl and no localPath with a typed 400', async () => {
+    await bootCore();
+    const answer = await post<{ error: string; field: string }>('/api/projects/clone', {});
+    expect(answer.status).toBe(400);
+    expect(answer.body.error).toBe('invalid_request');
+    expect(answer.body.field).toBe('repoUrl');
+  });
+});
+
+describe('the work-item routes (M8, §5)', () => {
+  it('creates, lists in rank order, and patches', async () => {
+    await bootCore();
+    const project = await post<{ id: string }>('/api/projects', {
+      localPath: makeDir(workspaceDir.path, 'Backlog'),
+    });
+
+    const created = await fetch(`${base}/api/projects/${project.body.id}/work-items`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'bug', title: 'the crash', body: 'stack attached' }),
+    });
+    const item = (await created.json()) as { id: string; status: string; rank: number };
+    expect(created.status).toBe(201);
+    expect(created.headers.get('location')).toBe(`/api/work-items/${item.id}`);
+    expect(item.status).toBe('open');
+
+    const listed = await get<{ workItems: { id: string; title: string }[] }>(
+      `/api/projects/${project.body.id}/work-items?status=open`,
+    );
+    expect(listed.body.workItems.map((entry) => entry.title)).toEqual(['the crash']);
+
+    const patched = await fetch(`${base}/api/work-items/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'done' }),
+    });
+    const done = (await patched.json()) as { status: string; closedAt: string | null };
+    expect(done.status).toBe('done');
+    expect(done.closedAt).not.toBeNull();
+
+    // And it has left the open board.
+    const remaining = await get<{ workItems: unknown[] }>(
+      `/api/projects/${project.body.id}/work-items?status=open`,
+    );
+    expect(remaining.body.workItems).toEqual([]);
+  });
+
+  it('refuses a title-less item and an unknown patch field, with the field named', async () => {
+    await bootCore();
+    const project = await post<{ id: string }>('/api/projects', {
+      localPath: makeDir(workspaceDir.path, 'Refusals'),
+    });
+
+    const noTitle = await post<{ error: string; field: string }>(
+      `/api/projects/${project.body.id}/work-items`,
+      { kind: 'bug' },
+    );
+    expect(noTitle.status).toBe(400);
+    expect(noTitle.body.field).toBe('title');
+
+    const item = await post<{ id: string }>(`/api/projects/${project.body.id}/work-items`, {
+      kind: 'bug',
+      title: 'ok',
+    });
+    const response = await fetch(`${base}/api/work-items/${item.body.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ assignee: 'ada' }),
+    });
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { field: string }).field).toBe('assignee');
+  });
+});
+
+describe('the lifecycle routes (M9, §2.3)', () => {
+  it('archives, restores and removes, never touching the folder', async () => {
+    await bootCore();
+    const folder = makeDir(workspaceDir.path, 'Lifecycle');
+    const project = await post<{ id: string }>('/api/projects', { localPath: folder });
+
+    expect((await post(`/api/projects/${project.body.id}/archive`, {})).status).toBe(200);
+    expect((await get<{ projects: unknown[] }>('/api/projects')).body.projects).toHaveLength(0);
+    expect(
+      (await get<{ projects: unknown[] }>('/api/projects?includeArchived=true')).body.projects,
+    ).toHaveLength(1);
+
+    expect((await post(`/api/projects/${project.body.id}/restore`, {})).status).toBe(200);
+    expect((await get<{ projects: unknown[] }>('/api/projects')).body.projects).toHaveLength(1);
+
+    const removed = await fetch(`${base}/api/projects/${project.body.id}`, { method: 'DELETE' });
+    expect(removed.status).toBe(200);
+    expect((await get<{ error: string }>(`/api/projects/${project.body.id}`)).status).toBe(404);
+    // §7.10, over HTTP as well as in the service.
+    expect(existsSync(folder)).toBe(true);
+  });
+
+  it('serves the activity timeline, paged', async () => {
+    await bootCore();
+    const project = await post<{ id: string }>('/api/projects', {
+      localPath: makeDir(workspaceDir.path, 'Timeline'),
+    });
+
+    const answer = await get<{ entries: unknown[]; total: number; limit: number; offset: number }>(
+      `/api/projects/${project.body.id}/activity?limit=10&offset=0`,
+    );
+    expect(answer.status).toBe(200);
+    expect(answer.body).toMatchObject({ entries: [], total: 0, limit: 10, offset: 0 });
+  });
+});
+
+describe('the bus subscriptions the module wires (M5, M8)', () => {
+  it('stamps lastActivityAt and starts work items when a session starts', async () => {
+    const booted = await bootCore();
+    const project = await post<{ id: string; lastActivityAt: string | null }>('/api/projects', {
+      localPath: makeDir(workspaceDir.path, 'Live'),
+    });
+    expect(project.body.lastActivityAt).toBeNull();
+
+    const projects = booted.runtime.registry.require<ProjectsService>(PROJECTS_SERVICE);
+    if (projects === undefined) throw new Error('the projects service is not published');
+
+    const item = projects.createWorkItem(project.body.id, { kind: 'bug', title: 'in flight' });
+    booted.storage.store.assignments.create({
+      id: 'assignment-live',
+      projectId: project.body.id,
+      pattern: 'solo',
+    });
+    projects.linkWorkItems('assignment-live', [item.id]);
+
+    // Runner emits this with the ids already populated (runner §10); the module
+    // subscribes rather than being pushed to, because a feature module never
+    // imports another (foundation §6.1).
+    booted.runtime.bus.emit({
+      type: 'session.started',
+      ids: {
+        projectId: project.body.id,
+        assignmentId: 'assignment-live',
+        sessionId: 'session-1',
+        agentId: 'ada',
+      },
+      payload: {},
+    });
+
+    expect(projects.repository.get(project.body.id)?.lastActivityAt).not.toBeNull();
+    expect(projects.workItems.get(item.id)?.status).toBe('in_progress');
+
+    // And the other half: closing the assignment returns it to `open`.
+    booted.storage.store.assignments.close('assignment-live');
+    booted.runtime.bus.emit({
+      type: 'assignment.closed',
+      ids: { projectId: project.body.id, assignmentId: 'assignment-live' },
+      payload: {},
+    });
+    expect(projects.workItems.get(item.id)?.status).toBe('open');
   });
 });
 

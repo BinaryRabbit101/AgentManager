@@ -37,6 +37,7 @@ import {
 import type { WorkspaceLeaseRepository } from './leases.js';
 import { pathKey, pathRelation } from './paths.js';
 import type { ProjectRepository } from './repository.js';
+import { rewriteScopeRules } from './scope.js';
 import { projectLaunchBlock, type LaunchContext, type Project } from './types.js';
 
 export interface LaunchContextDeps {
@@ -117,6 +118,12 @@ export function getEffectiveLaunchContext(
     }
   }
 
+  // M7 (§1.3): the orchestrator states scopes relative to the repo root, and a
+  // worktree has a different absolute prefix — so they are rewritten onto the
+  // *leased* root here, which is the only place that knows which one that is.
+  // Still input rules: roster's `compilePermissions` composes them (§7.6).
+  const scopeRules = rewriteScopeRules(workspace.path, workspace.scopePaths);
+
   return {
     cwd: workspace.path,
     // A copy, so a caller cannot mutate the stored defaults through the result.
@@ -124,6 +131,10 @@ export function getEffectiveLaunchContext(
     ...(permissions === undefined ? {} : { permissionOverride: permissions }),
     ...(permissionElevation === undefined ? {} : { elevation: permissionElevation }),
     ...(instructions === undefined ? {} : { instructions }),
+    // Absent rather than empty for a whole-project assignment: an empty allow
+    // list and "no scope stated" are different things to roster's compiler, and
+    // only the second one is true here (orchestrator SDK-NOTES C1-3).
+    ...(scopeRules.allow.length === 0 ? {} : { scopeRules }),
     workspace,
   };
 }

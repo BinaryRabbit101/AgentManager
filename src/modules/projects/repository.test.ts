@@ -102,21 +102,23 @@ describe('the element migration', () => {
       )
       .all();
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.module).toBe('projects');
-    expect(rows[0]?.version).toBe(1);
+    // Two versions now: `0001_registry.sql` and M7's `0002_lease_scope.sql`,
+    // which adds the assignment's scope paths to `workspace_leases`.
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.module)).toEqual(['projects', 'projects']);
+    expect(rows.map((row) => row.version)).toEqual([1, 2]);
     expect(rows[0]?.applied_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    expect(opened.setVersions['projects']).toBe(1);
+    expect(opened.setVersions['projects']).toBe(2);
   });
 
   it('is idempotent: a second open applies nothing further', () => {
     const first = open();
-    expect(first.applied.filter((entry) => entry.setId === 'projects')).toHaveLength(1);
+    expect(first.applied.filter((entry) => entry.setId === 'projects')).toHaveLength(2);
     close();
 
     const second = open();
     expect(second.applied).toHaveLength(0);
-    expect(second.setVersions['projects']).toBe(1);
+    expect(second.setVersions['projects']).toBe(2);
     for (const table of ELEMENT_TABLES) expect(tableNames(second)).toContain(table);
     expect(
       second.db
@@ -124,7 +126,7 @@ describe('the element migration', () => {
           "SELECT COUNT(*) AS n FROM schema_migrations WHERE module = 'projects'",
         )
         .get()?.n,
-    ).toBe(1);
+    ).toBe(2);
   });
 
   it('cascades this element’s rows when a project row goes away', () => {

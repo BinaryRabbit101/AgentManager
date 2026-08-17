@@ -1,0 +1,28 @@
+-- 0002_lease_scope.sql — the assignment's scope paths, stored with its lease
+-- (projects DESIGN §1.3, §4.3; IMPLEMENTATION M7).
+--
+-- M7 has to answer two questions that both need the scope paths *after* the
+-- acquisition call has returned:
+--
+--   * `getEffectiveLaunchContext` rewrites them onto the leased workspace root
+--     and hands the rules to roster (§1.3). It is called per session, which for
+--     a pattern is six times across an assignment's life, and — after a
+--     crash-restart and a lease adoption (§4.4) — in a process that never saw
+--     the `acquireWorkspace` call that carried them;
+--   * the overlap warning of §4.3 compares the *active* scope sets of everything
+--     sharing one workspace, which means it needs every other assignment's
+--     paths, not just this one's.
+--
+-- An in-process map would answer neither across a restart, so the paths live
+-- next to the lease that is already the durable record of "which directory is
+-- this assignment working in". `acquireWorkspace(…, { scopePaths })` has
+-- accepted them since M6; this is where they now land.
+--
+-- Applied inside a transaction opened by the runner: no BEGIN/COMMIT here, and
+-- no `IF NOT EXISTS` — the runner tracks applied versions in `schema_migrations`.
+--
+-- `ALTER TABLE … ADD COLUMN` with a NOT NULL constant default is legal on a
+-- STRICT table and rewrites nothing: existing leases read back as `[]`, which is
+-- the honest answer for a lease taken before scopes were recorded — no scope
+-- rules, and an overlap check that treats it as whole-project (scope.ts).
+ALTER TABLE workspace_leases ADD COLUMN scope_paths_json TEXT NOT NULL DEFAULT '[]';
