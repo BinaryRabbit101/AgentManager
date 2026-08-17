@@ -2,58 +2,36 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
     <title>AgentManager</title>
-    <style>
-      :root {
-        color-scheme: light dark;
-        font-family:
-          system-ui,
-          -apple-system,
-          Segoe UI,
-          sans-serif;
-      }
-      body {
-        margin: 0;
-        display: grid;
-        place-items: center;
-        min-height: 100vh;
-      }
-      main {
-        max-width: 34rem;
-        padding: 2rem;
-      }
-      h1 {
-        margin: 0 0 0.25rem;
-        font-size: 1.5rem;
-      }
-      p {
-        line-height: 1.5;
-        opacity: 0.85;
-      }
-      code {
-        font-family: ui-monospace, Consolas, monospace;
-      }
-      ul {
-        padding-left: 1.1rem;
-      }
-    </style>
+    <!--
+      Theme before first paint (DESIGN §14.2: "applies with a data-theme
+      attribute on the root, so there is no flash on load").
+
+      A separate same-origin file rather than an inline script on purpose: remote
+      §9.2 #9 pins a strict CSP with no third-party origins and no need for
+      'unsafe-inline', and a blocking <script src> in <head> runs before the body
+      is painted just as an inline one would.
+    -->
+    <script src="/theme-boot.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
   </head>
   <body>
-    <main>
-      <h1>AgentManager</h1>
-      <p>
-        The core service is running and serving its API. This page is the placeholder web bundle
-        that foundation ships so the static route and its SPA history fallback are real and
-        testable; the actual single-page app arrives with the <code>ui</code> element and replaces
-        this file.
-      </p>
-      <ul>
-        <li><a href="/healthz">/healthz</a> — liveness</li>
-        <li><a href="/api/health">/api/health</a> — module health</li>
-        <li><a href="/api/config/effective">/api/config/effective</a> — resolved configuration</li>
-        <li><a href="/api/logs">/api/logs</a> — recent log records</li>
-      </ul>
-    </main>
+    <div id="root">
+      <!--
+        Replaced by React on mount. It is not decoration: foundation's static
+        route falls back to `<install>/web/index.html` when no build has been
+        emitted into `app/web/`, and IMPLEMENTATION §1 requires that a core the
+        UI cannot run on still renders an explanation rather than a blank page.
+      -->
+      <div class="boot-fallback">
+        <h1>AgentManager</h1>
+        <p>The web bundle has not been built yet.</p>
+        <p><code>npm run build:web</code> emits it into <code>app/web</code>.</p>
+        <p><a href="/api/health">/api/health</a></p>
+      </div>
+    </div>
+    <noscript>AgentManager needs JavaScript to run.</noscript>
   </body>
 </html>

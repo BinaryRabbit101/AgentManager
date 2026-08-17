@@ -1,6 +1,13 @@
 # Dependencies and build output
 node_modules/
 dist/
+# The Vite bundle, emitted into the installed layout foundation's static route
+# resolves first (<install>/app/web). Source lives in web/.
+#
+# Anchored. An unanchored `app/` matches a directory of that name at *any*
+# depth, which silently swallows `web/src/app/` — the frontend's own shell
+# components — and they would never reach a commit.
+/app/
 out/
 coverage/
 *.tsbuildinfo

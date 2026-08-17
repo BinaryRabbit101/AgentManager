@@ -37,6 +37,7 @@ import type { Logger } from 'pino';
 import type { HttpResult, RequestContext, ResponseTools } from '../../http/types.js';
 import type { RouteDefinition } from '../types.js';
 
+import { browse, type BrowseDeps, type BrowseListing } from './browse.js';
 import { InvalidRequestError, ProjectsError } from './errors.js';
 import type { CreateProjectRequest, ProjectsService } from './service.js';
 import { isWorkspacePolicy } from './types.js';
@@ -44,6 +45,12 @@ import { isWorkspacePolicy } from './types.js';
 export interface ProjectRoutesDeps {
   readonly service: ProjectsService;
   readonly logger: Logger;
+  /**
+   * The folder picker's roots (§2.1). Absent leaves the route unregistered
+   * rather than answering an empty listing, because "there is nowhere to browse"
+   * and "browsing is not built" must not look the same to the client.
+   */
+  readonly browse?: BrowseDeps;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -132,8 +139,29 @@ async function answering(
 
 export function createProjectRoutes(deps: ProjectRoutesDeps): RouteDefinition[] {
   const { service, logger } = deps;
+  const browseDeps = deps.browse;
 
   return [
+    ...(browseDeps === undefined
+      ? []
+      : [
+          {
+            method: 'GET' as const,
+            path: '/api/fs/browse',
+            // remote §3.3 decided this one explicitly: allowed over the tailnet,
+            // because "project registration is never stranded on the desktop"
+            // (ui §8.1). Containment is the whole of its access control, and it
+            // lives in `browse.ts`.
+            remote: 'allow' as const,
+            description: 'Directory-only listing inside the configured browse roots (§2.1).',
+            handler: (req: RequestContext, res: ResponseTools): Promise<HttpResult> =>
+              answering(logger, req, res, () => {
+                const listing: BrowseListing = browse(browseDeps, req.query.get('path'));
+                return Promise.resolve(res.json(listing));
+              }),
+          },
+        ]),
+
     {
       method: 'POST',
       path: '/api/projects/inspect',

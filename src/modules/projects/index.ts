@@ -8,9 +8,15 @@
  * tree, git worktrees, orphan reconciliation).
  *
  * M3's clone flow, M5's activity timeline and retention, M7's scope rewriting,
- * M8's work items and M9's lifecycle/browse endpoint are deliberately not here —
- * the tables they need exist (`migrations/projects/0001_registry.sql`), the code
+ * M8's work items and M9's lifecycle endpoints are deliberately not here — the
+ * tables they need exist (`migrations/projects/0001_registry.sql`), the code
  * does not.
+ *
+ * `GET /api/fs/browse` (`browse.ts`) is the exception, and it is pulled forward
+ * on purpose: it was scheduled with M9, but ui M2's quick-add is the *only*
+ * consumer it has and cannot register a folder from a browser without it (ui
+ * §8.1). It is implemented to §2.1's rules in full — resolve first, compare
+ * second; escaping entries omitted; UNC refused — rather than as a stub.
  */
 export {
   createProjectsModule,
@@ -52,6 +58,17 @@ export {
 } from './leases.js';
 
 export { createKeyedMutex, type KeyedMutex, type Release } from './mutex.js';
+
+export {
+  browse,
+  isInsideRoots,
+  NetworkPathError,
+  PathOutsideBrowseRootsError,
+  resolveBrowseRoots,
+  type BrowseDeps,
+  type BrowseEntry,
+  type BrowseListing,
+} from './browse.js';
 
 export {
   addWorktree,

@@ -70,6 +70,11 @@ async function post<T>(path: string, body: unknown): Promise<Answer<T>> {
   return { status: response.status, body: (await response.json()) as T };
 }
 
+async function get<T>(path: string): Promise<Answer<T>> {
+  const response = await fetch(`${base}${path}`);
+  return { status: response.status, body: (await response.json()) as T };
+}
+
 beforeEach(() => {
   dataRootDir = makeTempDir('agentmanager-projects-boot-');
   workspaceDir = makeTempDir('agentmanager-projects-boot-work-');
@@ -102,6 +107,9 @@ describe('module registration', () => {
     );
 
     expect(mine.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
+      // Pulled forward from M9 because ui M2's quick-add is its only consumer
+      // and cannot register a folder from a browser without it (ui §8.1).
+      'GET /api/fs/browse',
       'GET /api/projects',
       'GET /api/projects/:id',
       'GET /api/projects/:id/health',
@@ -350,5 +358,90 @@ describe('the workspace boot task (M6, DESIGN §4.4)', () => {
     expect(
       (await restarted.listWorkspaces(created.body.id)).filter((entry) => entry.state === 'active'),
     ).toHaveLength(1);
+  });
+});
+
+describe('GET /api/fs/browse, over the listener (§2.1; ui §8.1)', () => {
+  /**
+   * The browse roots are set on the command line so the assertions do not
+   * depend on the developer's own `%USERPROFILE%` — the default roots are real
+   * behaviour and are covered by `browse.test.ts`; what is proven here is that
+   * the route is mounted, remote-allowed, and refuses through the HTTP layer
+   * rather than only in the function.
+   */
+  async function bootWithRoots(...roots: string[]): Promise<void> {
+    await bootCore({ argv: ['--set', `projects.browseRoots=${JSON.stringify(roots)}`] });
+  }
+
+  it('lists the configured roots when asked for no path', async () => {
+    const root = makeDir(workspaceDir.path, 'Code');
+    await bootWithRoots(root);
+
+    const answer = await get<{ path: string; parent: string | null; roots: string[] }>(
+      '/api/fs/browse',
+    );
+    expect(answer.status).toBe(200);
+    expect(answer.body.path).toBe('');
+    expect(answer.body.parent).toBeNull();
+    expect(answer.body.roots).toHaveLength(1);
+  });
+
+  it('descends into a folder and returns directories only', async () => {
+    const root = makeDir(workspaceDir.path, 'Code');
+    makeDir(root, 'my-app');
+    writeFileSync(resolve(root, 'notes.txt'), 'not a folder', 'utf8');
+    await bootWithRoots(root);
+
+    const answer = await get<{ entries: { name: string; path: string }[] }>(
+      `/api/fs/browse?path=${encodeURIComponent(root)}`,
+    );
+    expect(answer.status).toBe(200);
+    expect(answer.body.entries.map((entry) => entry.name)).toEqual(['my-app']);
+  });
+
+  it('refuses a path outside the roots with a typed 403 naming the path', async () => {
+    const root = makeDir(workspaceDir.path, 'Code');
+    const elsewhere = makeDir(workspaceDir.path, 'Elsewhere');
+    await bootWithRoots(root);
+
+    const answer = await get<{ error: string; message: string; path: string }>(
+      `/api/fs/browse?path=${encodeURIComponent(elsewhere)}`,
+    );
+    // Containment is the whole of this route's access control (remote §3.3).
+    expect(answer.status).toBe(403);
+    expect(answer.body.error).toBe('browse_root_violation');
+    expect(answer.body.message).toContain('Elsewhere');
+    expect(answer.body.message).toContain('projects.browseRoots');
+  });
+
+  it('refuses a UNC path outright, with its own reason', async () => {
+    await bootWithRoots(makeDir(workspaceDir.path, 'Code'));
+    const answer = await get<{ error: string }>(
+      `/api/fs/browse?path=${encodeURIComponent(String.raw`\\fileserver\share`)}`,
+    );
+    expect(answer.status).toBe(400);
+    expect(answer.body.error).toBe('network_path_refused');
+  });
+
+  it('is a quick-add path the tailnet browser can use, and the round trip feeds inspect', async () => {
+    // ui §8.1: "the browser path works identically over the tailnet … so project
+    // registration is never stranded on the desktop". The endpoint's own output
+    // is what the dialog posts to `inspect`, unmodified.
+    const root = makeDir(workspaceDir.path, 'Code');
+    makeDir(root, 'my-app');
+    await bootWithRoots(root);
+
+    const listing = await get<{ entries: { name: string; path: string }[] }>(
+      `/api/fs/browse?path=${encodeURIComponent(root)}`,
+    );
+    const target = listing.body.entries[0]?.path;
+    expect(target).toBeDefined();
+
+    const inspected = await post<{ localPath: string; name: string; slug: string }>(
+      '/api/projects/inspect',
+      { localPath: target },
+    );
+    expect(inspected.status).toBe(200);
+    expect(inspected.body.name).toBe('my-app');
   });
 });

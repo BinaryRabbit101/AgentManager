@@ -1,0 +1,147 @@
+/**
+ * The inline SVG sprite (DESIGN §1.4).
+ *
+ * "No icon font, no icon CDN. A hand-picked inline SVG sprite in the bundle."
+ * One `<svg>` of `<symbol>`s rendered once at the top of the app; every icon is
+ * a `<use href="#icon-…">`, so the glyphs cost one copy each however many cards
+ * are on the board.
+ *
+ * Icons are decorative by default (`aria-hidden`), because §15 requires that
+ * colour and shape are never the only carrier — every icon here sits beside its
+ * own word. An icon that must carry meaning passes a `title`.
+ */
+
+import type { ReactElement } from 'react';
+
+export type IconName =
+  | 'board'
+  | 'questions'
+  | 'usage'
+  | 'settings'
+  | 'key'
+  | 'warning'
+  | 'pin'
+  | 'chevron'
+  | 'folder'
+  | 'plus';
+
+export function Sprite(): ReactElement {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      style={{ display: 'none' }}
+      aria-hidden="true"
+      data-testid="icon-sprite"
+    >
+      <symbol
+        id="icon-board"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <rect x="1.5" y="2.5" width="5" height="5" rx="1" />
+        <rect x="9.5" y="2.5" width="5" height="5" rx="1" />
+        <rect x="1.5" y="9.5" width="5" height="4" rx="1" />
+        <rect x="9.5" y="9.5" width="5" height="4" rx="1" />
+      </symbol>
+      <symbol
+        id="icon-questions"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <path d="M2 3.5h12v8H6l-4 3z" />
+        <path d="M8 6.2a1.3 1.3 0 1 1 .9 1.3v1" strokeLinecap="round" />
+      </symbol>
+      <symbol
+        id="icon-usage"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <path d="M2 13.5h12" strokeLinecap="round" />
+        <path d="M4 13.5v-4M8 13.5v-8M12 13.5v-6" strokeLinecap="round" />
+      </symbol>
+      <symbol
+        id="icon-settings"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <circle cx="8" cy="8" r="2.2" />
+        <path
+          d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"
+          strokeLinecap="round"
+        />
+      </symbol>
+      <symbol id="icon-key" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <circle cx="5" cy="8" r="2.5" />
+        <path d="M7.5 8H14M12 8v2.5M10 8v2" strokeLinecap="round" />
+      </symbol>
+      <symbol
+        id="icon-warning"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <path d="M8 2 14.5 13.5h-13z" strokeLinejoin="round" />
+        <path d="M8 6.5v3.2M8 11.6v.4" strokeLinecap="round" />
+      </symbol>
+      <symbol id="icon-pin" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M6 1.5h4l-.6 4 2.6 2.5H4l2.6-2.5z" strokeLinejoin="round" />
+        <path d="M8 8v6.5" strokeLinecap="round" />
+      </symbol>
+      <symbol
+        id="icon-chevron"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <path d="m5 3 5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
+      </symbol>
+      <symbol
+        id="icon-folder"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <path d="M1.5 3.5h4l1.5 2h7.5v8h-13z" strokeLinejoin="round" />
+      </symbol>
+      <symbol
+        id="icon-plus"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <path d="M8 3v10M3 8h10" strokeLinecap="round" />
+      </symbol>
+    </svg>
+  );
+}
+
+export interface IconProps {
+  readonly name: IconName;
+  readonly title?: string;
+  readonly size?: number;
+}
+
+export function Icon({ name, title, size = 16 }: IconProps): ReactElement {
+  return (
+    <svg
+      width={size}
+      height={size}
+      focusable="false"
+      {...(title === undefined ? { 'aria-hidden': true } : { role: 'img', 'aria-label': title })}
+    >
+      <use href={`#icon-${name}`} />
+    </svg>
+  );
+}

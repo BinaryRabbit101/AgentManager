@@ -1,4 +1,7 @@
 dist/
+# The emitted Vite bundle (vite.config.ts). Anchored, so `web/src/app/` — the
+# frontend's own shell components — is still formatted and still checked.
+/app/
 node_modules/
 coverage/
 package-lock.json

@@ -1,0 +1,167 @@
+/*
+ * Semantic tokens, light and dark (DESIGN §14.2).
+ *
+ * "One token set, two themes, no third. Semantic tokens only. Components never
+ * reference a raw colour." Light is warm-neutral rather than pure white; dark is
+ * a soft charcoal rather than black, so emoji avatars and the specialty ramp
+ * stay legible in both.
+ *
+ * Three declarations per token, in this order, and the order is the whole
+ * mechanism:
+ *
+ *   :root                                    → the complete light palette
+ *   @media (prefers-color-scheme: dark)      → dark, unless the user chose light
+ *   :root[data-theme='dark']                 → dark, whatever the system says
+ *
+ * The media block is guarded with :not([data-theme='light']) so an explicit
+ * light choice wins on a dark system, and the attribute block comes last so an
+ * explicit dark choice wins on a light one.
+ *
+ * The contrast ratios recorded beside each pair are against that theme's own
+ * --surface; the CI check of IMPLEMENTATION §11 reads them from here.
+ */
+
+:root {
+  /* Light — warm neutral. */
+  --surface: #faf8f5; /* base */
+  --surface-raised: #ffffff;
+  --surface-sunken: #f1ede7;
+  --text: #1d1a16; /* 15.8:1 on --surface */
+  --text-muted: #5f584f; /* 6.9:1 on --surface */
+  --border: #e0d9d0;
+  --border-strong: #c8bfb3;
+  --accent: #8a4b1f; /* 6.4:1 on --surface */
+  --accent-soft: #f3e5d8;
+  --accent-contrast: #ffffff;
+  --danger: #a02a1f; /* 6.6:1 */
+  --warn: #7a5200; /* 5.6:1 */
+  --ok: #1f6b3a; /* 5.4:1 */
+  --focus-ring: #1f5fa8;
+
+  /* Status ramp — one per word of orchestrator §16.6's vocabulary. */
+  --status-idle: #6b6259;
+  --status-queued: #5a4a9c;
+  --status-working: #1f6b3a;
+  --status-awaiting_user: #7a5200;
+  --status-paused: #4a5b78;
+  --status-halted: #a02a1f;
+
+  /* Specialty ramp — the closed roster enum, colour plus the word, never colour alone. */
+  --specialty-bug-patching: #a3401f;
+  --specialty-feature-implementation: #1f5f7a;
+  --specialty-code-review: #5a4a9c;
+  --specialty-testing: #1f6b3a;
+  --specialty-documentation: #7a5200;
+  --specialty-research: #2f5d8c;
+  --specialty-email-response: #8a3d6b;
+  --specialty-overseer: #6b4a1f;
+  --specialty-general: #5f584f;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow-card: 0 1px 2px rgb(29 26 22 / 8%);
+  --shadow-raised: 0 6px 20px rgb(29 26 22 / 14%);
+  --duration: 150ms; /* §14.1: the whole animation budget */
+
+  /* §1.4: no webfonts, ever. The tailnet browser may have no internet route. */
+  --font-sans:
+    'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'Cascadia Mono', 'Consolas', ui-monospace, monospace;
+  --font-emoji: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --surface: #1b1a18; /* soft charcoal, not black */
+    --surface-raised: #24231f;
+    --surface-sunken: #131211;
+    --text: #f2eee7; /* 14.6:1 on --surface */
+    --text-muted: #a9a196; /* 6.4:1 on --surface */
+    --border: #35332e;
+    --border-strong: #4b473f;
+    --accent: #e0a06a; /* 8.1:1 on --surface */
+    --accent-soft: #3a2f24;
+    --accent-contrast: #1b1a18;
+    --danger: #f08a7d; /* 8.0:1 */
+    --warn: #e3b95c; /* 9.9:1 */
+    --ok: #71c98d; /* 9.4:1 */
+    --focus-ring: #8ab6ef;
+
+    --status-idle: #a9a196;
+    --status-queued: #b0a3e8;
+    --status-working: #71c98d;
+    --status-awaiting_user: #e3b95c;
+    --status-paused: #9db2d4;
+    --status-halted: #f08a7d;
+
+    --specialty-bug-patching: #eb9a7c;
+    --specialty-feature-implementation: #7cc3dd;
+    --specialty-code-review: #b0a3e8;
+    --specialty-testing: #71c98d;
+    --specialty-documentation: #e3b95c;
+    --specialty-research: #93b9e8;
+    --specialty-email-response: #e59ac6;
+    --specialty-overseer: #d3b184;
+    --specialty-general: #a9a196;
+
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 40%);
+    --shadow-raised: 0 6px 20px rgb(0 0 0 / 55%);
+  }
+}
+
+:root[data-theme='dark'] {
+  --surface: #1b1a18;
+  --surface-raised: #24231f;
+  --surface-sunken: #131211;
+  --text: #f2eee7;
+  --text-muted: #a9a196;
+  --border: #35332e;
+  --border-strong: #4b473f;
+  --accent: #e0a06a;
+  --accent-soft: #3a2f24;
+  --accent-contrast: #1b1a18;
+  --danger: #f08a7d;
+  --warn: #e3b95c;
+  --ok: #71c98d;
+  --focus-ring: #8ab6ef;
+
+  --status-idle: #a9a196;
+  --status-queued: #b0a3e8;
+  --status-working: #71c98d;
+  --status-awaiting_user: #e3b95c;
+  --status-paused: #9db2d4;
+  --status-halted: #f08a7d;
+
+  --specialty-bug-patching: #eb9a7c;
+  --specialty-feature-implementation: #7cc3dd;
+  --specialty-code-review: #b0a3e8;
+  --specialty-testing: #71c98d;
+  --specialty-documentation: #e3b95c;
+  --specialty-research: #93b9e8;
+  --specialty-email-response: #e59ac6;
+  --specialty-overseer: #d3b184;
+  --specialty-general: #a9a196;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-raised: 0 6px 20px rgb(0 0 0 / 55%);
+}
+
+/*
+ * §14.1 and §15: "prefers-reduced-motion: reduce disables both loops and every
+ * transition." Stated once, globally, rather than per component — a transition
+ * added later cannot forget to opt in.
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

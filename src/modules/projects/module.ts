@@ -32,6 +32,8 @@
  * `ctx.store.projects`. The handle here is used for one thing:
  * `project_default_agents`.
  */
+import { homedir } from 'node:os';
+
 import type { Storage } from '../../storage/index.js';
 import type { HealthCondition, Module, ModuleContext, ModuleHandle } from '../types.js';
 
@@ -144,7 +146,20 @@ export function createProjectsModule(
       });
 
       ctx.provide(PROJECTS_SERVICE, service);
-      ctx.registerRoutes(createProjectRoutes({ service, logger: ctx.logger }));
+      ctx.registerRoutes(
+        createProjectRoutes({
+          service,
+          logger: ctx.logger,
+          // §2.1's folder picker. `browseRoots: null` means the documented
+          // default — `%USERPROFILE%` and `projects.root` — resolved in
+          // `browse.ts` rather than here, so the rule has one home.
+          browse: {
+            browseRoots: ctx.config.projects.browseRoots,
+            projectsRoot: ctx.config.projects.root,
+            homeDirectory: process.env['USERPROFILE'] ?? homedir(),
+          },
+        }),
+      );
 
       // §4.4's orphan recovery. A boot task, not `start()`: foundation runs it
       // after storage is up and *before* any listener binds (foundation §4.2),
