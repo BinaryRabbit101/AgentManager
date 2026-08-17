@@ -19,6 +19,40 @@ export {
   type OrchestratorConfig,
 } from './config.js';
 
+/** §8.1's counters (M7). Pure, and shared by the engine and the patterns. */
+export { BREAKER_NAMES, evaluateBreakers, type BreakerName, type BreakerTrip } from './breakers.js';
+
+/** §7's policy (M3): what the halt card offers and what each answer does. */
+export {
+  applyBudgetCardPolicy,
+  createBudgetPolicy,
+  BUDGET_HALT_OPTIONS,
+  BUDGET_RAISE_GATE,
+  type BudgetDecision,
+  type BudgetPolicy,
+} from './budgets.js';
+
+/** §8.2's gates, and the one way an engine-authored card is raised. */
+export { raiseCard, GATE_CARD_PREFIX, GATE_OPTIONS, type CardSpec } from './cards.js';
+
+/** §10's push channel (M8). */
+export {
+  createNotifier,
+  realNotifyTimers,
+  type Notifier,
+  type NotifyResult,
+  type NotifyTimers,
+} from './notify.js';
+
+/** §11.3's fleet view (M9), and §16-6's six-word vocabulary. */
+export {
+  createFleetStatusReader,
+  FLEET_STATES,
+  type AgentStatus,
+  type FleetState,
+  type FleetStatus,
+} from './status.js';
+
 export {
   AssignmentClosedError,
   AssignmentNotFoundError,
@@ -115,6 +149,7 @@ export {
 export {
   createToolsetFactory,
   TOOLSET_SERVER_KEY,
+  OVERSEER_TOOL_NAMES,
   WORKER_TOOL_NAMES,
   type LaunchIdentity,
   type SessionToolset,
@@ -164,6 +199,7 @@ export type {
 } from './types.js';
 
 export type {
+  OverseerRosterEntryPort,
   ProjectsPort,
   RosterPort,
   RunnerPort,

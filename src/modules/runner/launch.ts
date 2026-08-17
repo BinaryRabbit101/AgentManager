@@ -1754,6 +1754,11 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
 
       if (resumeOptions.message !== undefined) resumeMessages.set(sessionId, resumeOptions.message);
 
+      // A resumed session must be able to halt again on its *next* budget
+      // crossing (§7.2 — "the next crossing asks again"); without this clear,
+      // the once-per-run tripwire above becomes once-per-process.
+      budgetHalted.delete(sessionId);
+
       // §9.4 path 1: the **same** row, back into the queue. `queued_at` is not
       // re-dated (it is not patchable, deliberately), so a resumed session takes
       // its old place at the head of its band rather than the back of the queue.

@@ -29,6 +29,7 @@ import type {
   SessionStatus,
 } from '../../storage/index.js';
 
+import { raiseCard, GATE_CARD_PREFIX, GATE_OPTIONS } from './cards.js';
 import type { OrchestratorConfig } from './config.js';
 import {
   AssignmentClosedError,
@@ -99,6 +100,12 @@ export interface AssignmentServiceOptions {
   readonly roster: () => RosterPort | undefined;
   readonly projects: () => ProjectsPort | undefined;
   readonly runner: () => RunnerPort | undefined;
+  /**
+   * `runner.question.expireHours`, **read** from runner's config (§12), for the
+   * deadline on §8.2's gate cards. Defaults to runner's own 24 so a build that
+   * does not state it still expires its gates — and an expired gate is a denial.
+   */
+  readonly expireHours?: number | undefined;
   /**
    * M2's question inbox, resolved lazily because it is built *after* this
    * service — §6.5's expiry consequences call back into `closeAssignment`, and
@@ -232,6 +239,7 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
     const scope = request.scope;
 
     const workItems = workItemFacts(request.workItemIds);
+    const overlaps = overlapsFor(request.projectId, scope);
     const validation = validateCreateAssignment({
       request,
       moduleEnabled: options.moduleEnabled,
@@ -240,19 +248,27 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       parent: parentFacts(request.parentAssignmentId),
       ...(workItems === undefined ? {} : { workItems }),
       config,
-      overlaps: overlapsFor(request.projectId, scope),
+      overlaps,
     });
 
     if (validation.refusals.length > 0) {
       throw new AssignmentRefusedError(validation.refusals);
     }
 
+    // §2.6's third row: two write-capable assignments overlapping is the one
+    // case where two agents can corrupt each other's diff, so it is a gate as
+    // well as a warning — and the gate has to be decided *before* the row's
+    // phase is chosen, because a gated assignment never reaches `running`.
+    const contested = write && overlaps.some((overlap) => overlap.write);
+
     // A `write: true` machine-created assignment is created at `phase: planned`
     // behind an approval gate and never starts a session before a human approves
     // (§9-10). A user-created one that asked not to auto-start sits at `planned`
     // too, and `POST /:id/advance` (M7) is what moves it.
     const phase: AssignmentPhase =
-      validation.gate !== undefined || request.autoStart === false ? 'planned' : 'running';
+      validation.gate !== undefined || contested || request.autoStart === false
+        ? 'planned'
+        : 'running';
 
     const row = repository.create({
       projectId: request.projectId,
@@ -297,13 +313,71 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       },
     });
 
+    // §2.6: an overlap with any write-capable side is an `assignment.conflict`.
+    // Emitted after `assignment.created`, so a subscriber that reads the new row
+    // finds it.
+    for (const overlap of overlaps) {
+      if (!write && !overlap.write) continue; // two readers cannot collide
+      bus.emit({
+        type: 'assignment.conflict',
+        ids: { assignmentId: row.id, projectId: row.projectId },
+        persist: true,
+        payload: {
+          otherAssignmentId: overlap.assignmentId,
+          paths: scope?.paths ?? [],
+          bothWrite: write && overlap.write,
+        },
+      });
+    }
+
+    // §8.2's gates, both of which block the *first* turn. Raised after the row
+    // exists, because a card names the assignment it is about.
+    const gateReason =
+      validation.gate?.reason ??
+      (contested
+        ? 'write-capable scope overlaps another open write-capable assignment'
+        : undefined);
+    let gate = validation.gate;
+    if (gateReason !== undefined) {
+      const questionId = await raiseGate(row, gateReason, contested);
+      gate = { reason: gateReason, ...(questionId === '' ? {} : { questionId }) };
+    }
+
     return {
       assignmentId: row.id,
       status: row.status,
       phase: row.phase,
       warnings: validation.warnings,
-      ...(validation.gate === undefined ? {} : { gate: validation.gate }),
+      ...(gate === undefined ? {} : { gate }),
     };
+  }
+
+  /**
+   * §8.2-1 and §8.2-4's approval gate.
+   *
+   * "It never auto-approves; expiry is denial (§6.5)." Expiry is already the
+   * inbox's `onExpiredGate` → `closeAssignment(gate_expired)`; approval and
+   * denial are the engine's answer path, keyed on the marker written here.
+   */
+  function raiseGate(row: AssignmentRow, reason: string, overlap: boolean): Promise<string> {
+    return raiseCard(
+      {
+        inbox: options.inbox?.(),
+        clock: options.clock,
+        expireHours: options.expireHours ?? 24,
+        ...(options.log === undefined ? {} : { log: options.log }),
+      },
+      row,
+      {
+        kind: 'approval_gate',
+        prompt:
+          `Approve this ${row.write ? 'write-capable ' : ''}assignment before it starts? ` +
+          `Reason: ${reason}. Denying it, or leaving it to expire, closes the assignment ` +
+          'without running anything.',
+        options: GATE_OPTIONS,
+        marker: overlap ? `${GATE_CARD_PREFIX}scope_overlap` : `${GATE_CARD_PREFIX}create`,
+      },
+    );
   }
 
   // -------------------------------------------------------------------------

@@ -33,7 +33,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { boot, type BootOptions, type BootedService } from '../../main.js';
 import {
   controllableQuery,
+  fakeAssistant,
   fakeResult,
+  gatedQuery,
   scriptedQuery,
   successScript,
 } from '../runner/__tests__/fakeQuery.js';
@@ -188,11 +190,108 @@ describe('module registration (M0-1)', () => {
   });
 });
 
+describe('the toolset mount, end to end (M4-4/M4-5, R1/R1b)', () => {
+  /**
+   * Compiles one session the way runner's launch chain does, and reports what
+   * roster made of the orchestration namespace.
+   *
+   * This is the only place the mount can honestly be checked: `getSessionToolset`
+   * is orchestrator's, `compileSession` is roster's, and the *wiring between
+   * them* is the composition root's — which is exactly what R1 asked roster to
+   * take on and what this asserts it did.
+   */
+  async function compileFor(overseer: boolean): Promise<{
+    mounted: boolean;
+    granted: readonly string[];
+    diagnostics: readonly { code: string }[];
+  }> {
+    const folder = join(workspaceDir.path, overseer ? 'Mount-Overseer' : 'Mount-Worker');
+    mkdirSync(folder, { recursive: true });
+    const project = await call<{ id: string }>('POST', '/api/projects', { localPath: folder });
+    const agent = await call<{ definition: { id: string } }>('POST', '/api/roster/agents', {
+      name: overseer ? 'Iris Mount' : 'Ada Mount',
+      specialty: overseer ? 'overseer' : 'feature-implementation',
+      capabilities: overseer
+        ? { overseer: true, roles: ['overseer', 'implementer'] }
+        : { roles: ['implementer'] },
+      personaText: '# Agent\n\nWork.\n',
+    });
+
+    const roster = service?.runtime.registry.require<{
+      readonly registry: { get(id: string): unknown };
+      compileSession(input: Record<string, unknown>): Promise<{
+        options: { mcpServers?: Record<string, unknown> };
+        effective: { allow: readonly string[] };
+        diagnostics: readonly { code: string }[];
+      }>;
+    }>('roster');
+    if (roster === undefined) throw new Error('roster is not in this build');
+    const resolved = roster.registry.get(agent.body.definition.id);
+
+    // Orchestrator's presence or absence is the whole variable; everything else
+    // is what runner's launch chain passes. `toolset` is deliberately **not**
+    // supplied, so the provider the roster module wired to
+    // `ctx.require('orchestrator')?.getSessionToolset` is the one under test.
+    const compiled = await roster.compileSession({
+      agent: resolved,
+      assignment: {
+        id: '01ASSIGNMENT',
+        write: false,
+        role: overseer ? 'overseer' : 'implementer',
+        scopeRules: {},
+      },
+      policy: { allowPermissionElevation: false, globalDeny: [] },
+      secrets: { get: () => Promise.resolve(undefined) },
+      projectId: project.body.id,
+    });
+
+    return {
+      mounted: compiled.options.mcpServers?.['agentmanager'] !== undefined,
+      granted: compiled.effective.allow.filter((rule) => rule.startsWith('mcp__agentmanager__')),
+      diagnostics: compiled.diagnostics,
+    };
+  }
+
+  it('mounts the server and grants a worker exactly the four scoped tools (R1b)', async () => {
+    await bootCore();
+    const compiled = await compileFor(false);
+
+    expect(compiled.mounted).toBe(true);
+    expect([...compiled.granted].sort()).toEqual([
+      'mcp__agentmanager__read_mailbox',
+      'mcp__agentmanager__report_status',
+      'mcp__agentmanager__request_user_decision',
+      'mcp__agentmanager__send_to_agent',
+    ]);
+  });
+
+  it('grants an overseer all six', async () => {
+    await bootCore();
+    const compiled = await compileFor(true);
+
+    expect(compiled.mounted).toBe(true);
+    expect(compiled.granted).toHaveLength(6);
+    expect(compiled.granted).toContain('mcp__agentmanager__list_roster');
+    expect(compiled.granted).toContain('mcp__agentmanager__create_assignment');
+  });
+
+  it('mounts nothing and grants nothing with modules.orchestrator.enabled: false (M4 acceptance)', async () => {
+    await bootCore({ argv: ['--set', 'modules.orchestrator.enabled=false'] });
+    const compiled = await compileFor(false);
+
+    expect(compiled.mounted).toBe(false);
+    // "Roster drops every `mcp__agentmanager__*` rule" — there is no server to
+    // compile allow rules for, and a rule for a tool that will never exist is
+    // exactly what roster §11's diagnostic exists to prevent.
+    expect(compiled.granted).toEqual([]);
+  });
+});
+
 describe('migrations (M0-3)', () => {
   it('applies migrations/orchestrator/ after foundation and records it under "orchestrator"', async () => {
     const booted = await bootCore();
 
-    expect(booted.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(1);
+    expect(booted.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(2);
     const ledger = booted.storage.db
       .prepare<[], { module: string; version: number }>(
         'SELECT module, version FROM schema_migrations',
@@ -214,7 +313,7 @@ describe('migrations (M0-3)', () => {
     service = undefined;
 
     const second = await bootCore();
-    expect(second.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(1);
+    expect(second.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(2);
     const health = await second.health();
     expect(health.status).toBe('ok');
   });
@@ -255,7 +354,7 @@ describe('configuration (M0-2)', () => {
 });
 
 describe('routes (M1-7, M2-6, M5-1, M6-6)', () => {
-  it('mounts M1’s six assignment routes, M2’s three question routes and M5/M6’s three', async () => {
+  it('mounts M1’s six assignment routes, M2’s three question routes and M5/M6/M9’s four', async () => {
     const booted = await bootCore();
     const mine = booted.runtime.routes.routes
       .filter((route) => route.moduleId === ORCHESTRATOR_MODULE_ID)
@@ -265,6 +364,7 @@ describe('routes (M1-7, M2-6, M5-1, M6-6)', () => {
       'GET /api/assignments',
       'GET /api/assignments/:id',
       'GET /api/assignments/:id/conversation',
+      'GET /api/orchestrator/status',
       'GET /api/patterns',
       'GET /api/questions',
       'GET /api/questions/:id',
@@ -689,4 +789,144 @@ describe('the boot task (M1-6)', () => {
       .get(assignment.id);
     expect(row).toEqual({ phase: 'planned', status: 'open' });
   });
+});
+
+describe('the budget halt, end to end (M3 acceptance)', () => {
+  /**
+   * The one M3 criterion that cannot be proved at a seam.
+   *
+   * "A solo assignment with a deliberately tiny budget halts mid-session,
+   * produces a `budget_halt` card, and resumes correctly on *Raise budget* and
+   * terminates correctly on *Close assignment*." Every clause in that sentence
+   * belongs to a different module — runner meters and pauses, orchestrator
+   * renders the card and applies the answer, foundation carries the row — so it
+   * is asserted through the composition root with only `query()` scripted.
+   *
+   * The session is **gated** rather than scripted so the budget can be lowered
+   * while it is genuinely mid-flight: patching it before the launch would test
+   * admission, not a crossing.
+   */
+  async function launchTinyBudget(
+    name: string,
+  ): Promise<{ assignmentId: string; sessionId: string }> {
+    const gate = gatedQuery();
+    await bootCore({
+      runner: { query: gate.query },
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-fixture' },
+    });
+
+    const folder = join(workspaceDir.path, name);
+    mkdirSync(folder, { recursive: true });
+    const project = await call<{ id: string }>('POST', '/api/projects', { localPath: folder });
+    const agent = await call<{ definition: { id: string } }>('POST', '/api/roster/agents', {
+      name: `${name} Agent`,
+      specialty: 'general',
+      capabilities: { roles: ['implementer'] },
+      personaText: '# Agent\n',
+    });
+    const launched = await call<{ assignmentId: string; sessionId: string }>(
+      'POST',
+      '/api/assignments/solo',
+      { projectId: project.body.id, agentId: agent.body.definition.id, prompt: 'go' },
+    );
+    expect(launched.status).toBe(201);
+    await gate.started(1);
+
+    // The deliberately tiny budget, applied while the session is running. Small
+    // enough that one message crosses it, and large enough that §7.3's
+    // `raiseMaxFactor` ceiling is a real number rather than 2.
+    const patched = await call('PATCH', `/api/assignments/${launched.body.assignmentId}`, {
+      tokenBudget: 1_000,
+    });
+    expect(patched.status).toBe(200);
+
+    // One assistant message carrying real usage: runner's `onUsage` rolls it
+    // onto the assignment in the same transaction and finds the crossing there.
+    gate.sessions[0]?.finish([fakeAssistant({ usage: { input: 5_000, output: 5_000 } })]);
+    return { assignmentId: launched.body.assignmentId, sessionId: launched.body.sessionId };
+  }
+
+  async function untilBudgetCard(
+    assignmentId: string,
+  ): Promise<{ id: string; options: { id: string }[] }> {
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+      const answer = await call<{
+        questions: { id: string; kind: string; options: { id: string }[] }[];
+      }>('GET', `/api/questions?status=open&assignmentId=${assignmentId}`);
+      const card = answer.body.questions?.find((one) => one.kind === 'budget_halt');
+      if (card !== undefined) return card;
+      if (Date.now() > deadline) {
+        throw new Error(`no budget_halt card appeared: ${JSON.stringify(answer.body)}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+  it(
+    'halts mid-session and offers §7.3’s three options over the API',
+    { timeout: 40_000 },
+    async () => {
+      const { assignmentId } = await launchTinyBudget('BudgetHalt');
+      const card = await untilBudgetCard(assignmentId);
+
+      // Runner raised the kind; orchestrator decided what it offers.
+      expect(card.options.map((option) => option.id)).toEqual(['raise', 'continue_once', 'close']);
+
+      const assignment = await call<{ phase: string; tokensUsed: number }>(
+        'GET',
+        `/api/assignments/${assignmentId}`,
+      );
+      // No new turn is planned, and the UI has a state to render that is not
+      // "running" and not "closed".
+      expect(assignment.body.phase).toBe('awaiting_user');
+      // Runner's arithmetic, consumed rather than re-derived (§7.1).
+      expect(assignment.body.tokensUsed).toBeGreaterThanOrEqual(1_000);
+    },
+  );
+
+  it(
+    'raises the budget on “Raise the budget”, and commits it before the answer resolves',
+    { timeout: 40_000 },
+    async () => {
+      const { assignmentId } = await launchTinyBudget('BudgetRaise');
+      const card = await untilBudgetCard(assignmentId);
+
+      const answered = await call('POST', `/api/questions/${card.id}/answer`, {
+        optionIds: ['raise'],
+        text: '1500',
+      });
+      expect(answered.status).toBe(200);
+
+      const assignment = await call<{ tokenBudget: number; status: string }>(
+        'GET',
+        `/api/assignments/${assignmentId}`,
+      );
+      // Runner's auto-resume reads this row on the answer event, and it is
+      // already committed — which is the whole ordering rule of §7.3.
+      expect(assignment.body.tokenBudget).toBe(1_500);
+      expect(assignment.body.status).toBe('open');
+    },
+  );
+
+  it(
+    'closes the assignment budget_exhausted on “Close the assignment”',
+    { timeout: 40_000 },
+    async () => {
+      const { assignmentId } = await launchTinyBudget('BudgetClose');
+      const card = await untilBudgetCard(assignmentId);
+
+      const answered = await call('POST', `/api/questions/${card.id}/answer`, {
+        optionIds: ['close'],
+      });
+      expect(answered.status).toBe(200);
+
+      const assignment = await call<{ status: string; closeReason: string }>(
+        'GET',
+        `/api/assignments/${assignmentId}`,
+      );
+      expect(assignment.body.status).toBe('closed');
+      expect(assignment.body.closeReason).toBe('budget_exhausted');
+    },
+  );
 });

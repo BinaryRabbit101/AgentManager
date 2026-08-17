@@ -49,12 +49,42 @@ export interface ResolvedAgentPort {
   readonly archivedAt?: string | null | undefined;
 }
 
+/**
+ * One agent as `list_roster` (§4.3) returns it — roster §11's projection,
+ * structurally.
+ *
+ * Named here rather than rebuilt: roster exposes `overseerRoster()` **because**
+ * the reader is this tool, and its own header says "two implementations of what
+ * an overseer may see is one implementation too many". So orchestrator consumes
+ * the projection and adds only the two facts roster cannot know — how many open
+ * assignments the agent holds, and whether that leaves it available.
+ */
+export interface OverseerRosterEntryPort {
+  readonly id: string;
+  readonly name: string;
+  readonly specialty: string;
+  readonly tagline: string | null;
+  readonly tags: readonly string[];
+  readonly capabilities: {
+    readonly overseer: boolean;
+    readonly roles: readonly string[];
+  };
+}
+
 /** Roster's in-memory registry, as far as `capabilities` goes. */
 export interface RosterPort {
   readonly registry: {
     get(id: string): ResolvedAgentPort | undefined;
     getArchived(id: string): ResolvedAgentPort | undefined;
   };
+  /**
+   * Roster §11's credential-free projection, present from roster M7.
+   *
+   * Probed rather than required: without it `list_roster` refuses by name
+   * instead of falling back to `registry`, which carries permissions and
+   * integrations and must never reach a coordinating agent.
+   */
+  readonly overseerRoster?: () => readonly OverseerRosterEntryPort[];
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +216,13 @@ export function hasTranscriptTail(
   runner: RunnerPort | undefined,
 ): runner is RunnerPort & TranscriptTailReader {
   return typeof runner?.getTranscriptTail === 'function';
+}
+
+/** True when roster ships §11's projection — roster M7 onwards. */
+export function hasOverseerRoster(
+  roster: RosterPort | undefined,
+): roster is RosterPort & { overseerRoster: () => readonly OverseerRosterEntryPort[] } {
+  return typeof roster?.overseerRoster === 'function';
 }
 
 /** True when this build's projects can link work items — projects M8 onwards. */

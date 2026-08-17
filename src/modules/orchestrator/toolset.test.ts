@@ -82,7 +82,7 @@ describe('the launch identity is a closure, not an argument (§4.1, [A2])', () =
   });
 
   it('refuses an unknown tool by name, listing what this build has', async () => {
-    const result = await toolsetFor('ada').call('create_assignment', {});
+    const result = await toolsetFor('ada').call('summon_a_pony', {});
     expect(result.isError).toBe(true);
     expect(payloadOf(result)['message']).toContain('report_status');
   });

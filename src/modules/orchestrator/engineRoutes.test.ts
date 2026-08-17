@@ -56,6 +56,7 @@ function wire(): Wired {
     engine: h.engine,
     service: h.service,
     conversation: h.conversation,
+    fleetStatus: h.fleetStatus,
     logger,
   });
 

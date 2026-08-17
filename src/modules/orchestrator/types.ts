@@ -182,9 +182,17 @@ export interface AssignmentWarning {
   readonly message: string;
 }
 
-/** The gate a `write: true` machine-created assignment is parked behind (§9-10). */
+/**
+ * The gate a `write: true` machine-created assignment is parked behind (§9-10),
+ * or that two overlapping write scopes raise (§2.6, §8.2-4).
+ *
+ * `questionId` is §4.3's shape — the overseer is told which card is holding its
+ * work, so it can say so in its report instead of waiting on it — and is absent
+ * only in a build with no inbox to raise into.
+ */
 export interface GateSpec {
   readonly reason: string;
+  readonly questionId?: string;
 }
 
 export interface CreateAssignmentResult {

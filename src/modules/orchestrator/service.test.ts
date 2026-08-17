@@ -252,7 +252,10 @@ describe('createAssignment — the pattern path', () => {
       createdBy: 'overseer:ove',
     });
     expect(result.phase).toBe('planned');
-    expect(result.gate).toEqual({ reason: 'write-capable assignment created by an overseer' });
+    // M7-3: the gate is a real card now, not only a reason — so the result
+    // carries the question the assignment is waiting on.
+    expect(result.gate?.reason).toBe('write-capable assignment created by an overseer');
+    expect(result.gate?.questionId).toEqual(expect.any(String));
   });
 
   it('sits at phase: planned when autoStart is false', async () => {

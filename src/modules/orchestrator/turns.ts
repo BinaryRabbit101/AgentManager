@@ -106,6 +106,15 @@ export interface TurnRow {
   readonly artifactHash: string | null;
   readonly startedAt: string | null;
   readonly endedAt: string | null;
+  /**
+   * Runner's `permission_denials` total for this turn's session (§8.1
+   * `tool_denials`).
+   *
+   * Stored rather than counted in process, because §8.1's counters are
+   * "re-derived from `assignment_turns` on every evaluation" and the number
+   * arrives exactly once, on `session.ended`.
+   */
+  readonly permissionDenials: number;
   /** Derived, never stored — see the file header. */
   readonly retryOfTurnId: string | null;
 }
@@ -123,6 +132,8 @@ export interface CompleteTurnInput {
   readonly status: Exclude<TurnStatus, 'planned' | 'running'>;
   readonly outputText?: string | null | undefined;
   readonly artifactHash?: string | null | undefined;
+  /** Runner's count for the session, when `session.ended` carried one (§8.1). */
+  readonly permissionDenials?: number | undefined;
 }
 
 export interface TurnRepository {
@@ -185,11 +196,12 @@ interface RawTurn {
   readonly artifact_hash: string | null;
   readonly started_at: string | null;
   readonly ended_at: string | null;
+  readonly permission_denials: number;
 }
 
 const COLUMNS =
   'id, assignment_id, round, seat, agent_id, session_id, prev_session_id, status, ' +
-  'report_json, output_text, artifact_hash, started_at, ended_at';
+  'report_json, output_text, artifact_hash, started_at, ended_at, permission_denials';
 
 export interface TurnRepositoryOptions {
   readonly db: Database;
@@ -237,6 +249,9 @@ export function createTurnRepository(options: TurnRepositoryOptions): TurnReposi
   const setComplete = db.prepare<[string, string, string]>(
     'UPDATE assignment_turns SET status = ?, ended_at = ? WHERE id = ?',
   );
+  const setDenials = db.prepare<[number, string]>(
+    'UPDATE assignment_turns SET permission_denials = ? WHERE id = ?',
+  );
 
   function now(): string {
     return isoTimestamp(clock());
@@ -280,6 +295,7 @@ export function createTurnRepository(options: TurnRepositoryOptions): TurnReposi
         artifactHash: row.artifact_hash,
         startedAt: row.started_at,
         endedAt: row.ended_at,
+        permissionDenials: row.permission_denials,
         retryOfTurnId: previous,
       };
     });
@@ -363,6 +379,12 @@ export function createTurnRepository(options: TurnRepositoryOptions): TurnReposi
         setOutputText.run(input.outputText, id);
       }
       if (input.artifactHash !== undefined) setHash.run(input.artifactHash ?? null, id);
+      // §8.1's `tool_denials` input, written on the turn rather than remembered:
+      // a restart between the session ending and the breaker evaluation must not
+      // lose it.
+      if (input.permissionDenials !== undefined) {
+        setDenials.run(Math.max(0, Math.trunc(input.permissionDenials)), id);
+      }
       setComplete.run(input.status, now(), id);
       return require_(id);
     },

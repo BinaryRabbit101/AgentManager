@@ -110,6 +110,8 @@ export interface AssignmentRepository {
   countOpenForAgent(agentId: string): number;
   /** Σ of the `token_budget`s of a parent's still-open children (§9-8). */
   openChildBudgetTotal(parentAssignmentId: string): number;
+  /** A parent's children, newest first — §4.2's `scopeOf` for an overseer. */
+  listChildren(parentAssignmentId: string): readonly AssignmentRow[];
   /** Sets `phase`, and `halt_reason` when one is given. */
   setPhase(id: string, phase: AssignmentPhase, haltReason?: string | null): AssignmentRow;
   /**
@@ -130,6 +132,14 @@ export interface AssignmentRepository {
       readonly goal?: string;
     },
   ): AssignmentRow;
+  /**
+   * Replaces `pattern_config_json` (§2.1) — orchestrator's own free JSON column.
+   *
+   * The one writer of it after creation, used by §7.3's budget note: the
+   * original budget a raise is bounded against has to survive a restart, and a
+   * column for one number the UI never reads would be a migration for nothing.
+   */
+  setPatternConfig(id: string, config: Readonly<Record<string, unknown>>): AssignmentRow;
   /**
    * `status: 'closed'` + `closed_at` + `close_reason`, and the phase §2.2
    * prescribes — `converged` keeps its own phase, everything else becomes
@@ -188,6 +198,9 @@ export function createAssignmentRepository(
     'UPDATE assignments SET phase = ?, halt_reason = ?, updated_at = ? WHERE id = ?',
   );
   const touch = db.prepare<[string, string]>('UPDATE assignments SET updated_at = ? WHERE id = ?');
+  const setConfig = db.prepare<[string, string, string]>(
+    'UPDATE assignments SET pattern_config_json = ?, updated_at = ? WHERE id = ?',
+  );
   const applySeat = db.prepare<[number, string, string, string]>(
     'UPDATE assignment_members SET seat_order = ?, joined_at = ? ' +
       'WHERE assignment_id = ? AND agent_id = ?',
@@ -203,6 +216,9 @@ export function createAssignmentRepository(
   const childTotal = db.prepare<[string], { total: number | null }>(
     'SELECT SUM(token_budget) AS total FROM assignments ' +
       "WHERE parent_assignment_id = ? AND status = 'open'",
+  );
+  const childIds = db.prepare<[string], { id: string }>(
+    'SELECT id FROM assignments WHERE parent_assignment_id = ? ORDER BY created_at DESC, id DESC',
   );
   // The unfiltered listing: no base-repository read covers "every project", and
   // `GET /api/assignments` with no filters is the fleet view's first call.
@@ -327,6 +343,9 @@ export function createAssignmentRepository(
 
     openChildBudgetTotal: (parentAssignmentId) => childTotal.get(parentAssignmentId)?.total ?? 0,
 
+    listChildren: (parentAssignmentId) =>
+      childIds.all(parentAssignmentId).map((row) => hydrate(row.id)),
+
     setPhase(id, phase, haltReason) {
       setPhaseStatement.run(phase, haltReason ?? null, isoTimestamp(clock()), id);
       return hydrate(id);
@@ -341,6 +360,11 @@ export function createAssignmentRepository(
     update(id, patch) {
       assignments.update(id, patch);
       touch.run(isoTimestamp(clock()), id);
+      return hydrate(id);
+    },
+
+    setPatternConfig(id, config) {
+      setConfig.run(JSON.stringify(config), isoTimestamp(clock()), id);
       return hydrate(id);
     },
 

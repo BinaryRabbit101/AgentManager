@@ -1,0 +1,15 @@
+-- 0002_breakers.sql — the one column §8.1's `tool_denials` breaker needs
+-- (orchestrator DESIGN §8.1, IMPLEMENTATION M7-1).
+--
+-- §8.1 is emphatic that breaker counters are "re-derived from `assignment_turns`
+-- on every evaluation rather than being maintained incrementally, so a restart
+-- cannot lose or double-count one". Seven of the eight already re-derive from
+-- columns 0001 shipped. `tool_denials` is the exception: its input is runner's
+-- `permission_denials` total, which arrives once on `session.ended` and exists
+-- nowhere durable afterwards. Counting it in memory would be exactly the
+-- incremental counter §8.1 refuses, so the number is written onto the turn the
+-- session belonged to and the breaker re-derives from the table like the rest.
+--
+-- Applied inside the migration runner's transaction: no BEGIN/COMMIT and no
+-- `IF NOT EXISTS`, per foundation §1.3 and the conventions of 0001.
+ALTER TABLE assignment_turns ADD COLUMN permission_denials INTEGER NOT NULL DEFAULT 0;

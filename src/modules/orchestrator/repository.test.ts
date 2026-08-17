@@ -104,9 +104,10 @@ describe('migrations/orchestrator/0001_orchestrator.sql', () => {
   it('re-applies cleanly on an existing database (M0 acceptance)', () => {
     storage.close();
     // The second open re-runs the migration *runner*, which must find the set
-    // already at version 1 and change nothing.
+    // already at its latest version and change nothing. Two files now: 0001's
+    // columns and 0002's `permission_denials` (§8.1's `tool_denials` input).
     const reopened = openTestStorage(dir.path);
-    expect(reopened.setVersions['orchestrator']).toBe(1);
+    expect(reopened.setVersions['orchestrator']).toBe(2);
     const columns = (
       reopened.db.prepare('PRAGMA table_info(assignments)').all() as { name: string }[]
     ).filter((row) => row.name === 'phase');

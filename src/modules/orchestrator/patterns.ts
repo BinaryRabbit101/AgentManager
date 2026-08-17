@@ -30,6 +30,12 @@
  * politely forever": politeness cannot terminate the loop early, and the round
  * cap terminates it late. Neither agent can extend the cap.
  */
+import {
+  artifactUnchanged,
+  consecutiveFailures,
+  roundsWouldExceedCap,
+  unstructuredForSeat,
+} from './breakers.js';
 import type { AssignmentRow } from './repository.js';
 import type { BlockingIssue, TurnRow } from './turns.js';
 import type { AssignmentRole, AssignmentScope, CloseReason } from './types.js';
@@ -395,9 +401,10 @@ export const PAIR_PATTERN: PatternDef = {
     // stricter instruction, because a wiring bug and a disobedient model look
     // identical from here and one retry distinguishes them cheaply.
     if (last.status === 'unstructured') {
-      const unstructured = turns.filter(
-        (turn) => turn.seat === last.seat && turn.status === 'unstructured',
-      ).length;
+      // The counter is `breakers.ts`'s, so §8.1's "re-derived from
+      // `assignment_turns`" has exactly one implementation (see that file's
+      // ownership table for why the *action* is here rather than there).
+      const unstructured = unstructuredForSeat(turns, last.seat);
       if (unstructured >= 2 && state.resumeRequested !== true) {
         return { halt: true, haltReason: 'no_report' };
       }
@@ -442,9 +449,7 @@ export const PAIR_PATTERN: PatternDef = {
         .filter((turn) => turn.seat === DRAFTER_SEAT && turn.id !== last.id && turn.report !== null)
         .at(-1);
       if (
-        previousDrafter !== undefined &&
-        last.artifactHash !== null &&
-        last.artifactHash === previousDrafter.artifactHash &&
+        artifactUnchanged(last, previousDrafter) &&
         claimsRevision(last) &&
         state.resumeRequested !== true
       ) {
@@ -476,7 +481,7 @@ export const PAIR_PATTERN: PatternDef = {
     }
 
     const cap = state.roundCap;
-    if (cap !== null && last.round + 1 > cap) {
+    if (roundsWouldExceedCap(last.round + 1, cap)) {
       return {
         done: true,
         closeReason: 'round_cap',
@@ -510,6 +515,21 @@ export function patternFor(id: string): PatternDef | undefined {
 }
 
 /** What `GET /api/patterns` serves — seats, defaults, and what a pattern requires. */
+/**
+ * One agent the create dialog may put in a seat (§16-9, M9-4).
+ *
+ * Ranking, not filtering: an agent at its concurrency cap is still shown, marked
+ * unavailable, because "why can I not pick Sam" is a question the dialog should
+ * answer rather than raise.
+ */
+export interface SeatCandidate {
+  readonly agentId: string;
+  readonly name: string;
+  readonly roles: readonly string[];
+  readonly openAssignments: number;
+  readonly available: boolean;
+}
+
 export interface PatternSummary {
   readonly id: string;
   readonly driver: 'none' | 'sequential';
@@ -523,6 +543,14 @@ export interface PatternSummary {
   readonly maxRoundCap: number | null;
   /** §6.2's card ordering, so the UI never has to know a pattern's internals. */
   readonly cardSeatOrder: readonly string[];
+  /**
+   * Who could fill each seat, keyed by seat (§16-9, M9-4).
+   *
+   * Absent in a build whose roster cannot be read — the dialog then falls back
+   * to its own agent list, which it has anyway; an empty object would say
+   * "nobody is eligible", which is a different and wrong claim.
+   */
+  readonly candidates?: Readonly<Record<string, readonly SeatCandidate[]>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -581,14 +609,4 @@ function handoffFrom(turn: TurnRow): NonNullable<PromptSpec['handoff']> {
 function claimsRevision(turn: TurnRow): boolean {
   const state = turn.report?.state;
   return turn.round > 1 && (state === 'done' || state === 'needs_review');
-}
-
-/** Trailing run of `failed` turns — re-derived, never counted incrementally. */
-function consecutiveFailures(turns: readonly TurnRow[]): number {
-  let count = 0;
-  for (const turn of [...turns].reverse()) {
-    if (turn.status !== 'failed') break;
-    count += 1;
-  }
-  return count;
 }

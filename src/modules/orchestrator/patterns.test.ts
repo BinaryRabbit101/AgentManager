@@ -76,6 +76,7 @@ function turn(overrides: Partial<TurnRow> & { seat: string; status: TurnStatus }
     agentId: overrides.seat === DRAFTER_SEAT ? 'ada' : 'sam',
     sessionId: `s${String(turnSeq)}`,
     prevSessionId: null,
+    permissionDenials: 0,
     report: null,
     outputText: null,
     artifactHash: null,

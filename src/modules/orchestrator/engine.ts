@@ -55,14 +55,29 @@ import { isAbsolute, join, normalize, resolve as resolvePath, sep } from 'node:p
 import type { AppEvent, EventBus, Unsubscribe } from '../types.js';
 import type { Clock, SessionsRepository, SessionStatus } from '../../storage/index.js';
 
+import {
+  evaluateBreakers,
+  unstructuredBySeat,
+  consecutiveFailures,
+  type BreakerTrip,
+} from './breakers.js';
+import {
+  raiseCard as raiseEngineCard,
+  GATE_CARD_PREFIX,
+  GATE_OPTIONS,
+  type CardSpec,
+} from './cards.js';
 import type { OrchestratorConfig } from './config.js';
 import { AssignmentNotFoundError } from './errors.js';
 import type { MailboxRepository } from './messages.js';
 import {
   hasContinuation,
   hasLauncher,
+  hasOverseerRoster,
   hasTranscriptTail,
+  type OverseerRosterEntryPort,
   type ProjectsPort,
+  type RosterPort,
   type RunnerPort,
 } from './ports.js';
 import {
@@ -75,8 +90,10 @@ import {
   PATTERNS,
   type AssignmentState,
   type HaltReason,
+  type PatternDef,
   type PatternSummary,
   type PlanResult,
+  type SeatCandidate,
   type StateMember,
   type TurnPlan,
 } from './patterns.js';
@@ -132,6 +149,18 @@ export interface PatternEngine {
   patterns(): readonly PatternSummary[];
   /** M5-5's boot task. */
   reconcileOnBoot(): Promise<TurnReconciliation>;
+  /**
+   * §8.1's `stale` breaker (M7-5), one pass.
+   *
+   * Returned as a callable rather than only scheduled, so a test drives one tick
+   * instead of waiting a day for the timer that calls it.
+   */
+  sweepStale(): Promise<readonly string[]>;
+  /**
+   * §8.1's `tool_flood`, signalled by the toolset when a per-session cap is
+   * exceeded (§4.2). Stops the session, then halts.
+   */
+  tripToolFlood(assignmentId: string, sessionId?: string): Promise<void>;
   /** Subscribes to the bus; the returned function detaches (module `stop`). */
   attach(): Unsubscribe;
   /** Read model for §11.2, built in `conversation.ts`. */
@@ -148,6 +177,8 @@ export interface PatternEngineOptions {
   readonly inbox: () => QuestionInbox | undefined;
   readonly runner: () => RunnerPort | undefined;
   readonly projects: () => ProjectsPort | undefined;
+  /** Roster, for §16-9's candidate ranking on `GET /api/patterns` (M9-4). */
+  readonly roster?: (() => RosterPort | undefined) | undefined;
   readonly bus: EventBus;
   readonly clock: Clock;
   readonly config: OrchestratorConfig;
@@ -286,11 +317,11 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
       ...(decision === undefined ? {} : { openQuestion: decision }),
       breakers: {
         // §8.1: "counters are re-derived from `assignment_turns` on every
-        // evaluation rather than being maintained incrementally". M7 adds the
-        // remaining two; these are the ones the pair's own table already reads.
-        consecutiveFailures: trailingFailures(rows),
+        // evaluation rather than being maintained incrementally" — all of them
+        // through `breakers.ts`, which is the one implementation of each.
+        consecutiveFailures: consecutiveFailures(rows),
         unstructuredBySeat: unstructuredBySeat(rows),
-        denialsPerSession: 0,
+        denialsPerSession: rows.reduce((most, turn) => Math.max(most, turn.permissionDenials), 0),
       },
     };
   }
@@ -320,22 +351,25 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     }
     if (row.status !== 'open') return { kind: 'idle', reason: 'assignment_closed' };
 
-    // §8.1's `budget` breaker: a crossing sets `phase: awaiting_user` and plans
-    // nothing. Runner owns the arithmetic and the trigger (§7.1); this is only
-    // the policy half re-checked before every plan, so a restart between the
-    // crossing and the event cannot lose it.
-    //
-    // Ahead of the phase gate on purpose: §3.1's loop evaluates breakers *before*
-    // planning, and a manual advance that flipped the phase to `running` first
-    // would rewrite the state its own breaker is about to undo.
-    if (row.tokenBudget !== null && row.tokensUsed >= row.tokenBudget) {
-      return awaitBudgetDecision(row);
-    }
-
     // A manual advance out of `halted` is §8.1's "Continue anyway": the halting
     // evidence stays in `assignment_turns` (nothing is rewritten), but this one
     // advance is allowed to look past it.
     const resumeRequested = manual && (row.phase === 'halted' || row.haltReason !== null);
+
+    // §3.1's loop: **evaluate breakers, then plan**. Ahead of the phase gate on
+    // purpose — a manual advance that flipped the phase to `running` first would
+    // rewrite the state its own breaker is about to undo. The counters come from
+    // the table on every pass, so a restart between a crossing and its event
+    // cannot lose one (§8.1).
+    const trip = evaluateBreakers({
+      assignment: row,
+      turns: turns.list(row.id),
+      config,
+      nowMs: options.clock().getTime(),
+      resumeRequested,
+    });
+    if (trip !== undefined) return await actOnTrip(row, trip);
+
     const gate = phaseGate(row, manual);
     if (gate !== undefined) return gate;
 
@@ -355,23 +389,76 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     return undefined;
   }
 
+  /**
+   * A breaker the engine itself owns (`breakers.ts`'s ownership table).
+   *
+   * `budget` is the one trip that is not a halt: §7.3 parks the assignment at
+   * `awaiting_user` behind a card that offers a raise, and a `halted` phase would
+   * make the raise look like a breaker override.
+   */
+  async function actOnTrip(row: AssignmentRow, trip: BreakerTrip): Promise<AdvanceOutcome> {
+    if (trip.haltReason === undefined) return awaitBudgetDecision(row);
+    log('info', 'a circuit breaker tripped', {
+      assignmentId: row.id,
+      breaker: trip.breaker,
+      ...trip.detail,
+    });
+    return await halt(row, trip.haltReason);
+  }
+
+  /**
+   * §8.1's halt: one phase change, one card, one event, and no further turns.
+   *
+   * "**Running sessions are not killed by a halt** except `tool_flood`" — so
+   * nothing here stops a session; the one breaker that does calls
+   * {@link tripToolFlood}, which stops it before halting.
+   */
+  async function halt(row: AssignmentRow, haltReason: HaltReason): Promise<AdvanceOutcome> {
+    repository.setPhase(row.id, 'halted', haltReason);
+    const questionId = await raiseHaltCard(row, haltReason);
+    bus.emit({
+      type: 'assignment.halted',
+      ids: { assignmentId: row.id, projectId: row.projectId },
+      persist: true,
+      payload: { haltReason, questionId },
+    });
+    log('warn', 'an assignment halted', { assignmentId: row.id, haltReason });
+    return { kind: 'halted', haltReason, questionId };
+  }
+
+  /**
+   * §8.1's `tool_flood`, the only breaker that also kills the session.
+   *
+   * The toolset refuses the call as it happens and signals here; this stops the
+   * session first and halts second, in that order, because a session left
+   * running past its own flood halt would keep calling the tool that refused it.
+   */
+  async function tripToolFlood(assignmentId: string, sessionId: string | undefined): Promise<void> {
+    const row = repository.get(assignmentId);
+    if (row === undefined || row.status !== 'open') return;
+    const active = turns.active(assignmentId);
+    const target = sessionId ?? active?.sessionId ?? undefined;
+    const runner = options.runner();
+    if (target !== undefined && hasLauncher(runner)) {
+      try {
+        await runner.stop(target, 'tool_flood: a per-session tool-call cap was exceeded');
+      } catch (error) {
+        log('warn', 'a flooded session could not be stopped', {
+          assignmentId,
+          sessionId: target,
+          error: String(error),
+        });
+      }
+    }
+    if (row.phase !== 'halted') await halt(row, 'tool_flood');
+  }
+
   async function act(state: AssignmentState, result: PlanResult): Promise<AdvanceOutcome> {
     const row = state.assignment;
 
     if (isTurnPlan(result)) return await launch(state, result);
 
-    if (isHalt(result)) {
-      repository.setPhase(row.id, 'halted', result.haltReason);
-      const questionId = await raiseHaltCard(row, result.haltReason);
-      bus.emit({
-        type: 'assignment.halted',
-        ids: { assignmentId: row.id, projectId: row.projectId },
-        persist: true,
-        payload: { haltReason: result.haltReason, questionId },
-      });
-      log('warn', 'an assignment halted', { assignmentId: row.id, haltReason: result.haltReason });
-      return { kind: 'halted', haltReason: result.haltReason, questionId };
-    }
+    if (isHalt(result)) return await halt(row, result.haltReason);
 
     if (isDone(result)) {
       if (result.closeReason === 'round_cap') {
@@ -586,6 +673,10 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
         status,
         ...(output === null ? {} : { outputText: output }),
         ...(artifactHash === null ? {} : { artifactHash }),
+        // §8.1's `tool_denials` input, written where it can be re-derived from.
+        ...(typeof payload.permissionDenials === 'number'
+          ? { permissionDenials: payload.permissionDenials }
+          : {}),
       });
       emitTurnEnded(row, completed, sessionStatus, exitReason, payload.permissionDenials);
 
@@ -729,57 +820,19 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
   // Cards
   // -------------------------------------------------------------------------
 
-  async function raiseCard(
-    row: AssignmentRow,
-    card: {
-      readonly kind: 'question' | 'approval_gate' | 'budget_halt';
-      readonly prompt: string;
-      readonly options: readonly { readonly id: string; readonly label: string }[];
-      readonly marker: string;
-    },
-  ): Promise<string> {
-    const inbox = options.inbox();
-    if (inbox === undefined) return '';
-
-    // Exactly one card per halt (§8.1): an assignment that halts, is advanced and
-    // halts again must not accumulate identical cards in the inbox.
-    const existing = inbox
-      .list({ assignmentId: row.id, status: 'open' })
-      .find((open) => open.context?.toolName === card.marker);
-    if (existing !== undefined) return existing.id;
-
-    const now = options.clock().getTime();
-    let raised = '';
-    // The engine never awaits an answer: `ask()` resolves when the user answers,
-    // which may be hours away, and `onRaised` is the hook that hands back the id
-    // at raise time (`questions.ts`).
-    void inbox
-      .ask({
-        // The engine is not a session; §16-2 attributes an engine-raised card to
-        // "AgentManager", never to an agent.
-        sessionId: null,
-        assignmentId: row.id,
-        agentId: row.leadAgentId ?? '',
-        kind: card.kind,
-        prompt: card.prompt,
-        options: card.options.map((option) => ({ id: option.id, label: option.label })),
-        multiSelect: false,
-        allowFreeText: true,
-        holdUntil: new Date(now).toISOString(),
-        expiresAt: new Date(now + options.expireHours * 3_600_000).toISOString(),
-        context: { toolName: card.marker, toolInput: { assignmentId: row.id } },
-        onRaised: (questionId) => {
-          raised = questionId;
+  function raiseCard(row: AssignmentRow, card: CardSpec): Promise<string> {
+    return raiseEngineCard(
+      {
+        inbox: options.inbox(),
+        clock: options.clock,
+        expireHours: options.expireHours,
+        log: (message, detail) => {
+          log('warn', message, detail);
         },
-      })
-      .catch((error: unknown) => {
-        log('warn', 'a card could not be raised', { assignmentId: row.id, error: String(error) });
-      });
-    // `ask()` writes the row on its first microtask; one turn of the queue is all
-    // that is needed to have the id, and waiting for the *answer* would hang.
-    await Promise.resolve();
-    await Promise.resolve();
-    return raised;
+      },
+      row,
+      card,
+    );
   }
 
   function raiseRoundCapCard(row: AssignmentRow, summary: string): Promise<string> {
@@ -841,6 +894,21 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
 
     if (marker === ROUND_CAP_CARD) {
       await onRoundCapAnswer(assignmentId, card?.answer?.optionIds ?? []);
+      return;
+    }
+    if (typeof marker === 'string' && marker.startsWith(GATE_CARD_PREFIX)) {
+      const chose = card?.answer?.optionIds ?? [];
+      // §8.2: "It never auto-approves." Anything that is not an explicit
+      // approval — a denial, a free-text answer, an empty one — is a denial.
+      if (!chose.includes('approve')) {
+        await options.service().closeAssignment(assignmentId, 'gate_denied');
+        return;
+      }
+      const row = repository.get(assignmentId);
+      if (row !== undefined && row.phase === 'planned') {
+        repository.setPhase(assignmentId, 'running', null);
+      }
+      await advance(assignmentId, { manual: true }).catch(() => undefined);
       return;
     }
     if (typeof marker === 'string' && marker.startsWith(HALT_CARD_PREFIX)) {
@@ -921,10 +989,165 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
         repository.setPhase(assignmentId, 'awaiting_user', null);
         log('info', 'an assignment is awaiting a budget decision', { assignmentId });
       }),
+      // §2.6's second source: projects emits this when two assignments land in
+      // one workspace. Same behaviour as the creation-time scan — record it,
+      // warn, and gate only when both sides can write.
+      bus.subscribe(['project.scope.overlap'], (event) => {
+        void onScopeOverlap(event).catch((error: unknown) => {
+          log('warn', 'the engine could not record a scope overlap', { error: String(error) });
+        });
+      }),
     ];
     return () => {
       for (const unsubscribe of unsubscribes) unsubscribe();
     };
+  }
+
+  /**
+   * §16-9's candidate ranking, per seat.
+   *
+   * Eligibility is the seat's declared roles ∩ the agent's — the same rule §9-5
+   * refuses on, so the dialog cannot offer a choice the validator would reject.
+   * Order is available first, then fewest open assignments, then name: the
+   * agent most able to take the work, at the top.
+   */
+  function candidatesFor(
+    pattern: PatternDef,
+    entries: readonly OverseerRosterEntryPort[],
+  ): Record<string, readonly SeatCandidate[]> {
+    const limit = config.assignment.maxConcurrentPerAgent;
+    const bySeat: Record<string, readonly SeatCandidate[]> = {};
+    for (const seat of pattern.seats) {
+      bySeat[seat.key] = entries
+        .filter((entry) =>
+          entry.capabilities.roles.some((role) => (seat.roles as readonly string[]).includes(role)),
+        )
+        .map((entry) => {
+          const openAssignments = repository.countOpenForAgent(entry.id);
+          return {
+            agentId: entry.id,
+            name: entry.name,
+            roles: entry.capabilities.roles,
+            openAssignments,
+            available: openAssignments < limit,
+          };
+        })
+        .sort((a, b) => {
+          if (a.available !== b.available) return a.available ? -1 : 1;
+          if (a.openAssignments !== b.openAssignments) return a.openAssignments - b.openAssignments;
+          return a.agentId.localeCompare(b.agentId);
+        });
+    }
+    return bySeat;
+  }
+
+  // -------------------------------------------------------------------------
+  // M7-3/M7-4 — gates and conflicts
+  // -------------------------------------------------------------------------
+
+  /**
+   * §2.6 source 2, and §8.2-4's gate.
+   *
+   * Projects reports the overlap; this element decides what it means, and the
+   * decision is the same table §2.6 states for the creation-time scan. Two
+   * readers cannot collide, so nothing is raised for them; one writer warns; two
+   * writers get a card *before* the second assignment's first turn.
+   */
+  async function onScopeOverlap(event: AppEvent): Promise<void> {
+    const payload = (event.payload ?? {}) as {
+      assignmentId?: unknown;
+      otherAssignmentId?: unknown;
+      paths?: unknown;
+    };
+    const assignmentId =
+      event.ids.assignmentId ??
+      (typeof payload.assignmentId === 'string' ? payload.assignmentId : undefined);
+    const otherId =
+      typeof payload.otherAssignmentId === 'string' ? payload.otherAssignmentId : undefined;
+    if (assignmentId === undefined || otherId === undefined) return;
+    const row = repository.get(assignmentId);
+    const other = repository.get(otherId);
+    if (row === undefined || other === undefined || row.status !== 'open') return;
+    const paths = Array.isArray(payload.paths)
+      ? payload.paths.filter((path): path is string => typeof path === 'string')
+      : [];
+    await recordConflict(row, other.id, other.write, paths);
+  }
+
+  /** The one place §2.6's table is applied, whichever source found the overlap. */
+  async function recordConflict(
+    row: AssignmentRow,
+    otherAssignmentId: string,
+    otherWrite: boolean,
+    paths: readonly string[],
+  ): Promise<void> {
+    const bothWrite = row.write && otherWrite;
+    if (!row.write && !otherWrite) return; // "Recorded, no warning. Two readers cannot collide."
+
+    bus.emit({
+      type: 'assignment.conflict',
+      ids: { assignmentId: row.id, projectId: row.projectId },
+      persist: true,
+      payload: { otherAssignmentId, paths, bothWrite },
+    });
+    if (!bothWrite) return;
+
+    // §2.6/§8.2-4: the one case where two agents can actually corrupt each
+    // other's diff, so a human sees it first and no turn is planned until then.
+    if (row.phase === 'running' || row.phase === 'planned') {
+      repository.setPhase(row.id, 'planned', null);
+    }
+    await raiseCard(row, {
+      kind: 'approval_gate',
+      prompt:
+        `This assignment's write scope overlaps open write-capable assignment ${otherAssignmentId}` +
+        `${paths.length === 0 ? '' : ` on ${paths.join(', ')}`}. Two writers in one tree can ` +
+        'corrupt each other’s diff. Approve it anyway, or deny and close it?',
+      options: [...GATE_OPTIONS],
+      marker: `${GATE_CARD_PREFIX}scope_overlap`,
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // M7-5 — the staleness sweep
+  // -------------------------------------------------------------------------
+
+  /**
+   * §8.1's `stale`: an `open` assignment with no turn transition for
+   * `assignment.maxAgeHours`.
+   *
+   * A *sweep* rather than a pre-`plan()` check, because the wedge it catches is
+   * precisely the assignment nothing is advancing — there is no next `plan()` to
+   * hang the check off. Assignments already waiting on a human are skipped: a
+   * card that has been open for a day is the user's to answer, not a second
+   * halt to raise on top of it.
+   */
+  async function sweepStale(): Promise<readonly string[]> {
+    const halted: string[] = [];
+    const nowMs = options.clock().getTime();
+    for (const row of repository.list({ status: 'open' })) {
+      if (row.phase === 'halted' || row.phase === 'awaiting_user') continue;
+      const rows = turns.list(row.id);
+      const live = rows.some((turn) => turn.status === 'planned' || turn.status === 'running');
+      if (live) continue;
+      const trip = evaluateBreakers({
+        assignment: row,
+        turns: rows,
+        config,
+        nowMs,
+        includeStale: true,
+      });
+      if (trip?.breaker !== 'stale') continue;
+      await withLock(row.id, async () => {
+        // Re-read under the lock: an advance that landed between the scan and
+        // the halt has already moved the assignment on.
+        const fresh = repository.get(row.id);
+        if (fresh === undefined || fresh.status !== 'open' || fresh.phase === 'halted') return;
+        await halt(fresh, 'stale');
+        halted.push(fresh.id);
+      });
+    }
+    return halted;
   }
 
   // -------------------------------------------------------------------------
@@ -969,9 +1192,17 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     advance,
     attach,
     reconcileOnBoot,
+    sweepStale,
+    tripToolFlood: (assignmentId, sessionId) => tripToolFlood(assignmentId, sessionId),
     turns: (assignmentId) => turns.list(assignmentId),
-    patterns: () =>
-      PATTERNS.map((pattern): PatternSummary => {
+    patterns: () => {
+      // Read once for the whole reply: `GET /api/patterns` is the create
+      // dialog's first call and a per-seat roster read would repeat the same
+      // projection for every seat of every pattern.
+      const roster = options.roster?.();
+      const entries = hasOverseerRoster(roster) ? roster.overseerRoster() : undefined;
+
+      return PATTERNS.map((pattern): PatternSummary => {
         const pair = pattern.id === 'pair';
         return {
           id: pattern.id,
@@ -988,8 +1219,10 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
           },
           maxRoundCap: pair ? config.patterns.pair.maxRoundCap : null,
           cardSeatOrder: cardSeatOrder(pattern.id),
+          ...(entries === undefined ? {} : { candidates: candidatesFor(pattern, entries) }),
         };
-      }),
+      });
+    },
   };
 }
 
@@ -1000,24 +1233,6 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
 function isEngineCard(context: { toolName?: string } | null | undefined): boolean {
   const name = context?.toolName;
   return name === ROUND_CAP_CARD || (typeof name === 'string' && name.startsWith(HALT_CARD_PREFIX));
-}
-
-function trailingFailures(rows: readonly TurnRow[]): number {
-  let count = 0;
-  for (const turn of [...rows].reverse()) {
-    if (turn.status !== 'failed') break;
-    count += 1;
-  }
-  return count;
-}
-
-function unstructuredBySeat(rows: readonly TurnRow[]): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const turn of rows) {
-    if (turn.status !== 'unstructured') continue;
-    counts[turn.seat] = (counts[turn.seat] ?? 0) + 1;
-  }
-  return counts;
 }
 
 /** The last `assistant` text in a transcript page, if there is one. */

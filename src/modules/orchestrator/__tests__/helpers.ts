@@ -16,13 +16,23 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { findInstallRoot } from '../../../config/index.js';
+import { Secret, type SecretResolver } from '../../../secrets/index.js';
 import { openStorage, type Storage } from '../../../storage/index.js';
 import { createEventBus } from '../../bus.js';
 import type { AppEvent, EventBus } from '../../types.js';
+import {
+  applyBudgetCardPolicy,
+  createBudgetPolicy,
+  BUDGET_RAISE_GATE,
+  type BudgetPolicy,
+} from '../budgets.js';
+import { raiseCard, GATE_OPTIONS } from '../cards.js';
 import { ORCHESTRATOR_CONFIG_DEFAULTS, type OrchestratorConfig } from '../config.js';
 import { createConversationReader, type ConversationView } from '../conversation.js';
 import { createPatternEngine, type PatternEngine } from '../engine.js';
 import { createMailboxRepository, type MailboxRepository } from '../messages.js';
+import { createNotifier, type Notifier, type NotifyTimers } from '../notify.js';
+import { createFleetStatusReader, type FleetStatus } from '../status.js';
 import type {
   ProjectsPort,
   ResolvedAgentPort,
@@ -77,6 +87,10 @@ export interface FakeAgent {
   readonly roles?: readonly AssignmentRole[];
   readonly overseer?: boolean;
   readonly archived?: boolean;
+  /** Roster §11's projection fields, for `list_roster`'s filters. */
+  readonly specialty?: string;
+  readonly tagline?: string;
+  readonly tags?: readonly string[];
 }
 
 /** A roster whose registry answers from a table. */
@@ -89,15 +103,70 @@ export function fakeRoster(agents: readonly FakeAgent[]): RosterPort {
     },
     archivedAt: agent.archived === true ? '2026-08-01T00:00:00.000Z' : null,
   });
-  const live = new Map(agents.filter((a) => a.archived !== true).map((a) => [a.id, resolve_(a)]));
+  const live = agents.filter((a) => a.archived !== true);
+  const liveById = new Map(live.map((a) => [a.id, resolve_(a)]));
   const archived = new Map(
     agents.filter((a) => a.archived === true).map((a) => [a.id, resolve_(a)]),
   );
   return {
     registry: {
-      get: (id) => live.get(id),
+      get: (id) => liveById.get(id),
       getArchived: (id) => archived.get(id),
     },
+    // Roster §11's projection, structurally — the shape `list_roster` consumes,
+    // credential-free by construction because there is nothing else to leak.
+    overseerRoster: () =>
+      live.map((agent) => ({
+        id: agent.id,
+        name: agent.name ?? agent.id,
+        specialty: agent.specialty ?? 'general',
+        tagline: agent.tagline ?? null,
+        tags: agent.tags ?? [],
+        capabilities: {
+          overseer: agent.overseer ?? false,
+          roles: agent.roles ?? ['implementer'],
+        },
+      })),
+  };
+}
+
+/** A secret store that answers from a table — foundation's `SecretResolver`. */
+export function fakeSecrets(values: Record<string, string>): SecretResolver {
+  return {
+    get: (key) => Promise.resolve(key in values ? new Secret(values[key] ?? '') : undefined),
+  };
+}
+
+/**
+ * Timers a test drives by hand.
+ *
+ * `run()` fires everything armed so far, which is what makes §10's 60-second
+ * delay and M7-5's quarter-of-a-day sweep testable without either of them
+ * happening.
+ */
+export interface FakeTimers extends NotifyTimers {
+  /** Fires every armed callback, oldest first, and awaits each. */
+  run(): Promise<void>;
+  pending(): number;
+}
+
+export function fakeTimers(): FakeTimers {
+  let next = 0;
+  const armed = new Map<number, () => void | Promise<void>>();
+  return {
+    after(_ms, fn) {
+      const id = (next += 1);
+      armed.set(id, fn);
+      return () => {
+        armed.delete(id);
+      };
+    },
+    async run() {
+      const due = [...armed.entries()];
+      armed.clear();
+      for (const [, fn] of due) await fn();
+    },
+    pending: () => armed.size,
   };
 }
 
@@ -223,6 +292,15 @@ export interface Harness {
   /** §4.1's per-launch toolset factory. */
   readonly toolset: ToolsetFactory;
   readonly conversation: (assignmentId: string) => ConversationView;
+  /** §11.3's fleet view (M9). */
+  readonly fleetStatus: () => FleetStatus;
+  /** §7.3's policy (M3). */
+  readonly budgets: BudgetPolicy;
+  /** §10's channel (M8), wired to {@link Harness.timers} and a fake `fetch`. */
+  readonly notifier: Notifier;
+  /** Every ntfy POST the notifier attempted, in order. */
+  readonly posts: { url: string; body: string; headers: Record<string, string> }[];
+  readonly timers: FakeTimers;
   readonly bus: EventBus;
   readonly events: AppEvent[];
   readonly runner: FakeRunner;
@@ -251,7 +329,16 @@ export interface HarnessOptions {
   readonly workspaceCwd?: string;
   /** Attaches the engine's bus subscriptions, exactly as `module.ts` does. */
   readonly attachEngine?: boolean;
+  /** The secrets a test's notifier can resolve. Defaults to a working topic. */
+  readonly secrets?: Record<string, string>;
+  /** Makes every ntfy POST fail, for M8's degraded-channel acceptance. */
+  readonly notifyFails?: boolean;
+  /** Attaches the notifier's bus subscriptions, as `module.ts` does. */
+  readonly attachNotifier?: boolean;
 }
+
+/** The topic URL the harness's fake secret store answers with. */
+export const NTFY_TOPIC = 'https://ntfy.example/agentmanager-test';
 
 export const PROJECT_ID = 'proj-1';
 
@@ -341,7 +428,8 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
 
   const config: OrchestratorConfig = { ...ORCHESTRATOR_CONFIG_DEFAULTS, ...options.config };
 
-  const built: { inbox?: QuestionInbox; toolset?: ToolsetFactory } = {};
+  const roster = fakeRoster(options.agents ?? [{ id: 'ada', roles: ['implementer'] }]);
+  const built: { inbox?: QuestionInbox; toolset?: ToolsetFactory; engine?: PatternEngine } = {};
   const serviceOptions: AssignmentServiceOptions = {
     repository,
     sessions: storage.store.sessions,
@@ -350,13 +438,33 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     config,
     moduleEnabled: options.moduleEnabled ?? true,
     clock,
-    roster: () => fakeRoster(options.agents ?? [{ id: 'ada', roles: ['implementer'] }]),
+    expireHours: options.expireHours ?? 24,
+    roster: () => roster,
     projects: () => projects,
     runner: () => runner,
     inbox: () => built.inbox,
     toolset: () => built.toolset,
   };
   const service = createAssignmentService(serviceOptions);
+
+  const gates: { assignmentId: string; tokens: number }[] = [];
+  const budgets = createBudgetPolicy({
+    repository,
+    service: () => service,
+    bus,
+    config,
+    raiseGate: (row, requested) => {
+      gates.push({ assignmentId: row.id, tokens: requested });
+      void raiseCard({ inbox: built.inbox, clock, expireHours: options.expireHours ?? 24 }, row, {
+        kind: 'approval_gate',
+        prompt: `Raise this assignment's budget to ${String(requested)} tokens?`,
+        options: GATE_OPTIONS,
+        marker: BUDGET_RAISE_GATE,
+        toolInput: { assignmentId: row.id, tokens: requested },
+      });
+      return '';
+    },
+  });
 
   // Built after the service, exactly as `module.ts` builds it, because §6.5's
   // expiry consequences call back into `closeAssignment`.
@@ -367,6 +475,10 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     clock,
     joinWindowMs: config.questions.joinWindowMs,
     expireHours: options.expireHours ?? 24,
+    cardPolicy: applyBudgetCardPolicy,
+    onAnswered: (card) => {
+      budgets.onAnswered(card);
+    },
     onExpiredGate: (assignmentId, reason) => {
       void service.closeAssignment(assignmentId, reason);
     },
@@ -384,6 +496,11 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     clock,
     config,
     inbox: () => built.inbox,
+    service: () => service,
+    roster: () => roster,
+    onCapExceeded: (launch) => {
+      void built.engine?.tripToolFlood(launch.assignmentId, launch.sessionId);
+    },
     // Short by default: §4.4's hold is 15 minutes in production, and a test that
     // waited for it would be a test nobody runs.
     holdMs: options.holdMs ?? 5,
@@ -400,11 +517,13 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     inbox: () => built.inbox,
     runner: () => runner,
     projects: () => projects,
+    roster: () => roster,
     bus,
     clock,
     config,
     expireHours: options.expireHours ?? 24,
   });
+  built.engine = engine;
   const detach = options.attachEngine === false ? () => {} : engine.attach();
 
   const conversation = createConversationReader({
@@ -414,6 +533,38 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     inbox: () => built.inbox,
     config,
   });
+
+  const fleetStatus = createFleetStatusReader({
+    repository,
+    turns,
+    sessions: storage.store.sessions,
+    inbox: () => built.inbox,
+    roster: () => roster,
+  });
+
+  const timers = fakeTimers();
+  const posts: { url: string; body: string; headers: Record<string, string> }[] = [];
+  const notifier = createNotifier({
+    config,
+    inbox: () => built.inbox,
+    secrets: fakeSecrets(options.secrets ?? { 'notify.ntfy.topicUrl': NTFY_TOPIC }),
+    bus,
+    clock,
+    baseUrl: () => 'https://box.tailnet.ts.net',
+    timers,
+    fetch: (input, init) => {
+      const body = init?.body;
+      posts.push({
+        url: input instanceof URL ? input.href : typeof input === 'string' ? input : input.url,
+        body: typeof body === 'string' ? body : '',
+        headers: (init?.headers ?? {}) as Record<string, string>,
+      });
+      return Promise.resolve(
+        new Response(null, { status: options.notifyFails === true ? 502 : 200 }),
+      );
+    },
+  });
+  const detachNotifier = options.attachNotifier === false ? () => {} : notifier.attach();
 
   return {
     storage,
@@ -425,6 +576,11 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     engine,
     toolset,
     conversation,
+    fleetStatus,
+    budgets,
+    notifier,
+    posts,
+    timers,
     bus,
     events,
     runner,
@@ -436,6 +592,7 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     },
     cleanup: () => {
       detach();
+      detachNotifier();
       storage.close();
       dir.cleanup();
     },

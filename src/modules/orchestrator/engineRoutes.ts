@@ -1,10 +1,11 @@
 /**
- * The three routes the pattern engine adds to §11.1's table.
+ * The four routes the pattern engine adds to §11.1's table.
  *
  * ```
  * GET  /api/patterns                       pattern definitions, seats, defaults  (M5-1)
  * POST /api/assignments/:id/advance        plan the next turn now                (M5-2)
  * GET  /api/assignments/:id/conversation   the readable pair transcript          (M6-6)
+ * GET  /api/orchestrator/status            the fleet view                        (M9-1)
  * ```
  *
  * A separate file from `routes.ts` for the reason `questionRoutes.ts` is separate:
@@ -26,12 +27,15 @@ import type { RouteDefinition } from '../types.js';
 import type { ConversationView } from './conversation.js';
 import type { PatternEngine } from './engine.js';
 import { OrchestratorError } from './errors.js';
+import type { FleetStatus } from './status.js';
 import type { AssignmentService } from './types.js';
 
 export interface EngineRoutesDeps {
   readonly engine: PatternEngine;
   readonly service: AssignmentService;
   readonly conversation: (assignmentId: string) => ConversationView;
+  /** §11.3's fleet view (M9-1). */
+  readonly fleetStatus: () => FleetStatus;
   readonly logger: Logger;
 }
 
@@ -79,6 +83,13 @@ export function createEngineRoutes(deps: EngineRoutesDeps): readonly RouteDefini
           // its own request produced.
           return res.json({ outcome, assignment: service.get(id) });
         }),
+    },
+    {
+      method: 'GET',
+      path: '/api/orchestrator/status',
+      description: 'What every agent is doing: the fleet view (§11.3)',
+      handler: (req, res) =>
+        answering(req, res, () => Promise.resolve(res.json(deps.fleetStatus()))),
     },
     {
       method: 'GET',

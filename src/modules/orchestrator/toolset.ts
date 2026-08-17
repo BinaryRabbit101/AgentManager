@@ -1,30 +1,38 @@
 /**
- * The in-process MCP toolset — DESIGN §4, and **the minimum of IMPLEMENTATION M4
- * that M5 and M6 cannot be proved without**.
+ * The in-process MCP toolset — DESIGN §4, IMPLEMENTATION M4 **complete**.
  *
- * ## Why part of M4 is here at all
+ * ## The six tools, and which launch sees which
  *
- * M6's convergence rule reads `report_status`'s structured `verdict` (§3.3), and
- * its acceptance scenario is "the skeptic critiques it with blocking issues …
- * the skeptic accepts". There is no other channel: "the engine never parses prose
- * for a verdict. A turn either reported structurally or it did not." Likewise
- * §3.2's prompt inlines unread mail, which needs a mailbox agents can actually
- * write to. So four tools land here:
+ * Four of them landed with M5/M6, because the pair's convergence rule reads
+ * `report_status`'s structured `verdict` (§3.3) and has no other channel: "the
+ * engine never parses prose for a verdict." M4 closes the set with the two
+ * §4.1's table reserves for an overseer:
  *
- * | Built now | Why |
- * |---|---|
- * | `report_status` | the convergence rule's only input (§3.3, M6-3) |
- * | `send_to_agent` | inter-agent handoffs in the pair (§5, M6's conversation) |
- * | `read_mailbox` | the other half of the mailbox the prompt advertises (§3.2-4) |
- * | `request_user_decision` | §6.4's stance solicitation, which M6-5 requires |
+ * | Tool | Overseer | Worker |
+ * |---|---|---|
+ * | `list_roster` | ✔ | ✖ |
+ * | `create_assignment` | ✔ | ✖ |
+ * | `send_to_agent` | ✔ | ✔ (own assignment) |
+ * | `read_mailbox` | ✔ | ✔ (own assignment) |
+ * | `report_status` | ✔ | ✔ |
+ * | `request_user_decision` | ✔ | ✔ |
  *
- * **Left to M4, deliberately**: `list_roster` and `create_assignment` (both
- * overseer-only, and v1 ships no overseer pattern — §8.2 notes their gate "does
- * not fire in the v1 slice at all"), and §4.2's per-session call caps as breaker
- * *inputs*, which are M7's counters. The caps themselves are enforced here
- * because a tool loop is exactly the runaway a cap exists to stop; what is
- * missing is the halt they should trip, and that absence is stated rather than
- * faked.
+ * The split is enforced **twice, on purpose**: roster compiles allow rules for
+ * exactly the names a capability earns (roster §11), and the server built for a
+ * worker launch does not construct the two overseer tools at all. Neither is
+ * redundant — a rule is a statement about a tool that exists, and a tool absent
+ * from an instance cannot be called even by a launch whose rules were composed
+ * wrongly.
+ *
+ * ## The caps are the breaker's teeth, not its bookkeeping
+ *
+ * §4.2's per-session caps — `messagesPerTurn`, `maxAssignmentsPerSession`,
+ * `maxDecisionsPerSession` — refuse the call *and* trip §8.1's `tool_flood`,
+ * "because a tool loop is exactly the runaway shape circuit breakers exist for".
+ * The refusal is immediate and local; the halt is the engine's, reached through
+ * {@link ToolsetOptions.onCapExceeded}, because §8.1 says `tool_flood` is the
+ * one breaker that also stops the running session and only the engine may do
+ * that (R6).
  *
  * ## One server instance per launch, and that is load-bearing
  *
@@ -50,22 +58,31 @@ import type { EventBus } from '../types.js';
 import type { Clock } from '../../storage/index.js';
 
 import type { OrchestratorConfig } from './config.js';
+import { AssignmentRefusedError } from './errors.js';
 import type { MailboxRepository } from './messages.js';
+import { hasOverseerRoster, type RosterPort } from './ports.js';
 import type { QuestionInbox } from './questions.js';
 import { QUESTION_STRENGTHS } from './questions.js';
 import type { AssignmentRepository } from './repository.js';
 import { isReportState, type TurnRepository, type TurnReport, type TurnVerdict } from './turns.js';
-import type { AssignmentRole } from './types.js';
+import { ASSIGNMENT_ROLES, type AssignmentRole, type AssignmentService } from './types.js';
 
 /** DESIGN §4.1: the record key roster mounts the toolset under. */
 export const TOOLSET_SERVER_KEY = 'agentmanager';
 
-/** R1b's worker grant. The two overseer tools are M4's (see the file header). */
+/** R1b's worker grant: four, and none of them creates work or reveals the roster. */
 export const WORKER_TOOL_NAMES = [
   'send_to_agent',
   'read_mailbox',
   'report_status',
   'request_user_decision',
+] as const;
+
+/** §4.1's overseer column — the worker four plus the coordinator's two. */
+export const OVERSEER_TOOL_NAMES = [
+  'list_roster',
+  'create_assignment',
+  ...WORKER_TOOL_NAMES,
 ] as const;
 
 export interface LaunchIdentity {
@@ -85,6 +102,12 @@ export const TOOL_REFUSAL_CODES = [
   'no_active_turn',
   'rate_limited',
   'invalid_arguments',
+  /** The caller's launch is not an overseer's — §4.1's table, enforced in the tool. */
+  'not_an_overseer',
+  /** §9's validator refused; the refusals ride in `detail`, named rule by rule. */
+  'refused',
+  /** A capability this build does not have (roster's projection, the service). */
+  'unavailable',
 ] as const;
 
 export type ToolRefusalCode = (typeof TOOL_REFUSAL_CODES)[number];
@@ -133,6 +156,28 @@ export interface ToolsetOptions {
   readonly config: OrchestratorConfig;
   /** Resolved lazily — the inbox is built after the service that owns it. */
   readonly inbox: () => QuestionInbox | undefined;
+  /**
+   * The assignment service, for `create_assignment` (§4.3).
+   *
+   * Lazy and by reference for the same reason the inbox is: the toolset is built
+   * after the service and the service holds the toolset factory. Going through
+   * the service rather than the repository is the whole point of §9 — "every
+   * proposal passes through the same `createAssignment` validator as a human's".
+   */
+  readonly service?: (() => AssignmentService | undefined) | undefined;
+  /** Roster, for `list_roster` (§4.3). Resolved at call time, never at build. */
+  readonly roster?: (() => RosterPort | undefined) | undefined;
+  /**
+   * §8.1's `tool_flood`: a per-session cap was exceeded.
+   *
+   * The refusal happens here; the halt and the `RunnerService.stop` are the
+   * engine's, because it owns the assignment's phase and R6 makes stopping a
+   * session its call rather than a tool's.
+   */
+  readonly onCapExceeded?: (
+    launch: LaunchIdentity,
+    cap: 'messagesPerTurn' | 'maxAssignmentsPerSession' | 'maxDecisionsPerSession',
+  ) => void;
   /** `runner.question.holdMs`, **read** from runner's config rather than copied (§12). */
   readonly holdMs: number;
   /** `runner.question.expireHours`, likewise. */
@@ -202,6 +247,41 @@ const REQUEST_USER_DECISION_SHAPE = {
   allowFreeText: z.boolean().optional(),
 };
 
+const LIST_ROSTER_SHAPE = {
+  role: z.enum(ASSIGNMENT_ROLES as [AssignmentRole, ...AssignmentRole[]]).optional(),
+  specialty: z.string().optional(),
+  tag: z.string().optional(),
+  availableOnly: z.boolean().optional(),
+};
+
+const CREATE_ASSIGNMENT_SHAPE = {
+  pattern: z.enum(['solo', 'pair']),
+  goal: z.string().min(1),
+  members: z
+    .array(
+      z.object({
+        agentId: z.string().min(1),
+        role: z.enum(ASSIGNMENT_ROLES as [AssignmentRole, ...AssignmentRole[]]),
+      }),
+    )
+    .min(1),
+  scope: z
+    .object({
+      paths: z.array(z.string()).optional(),
+      description: z.string().optional(),
+      artifactPath: z.string().optional(),
+    })
+    .optional(),
+  write: z.boolean().optional(),
+  // §7.2: "**Any** assignment created by an overseer — required, non-null."
+  // Typed as required here as well as refused by §9-8, so the model is told what
+  // to send rather than being refused after guessing.
+  tokenBudget: z.number().int().positive(),
+  roundCap: z.number().int().positive().optional(),
+  workItemIds: z.array(z.string()).optional(),
+  autoStart: z.boolean().optional(),
+};
+
 // ---------------------------------------------------------------------------
 
 export function createToolsetFactory(options: ToolsetOptions): ToolsetFactory {
@@ -210,7 +290,8 @@ export function createToolsetFactory(options: ToolsetOptions): ToolsetFactory {
   return function getSessionToolset(launch: LaunchIdentity): SessionToolset {
     // Per-launch counters — §4.2's caps. In-process on purpose: they bound one
     // *session*, and a session does not outlive the process that runs it.
-    const used = { sends: 0, decisions: 0 };
+    const used = { sends: 0, decisions: 0, creates: 0 };
+    const overseer = launch.isOverseer === true;
 
     function ok(payload: unknown): ToolResult {
       return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
@@ -242,6 +323,56 @@ export function createToolsetFactory(options: ToolsetOptions): ToolsetFactory {
         ],
         isError: true,
       };
+    }
+
+    /**
+     * §4.2's `scopeOf(identity)`.
+     *
+     * ```
+     * worker:   exactly its own assignment.
+     * overseer: its own assignment + assignments whose parent is its own.
+     * ```
+     *
+     * Recomputed per call rather than closed over: an overseer that creates a
+     * child mid-turn must be able to read that child's mail on its next call,
+     * and a set captured at launch would not contain it.
+     */
+    function scopeOf(): ReadonlySet<string> {
+      if (!overseer) return new Set([launch.assignmentId]);
+      return new Set([
+        launch.assignmentId,
+        ...assignments.listChildren(launch.assignmentId).map((child) => child.id),
+      ]);
+    }
+
+    /** §4.1's table: the two coordinator tools refuse a worker launch by name. */
+    function overseerOnly(tool: string): ToolResult | undefined {
+      if (overseer) return undefined;
+      return refuse(
+        'not_an_overseer',
+        `${tool} is an overseer's tool and this session was not launched as one. Report what you ` +
+          'would have done and let the assignment’s lead act on it.',
+      );
+    }
+
+    /**
+     * §4.2's caps, in one place so every one of them both refuses *and* trips
+     * §8.1's `tool_flood`.
+     */
+    function capped(
+      cap: 'messagesPerTurn' | 'maxAssignmentsPerSession' | 'maxDecisionsPerSession',
+      current: number,
+      advice: string,
+    ): ToolResult | undefined {
+      const limit = config.breakers[cap];
+      if (current < limit) return undefined;
+      options.onCapExceeded?.(launch, cap);
+      return refuse(
+        'rate_limited',
+        `This session has reached its cap of ${String(limit)} (orchestrator.breakers.${cap}). ` +
+          advice,
+        { cap, limit },
+      );
     }
 
     /** Every scoped tool starts here (§4.2). */
@@ -384,16 +515,12 @@ export function createToolsetFactory(options: ToolsetOptions): ToolsetFactory {
       if (!parsed.success) {
         return refuse('invalid_arguments', parsed.error.issues.map((i) => i.message).join('; '));
       }
-      if (used.sends >= config.breakers.messagesPerTurn) {
-        // §4.2: exceeding a cap refuses the call. Tripping the breaker that
-        // should follow is M7's; the refusal is not deferred with it, because a
-        // tool loop that is merely *counted* still runs.
-        return refuse(
-          'rate_limited',
-          `This session has already sent ${String(config.breakers.messagesPerTurn)} messages, ` +
-            'which is its cap. Say what remains in your report instead.',
-        );
-      }
+      const flooded = capped(
+        'messagesPerTurn',
+        used.sends,
+        'Say what remains in your report instead.',
+      );
+      if (flooded !== undefined) return flooded;
 
       const broadcast = parsed.data.broadcast === true;
       const to = parsed.data.to;
@@ -461,14 +588,26 @@ export function createToolsetFactory(options: ToolsetOptions): ToolsetFactory {
         return refuse('invalid_arguments', parsed.error.issues.map((i) => i.message).join('; '));
       }
 
-      const messages = mailbox.mailbox(launch.agentId, {
-        // Scoped to `scopeOf(identity)`, which for a worker is exactly its own
-        // assignment — the whole point of the closed-over identity (§4.2).
-        assignmentId: launch.assignmentId,
-        unreadOnly: parsed.data.unreadOnly ?? true,
-        ...(parsed.data.limit === undefined ? {} : { limit: parsed.data.limit }),
-        ...(parsed.data.since === undefined ? {} : { since: parsed.data.since }),
-      });
+      // Scoped to `scopeOf(identity)` — for a worker exactly its own assignment,
+      // for an overseer its own plus its children (§4.2). The identity is closed
+      // over, so no argument can widen it.
+      const scope = [...scopeOf()];
+      const messages = scope
+        .flatMap((assignmentId) =>
+          mailbox.mailbox(launch.agentId, {
+            assignmentId,
+            unreadOnly: parsed.data.unreadOnly ?? true,
+            ...(parsed.data.since === undefined ? {} : { since: parsed.data.since }),
+          }),
+        )
+        // Oldest first across the whole scope, then the caller's own limit — a
+        // per-assignment limit would silently starve the second mailbox.
+        .sort((a, b) =>
+          a.createdAt === b.createdAt
+            ? a.id.localeCompare(b.id)
+            : a.createdAt.localeCompare(b.createdAt),
+        )
+        .slice(0, parsed.data.limit ?? Number.MAX_SAFE_INTEGER);
 
       if (parsed.data.markRead !== false) {
         for (const message of messages) mailbox.markRead(message.id, launch.agentId);
@@ -486,8 +625,14 @@ export function createToolsetFactory(options: ToolsetOptions): ToolsetFactory {
           body: message.body,
           payload: message.payload ?? null,
           createdAt: message.createdAt,
+          // Present only when it could be anything but the calling assignment,
+          // so a worker's result shape is exactly §4.3's.
+          ...(overseer ? { assignmentId: message.assignmentId } : {}),
         })),
-        unreadRemaining: mailbox.unreadCount(launch.agentId, launch.assignmentId),
+        unreadRemaining: scope.reduce(
+          (total, assignmentId) => total + mailbox.unreadCount(launch.agentId, assignmentId),
+          0,
+        ),
       });
     }
 
@@ -505,13 +650,12 @@ export function createToolsetFactory(options: ToolsetOptions): ToolsetFactory {
       if (!parsed.success) {
         return refuse('invalid_arguments', parsed.error.issues.map((i) => i.message).join('; '));
       }
-      if (used.decisions >= config.breakers.maxDecisionsPerSession) {
-        return refuse(
-          'rate_limited',
-          `This session has already raised ${String(config.breakers.maxDecisionsPerSession)} ` +
-            'decisions, which is its cap.',
-        );
-      }
+      const flooded = capped(
+        'maxDecisionsPerSession',
+        used.decisions,
+        'Decide what you can and record the rest in your report.',
+      );
+      if (flooded !== undefined) return flooded;
       const inbox = options.inbox();
       if (inbox === undefined) {
         return refuse(
@@ -536,6 +680,13 @@ export function createToolsetFactory(options: ToolsetOptions): ToolsetFactory {
           allowFreeText: parsed.data.allowFreeText ?? true,
           holdUntil: new Date(now + options.holdMs).toISOString(),
           expiresAt: new Date(now + options.expireHours * 3_600_000).toISOString(),
+          // The urgency rides on the card, because §10's `minLevel` reads it at
+          // notification time — long after this call returned — to decide
+          // whether a plain question is worth waking someone for.
+          context: {
+            toolName: 'mcp__agentmanager__request_user_decision',
+            toolInput: { urgency: parsed.data.urgency ?? 'advisory' },
+          },
           ...(recommendation === undefined
             ? {}
             : {
@@ -579,6 +730,166 @@ export function createToolsetFactory(options: ToolsetOptions): ToolsetFactory {
       });
     }
 
+    // -----------------------------------------------------------------------
+    // list_roster (§4.3) — overseer only
+    // -----------------------------------------------------------------------
+
+    async function listRoster(args: Readonly<Record<string, unknown>>): Promise<ToolResult> {
+      await Promise.resolve();
+      const wrongLaunch = overseerOnly('list_roster');
+      if (wrongLaunch !== undefined) return wrongLaunch;
+      const refused = guard();
+      if (refused !== undefined) return refused;
+
+      const parsed = z.object(LIST_ROSTER_SHAPE).safeParse(args);
+      if (!parsed.success) {
+        return refuse('invalid_arguments', parsed.error.issues.map((i) => i.message).join('; '));
+      }
+
+      const roster = options.roster?.();
+      if (!hasOverseerRoster(roster)) {
+        // Never fall back to the registry: it carries permissions, integrations
+        // and secret refs, and §4.3 is explicit that this tool "never returns"
+        // them. An honest refusal beats a projection built twice.
+        return refuse(
+          'unavailable',
+          'The roster cannot be read on this build, so there is nobody to delegate to. Work the ' +
+            'assignment you have.',
+        );
+      }
+
+      const limit = config.assignment.maxConcurrentPerAgent;
+      const availableOnly = parsed.data.availableOnly ?? true;
+      const agents = roster
+        .overseerRoster()
+        .map((entry) => {
+          const openAssignments = assignments.countOpenForAgent(entry.id);
+          return {
+            id: entry.id,
+            name: entry.name,
+            specialty: entry.specialty,
+            tagline: entry.tagline,
+            tags: entry.tags,
+            roles: entry.capabilities.roles,
+            overseer: entry.capabilities.overseer,
+            openAssignments,
+            available: openAssignments < limit,
+          };
+        })
+        .filter((entry) => {
+          if (parsed.data.role !== undefined && !entry.roles.includes(parsed.data.role))
+            return false;
+          if (parsed.data.specialty !== undefined && entry.specialty !== parsed.data.specialty) {
+            return false;
+          }
+          if (parsed.data.tag !== undefined && !entry.tags.includes(parsed.data.tag)) return false;
+          return !availableOnly || entry.available;
+        });
+
+      return ok({ agents });
+    }
+
+    // -----------------------------------------------------------------------
+    // create_assignment (§4.3, §9) — overseer only
+    // -----------------------------------------------------------------------
+
+    async function createAssignment(args: Readonly<Record<string, unknown>>): Promise<ToolResult> {
+      const wrongLaunch = overseerOnly('create_assignment');
+      if (wrongLaunch !== undefined) return wrongLaunch;
+      const refused = guard();
+      if (refused !== undefined) return refused;
+
+      const parsed = z.object(CREATE_ASSIGNMENT_SHAPE).safeParse(args);
+      if (!parsed.success) {
+        return refuse('invalid_arguments', parsed.error.issues.map((i) => i.message).join('; '));
+      }
+      const flooded = capped(
+        'maxAssignmentsPerSession',
+        used.creates,
+        'Finish or report on the work you have already created.',
+      );
+      if (flooded !== undefined) return flooded;
+
+      const service = options.service?.();
+      if (service === undefined) {
+        return refuse('unavailable', 'This build cannot create assignments.');
+      }
+      const parent = assignments.get(launch.assignmentId);
+      if (parent === undefined) {
+        return refuse('assignment_out_of_scope', 'Your own assignment could not be read.');
+      }
+
+      used.creates += 1;
+      try {
+        const result = await service.createAssignment({
+          // §9-2: the project is the caller's, never an argument. An overseer
+          // cannot reach across projects, and the way to guarantee that is to
+          // give it no way to say which project it means.
+          projectId: parent.projectId,
+          pattern: parsed.data.pattern,
+          goal: parsed.data.goal,
+          members: parsed.data.members.map((member) => ({
+            agentId: member.agentId,
+            role: member.role,
+          })),
+          ...(parsed.data.scope === undefined
+            ? {}
+            : {
+                scope: {
+                  paths: parsed.data.scope.paths ?? [],
+                  ...(parsed.data.scope.description === undefined
+                    ? {}
+                    : { description: parsed.data.scope.description }),
+                  ...(parsed.data.scope.artifactPath === undefined
+                    ? {}
+                    : { artifactPath: parsed.data.scope.artifactPath }),
+                },
+              }),
+          write: parsed.data.write ?? false,
+          tokenBudget: parsed.data.tokenBudget,
+          ...(parsed.data.roundCap === undefined ? {} : { roundCap: parsed.data.roundCap }),
+          ...(parsed.data.workItemIds === undefined
+            ? {}
+            : { workItemIds: parsed.data.workItemIds }),
+          ...(parsed.data.autoStart === undefined ? {} : { autoStart: parsed.data.autoStart }),
+          createdBy: `overseer:${launch.agentId}`,
+          parentAssignmentId: launch.assignmentId,
+        });
+
+        return ok({
+          assignmentId: result.assignmentId,
+          status: result.status,
+          phase: result.phase,
+          warnings: result.warnings.map((warning) => warning.message),
+          ...(result.gate === undefined
+            ? {}
+            : {
+                gate: {
+                  reason: result.gate.reason,
+                  note:
+                    'No session starts until a human approves this. Do not wait on it — report ' +
+                    'what you have and end your turn.',
+                },
+              }),
+        });
+      } catch (error) {
+        if (error instanceof AssignmentRefusedError) {
+          // [A4]: "a structured refusal teaches the agent rather than crashing
+          // the turn". Every §9 rule that fired is named, so one retry can fix
+          // all of them rather than discovering them one at a time.
+          return refuse(
+            'refused',
+            `The assignment was refused: ${error.refusals.map((one) => one.message).join(' ')}`,
+            { refusals: error.refusals.map((one) => ({ code: one.code, message: one.message })) },
+          );
+        }
+        return refuse(
+          'refused',
+          error instanceof Error ? error.message : 'The assignment could not be created.',
+        );
+      }
+    }
+
     const handlers = new Map<
       string,
       (args: Readonly<Record<string, unknown>>) => Promise<ToolResult>
@@ -587,6 +898,12 @@ export function createToolsetFactory(options: ToolsetOptions): ToolsetFactory {
       ['send_to_agent', sendToAgent],
       ['read_mailbox', readMailbox],
       ['request_user_decision', requestUserDecision],
+      ...(overseer
+        ? ([
+            ['list_roster', listRoster],
+            ['create_assignment', createAssignment],
+          ] as const)
+        : []),
     ]);
 
     // A fresh instance per launch — SDK-NOTES G2, and the basis of §4.2.
@@ -629,19 +946,50 @@ export function createToolsetFactory(options: ToolsetOptions): ToolsetFactory {
           REQUEST_USER_DECISION_SHAPE,
           (args) => requestUserDecision(args as Record<string, unknown>),
         ),
+        // §4.1's table, enforced by construction: a worker's instance does not
+        // contain these, so a mis-composed rule set still cannot reach them.
+        ...(overseer
+          ? [
+              tool(
+                'list_roster',
+                'List the agents you could delegate to: names, specialties, tags, the roles they ' +
+                  'declare, and how loaded they are. Never their credentials.',
+                LIST_ROSTER_SHAPE,
+                (args) => listRoster(args as Record<string, unknown>),
+                { annotations: { readOnlyHint: true } },
+              ),
+              tool(
+                'create_assignment',
+                'Create a child assignment on your own project: a pattern, members in named ' +
+                  'roles, a scope and a token budget taken from your remaining one. Every ' +
+                  'proposal passes the same rules a human’s does, and a write-capable one waits ' +
+                  'for a human to approve it.',
+                CREATE_ASSIGNMENT_SHAPE,
+                (args) => createAssignment(args as Record<string, unknown>),
+              ),
+            ]
+          : []),
       ],
     });
 
+    const exposed: readonly string[] = overseer ? [...OVERSEER_TOOL_NAMES] : [...WORKER_TOOL_NAMES];
+
     return {
       server,
-      toolNames: [...WORKER_TOOL_NAMES],
+      toolNames: exposed,
       call(name, args) {
         const handler = handlers.get(name);
         if (handler === undefined) {
+          // A worker naming an overseer tool is told *why* rather than that it
+          // does not exist: §4.2's whole argument is that an agent which learns
+          // the rule stops retrying.
+          if ((OVERSEER_TOOL_NAMES as readonly string[]).includes(name)) {
+            return Promise.resolve(refuse('not_an_overseer', `${name} is an overseer's tool.`));
+          }
           return Promise.resolve(
             refuse(
               'invalid_arguments',
-              `There is no ${name} tool in this build. Available: ${WORKER_TOOL_NAMES.join(', ')}.`,
+              `There is no ${name} tool in this build. Available: ${exposed.join(', ')}.`,
             ),
           );
         }

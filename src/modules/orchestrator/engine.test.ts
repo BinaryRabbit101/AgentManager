@@ -792,7 +792,7 @@ describe('the conversation view (M6-6, §11.2)', () => {
     );
   });
 
-  it('shows mail nobody ever saw as undelivered', async () => {
+  it('shows mail nobody ever saw as undeliverable once the assignment closed', async () => {
     const assignmentId = await makePair();
     await harness
       .toolset({ assignmentId, agentId: 'sam' })
@@ -800,8 +800,11 @@ describe('the conversation view (M6-6, §11.2)', () => {
     await harness.service.closeAssignment(assignmentId, 'user_closed');
 
     const entries = harness.conversation(assignmentId).rounds.flatMap((round) => round.entries);
+    // §5.1: "at assignment close, undelivered messages are marked
+    // `undeliverable`" — the assignment is closed, so there is no next turn at
+    // which the note could still arrive, and the UI must be able to say so.
     expect(entries.find((entry) => entry.type === 'message')).toMatchObject({
-      delivery: 'undelivered',
+      delivery: 'undeliverable',
     });
   });
 });

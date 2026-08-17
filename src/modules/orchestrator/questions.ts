@@ -304,6 +304,28 @@ export interface QuestionInboxOptions {
    */
   readonly onExpiredGate?: (assignmentId: string, reason: 'gate_expired') => void;
   readonly onExpiredBudget?: (assignmentId: string) => void;
+  /**
+   * Last chance to shape a card before its row is written (§7.3, M3-1).
+   *
+   * Runner raises the `budget_halt` *kind* and writes its prompt, because it
+   * knows the overshoot and which sessions are parked; **what the card offers is
+   * orchestrator's policy** (§7.1). This is where that is applied, rather than in
+   * runner, so the two elements keep the split §7.1 draws.
+   */
+  readonly cardPolicy?: (request: AskRequest) => AskRequest;
+  /**
+   * §7.3's ordering rule: **mutate the state the answer implies, then resolve
+   * the question.**
+   *
+   * Called synchronously by {@link QuestionInbox.answer} after the answer row is
+   * written and **before** any event is emitted or any `ask()` promise settles.
+   * The order is load-bearing rather than tidy: runner's auto-resume re-reads the
+   * `assignments` row the instant `question.answered` reaches it and refuses to
+   * resume a session with no budget headroom, and nothing re-triggers it
+   * afterwards. A raise applied one microtask later is a raise that arrives after
+   * the resume it exists to enable.
+   */
+  readonly onAnswered?: (card: QuestionCard) => void;
   readonly log?: (message: string, detail?: Record<string, unknown>) => void;
 }
 
@@ -500,11 +522,15 @@ export function createQuestionInbox(options: QuestionInboxOptions): QuestionInbo
     }
   }
 
-  function ask(request: AskRequest): Promise<QuestionOutcome> {
+  function ask(raw: AskRequest): Promise<QuestionOutcome> {
     return Promise.resolve().then(() => {
-      if (typeof request.prompt !== 'string' || request.prompt.trim() === '') {
+      if (typeof raw.prompt !== 'string' || raw.prompt.trim() === '') {
         throw new InvalidRequestError('A question needs a prompt.', 'prompt');
       }
+      // §7.3's card, and any other kind-specific shaping, applied before the
+      // join rule reads the options — a card whose options this element replaced
+      // must join against the options it will actually carry.
+      const request = options.cardPolicy?.(raw) ?? raw;
 
       const joined = findJoinTarget(request);
       if (joined !== undefined) {
@@ -625,6 +651,19 @@ export function createQuestionInbox(options: QuestionInboxOptions): QuestionInbo
       at,
     });
     const card = cardOf(record);
+
+    // §7.3: **mutate the state the answer implies, then resolve the question.**
+    // Synchronous and ahead of every emit below, because "resolving first races
+    // runner's auto-resume". A consequence that throws must not strand the
+    // answer — the row is already written and the asker is still waiting.
+    try {
+      options.onAnswered?.(card);
+    } catch (error) {
+      log('an answer consequence threw and was ignored', {
+        questionId,
+        error: String(error),
+      });
+    }
 
     const latencyMs = Math.max(0, new Date(at).getTime() - new Date(record.createdAt).getTime());
     const ids = {

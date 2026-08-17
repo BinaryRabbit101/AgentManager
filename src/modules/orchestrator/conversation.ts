@@ -53,7 +53,16 @@ export interface ConversationMessageEntry {
   readonly to: string | null;
   readonly kind: string;
   readonly body: string | null;
-  readonly delivery: Delivery;
+  /**
+   * §11.2's `inlined | read | undelivered`, plus §5.1's fourth reading.
+   *
+   * "At assignment close, undelivered messages are marked `undeliverable`" —
+   * which is this join rather than a stored state (see `messages.ts`): an
+   * undelivered message on an **open** assignment could still be seen at the
+   * recipient's next turn, and on a closed one there is no next turn. The UI has
+   * to tell those apart, so the endpoint tells it.
+   */
+  readonly delivery: Delivery | 'undeliverable';
   readonly createdAt: string;
 }
 
@@ -151,7 +160,10 @@ export function createConversationReader(
       });
     }
 
-    for (const message of messages) push(roundOf(message.createdAt), messageEntry(message));
+    const closed = row.status !== 'open';
+    for (const message of messages) {
+      push(roundOf(message.createdAt), messageEntry(message, closed));
+    }
 
     for (const card of cards) {
       push(roundOf(card.createdAt), {
@@ -186,7 +198,7 @@ export function createConversationReader(
   };
 }
 
-function messageEntry(message: MessageView): ConversationMessageEntry {
+function messageEntry(message: MessageView, assignmentClosed: boolean): ConversationMessageEntry {
   return {
     type: 'message',
     messageId: message.id,
@@ -194,7 +206,8 @@ function messageEntry(message: MessageView): ConversationMessageEntry {
     to: message.toAgentId,
     kind: message.kind,
     body: message.body,
-    delivery: message.delivery,
+    delivery:
+      assignmentClosed && message.delivery === 'undelivered' ? 'undeliverable' : message.delivery,
     createdAt: message.createdAt,
   };
 }
