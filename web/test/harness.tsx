@@ -25,6 +25,7 @@ import type {
   Project,
 } from '../src/api/types';
 import { AppServicesProvider, type BootFacts } from '../src/app/AppContext';
+import type { DesktopBridge } from '../src/app/bridge';
 import { EventStream } from '../src/events/EventStream';
 import type { SseConnection, SseHandlers, SseTransport } from '../src/events/sse';
 
@@ -225,6 +226,8 @@ export interface MountOptions {
   readonly sessionStream?: FakeStream;
   readonly boot?: BootFacts;
   readonly route?: string;
+  /** The Electron preload bridge (§1.5); absent means the browser build. */
+  readonly bridge?: DesktopBridge;
 }
 
 export interface Mounted extends RenderResult {
@@ -267,6 +270,7 @@ export function mount(ui: ReactElement, options: MountOptions = {}): Mounted {
           events,
           boot: options.boot ?? BOOT_FACTS,
           sessionTransport: sessionStream.transport,
+          ...(options.bridge === undefined ? {} : { bridge: options.bridge }),
         }}
       >
         <MemoryRouter initialEntries={[options.route ?? '/']}>{children}</MemoryRouter>

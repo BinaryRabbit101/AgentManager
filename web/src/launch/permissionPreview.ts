@@ -7,29 +7,24 @@
  * file asks that route and renders what comes back — it has no compiler, no
  * merge, and no fallback that invents a set.
  *
- * ## The gap this file exists to hold open
+ * ## The degrade this file used to hold open, now closed
  *
- * `POST /api/roster/agents/:id/validate` is **roster M8** and is not mounted
- * yet: roster's route table calls `/draft`, `/export`, `/import` and `/validate`
- * "deliberately absent rather than stubbed". Until it lands the preview cannot
- * be shown, and §3.5's rule — "never by probing for a 404" — is about
- * *capabilities the config declares*, not about a sibling milestone that has not
- * shipped, which no config flag describes. So the degrade is:
+ * `POST /api/roster/agents/:id/validate` was roster M8 and was not mounted when
+ * ui M3 shipped, so the panel degraded to one sentence — "permission preview
+ * available soon" — rather than guessing a set. The route has landed
+ * (roster `validate.test.ts` pins the `{ effective, diagnostics }` shape this
+ * file reads), so as of ui M8 there is no degrade: a refusal is a refusal and is
+ * shown with the server's own message.
  *
- * - ask once per agent × project;
- * - a `404` (or a `405`) means the route does not exist yet → the panel is
- *   replaced by one sentence, "permission preview available soon", and nothing
- *   is guessed;
- * - **the elevation banner keeps working regardless**, because it is read from
- *   the *project's* `defaults.permissionElevation` (`GET /api/projects/:id`) and
- *   from `policy.allowPermissionElevation`, neither of which is roster's. That is
- *   the half §6 says is "never collapsed", and it is the half that exists to
- *   prevent invisible privilege escalation — so it must not depend on M8.
+ * The elevation banner never depended on any of that and still does not: it is
+ * read from the *project's* `defaults.permissionElevation` and from
+ * `policy.allowPermissionElevation`, neither of which is roster's. That is the
+ * half §6 says is "never collapsed", and it is the half that exists to prevent
+ * invisible privilege escalation.
  *
- * **TODO(roster M8)**: when `/validate` is mounted, nothing above the
- * {@link fetchPermissionPreview} call changes — the route answering `200` is all
- * it takes to light the panel up. This is the single accessor; there is no other
- * caller.
+ * This is still **the** accessor — the launch flow (§6) and the agent detail
+ * page (§7.3) both come through it, because roster is the sole composer and two
+ * implementations of "what will this agent be allowed to do" is one too many.
  */
 
 import type { ApiClient } from '../api/client';
@@ -56,20 +51,18 @@ export type PermissionPreview =
       readonly effective: EffectivePermissions;
       readonly diagnostics: readonly Diagnostic[];
     }
-  /** The M8 gap: the route is not there. One sentence, no guess. */
-  | { readonly state: 'unavailable'; readonly note: string }
-  /** The route is there and refused. The server's message, verbatim (§3.1). */
+  /** Roster refused, or answered something that is not a compiled set. */
   | { readonly state: 'failed'; readonly message: string };
 
-export const PREVIEW_UNAVAILABLE_NOTE = 'permission preview available soon';
+/** What is said when a `200` carries no `effective` — a contract break, not a state. */
+export const PREVIEW_MALFORMED_NOTE =
+  'The core answered the permission preview without an effective set.';
 
 /**
  * The one accessor. `agentId` × `projectId` in, roster's compiled set out.
  *
- * A `404`/`405` is the not-yet-mounted case and is reported as `unavailable`
- * rather than as an error, because "the route does not exist in this build" and
- * "roster refused to compile this" are different facts and the second one is
- * worth interrupting a launch for.
+ * Every failure is a failure: "roster refused to compile this" is worth
+ * interrupting a launch for, and it is now the only thing a non-`200` can mean.
  */
 export async function fetchPermissionPreview(
   client: ApiClient,
@@ -84,7 +77,7 @@ export async function fetchPermissionPreview(
   if (result.kind === 'ok') {
     const value = result.value;
     if (value === undefined || value.effective === undefined) {
-      return { state: 'unavailable', note: PREVIEW_UNAVAILABLE_NOTE };
+      return { state: 'failed', message: PREVIEW_MALFORMED_NOTE };
     }
     return {
       state: 'ready',
@@ -93,9 +86,6 @@ export async function fetchPermissionPreview(
     };
   }
 
-  if (result.kind === 'error' && (result.status === 404 || result.status === 405)) {
-    return { state: 'unavailable', note: PREVIEW_UNAVAILABLE_NOTE };
-  }
   return { state: 'failed', message: result.message };
 }
 

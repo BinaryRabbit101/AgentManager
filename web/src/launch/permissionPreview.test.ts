@@ -1,12 +1,15 @@
 /**
  * The permission preview and the elevation banner (DESIGN §6, §13.5).
  *
- * The preview's route — `POST /api/roster/agents/:id/validate` — is **roster M8**
- * and is not mounted in this build. These are the assertions that make the
- * degrade a designed behaviour rather than an accident: the panel says one honest
- * sentence, the elevation banner is *unaffected* because it reads facts roster
- * does not own, and a real refusal from a mounted route is still reported as a
- * refusal rather than swallowed as "not available".
+ * The preview's route — `POST /api/roster/agents/:id/validate` — was roster M8
+ * and was not mounted when ui M3 shipped, so the panel degraded to one sentence.
+ * **ui M8 closes that**: the route exists, both callers (§6's launch flow and
+ * §7.3's agent page) come through this one accessor, and every non-`200` is now a
+ * refusal reported with the server's own message rather than a "not available
+ * yet".
+ *
+ * The elevation banner is unchanged and always was: it reads facts roster does
+ * not own, which is why it never depended on the route landing.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -17,7 +20,7 @@ import { ApiClient } from '../api/client';
 import {
   elevationBanner,
   fetchPermissionPreview,
-  PREVIEW_UNAVAILABLE_NOTE,
+  PREVIEW_MALFORMED_NOTE,
 } from './permissionPreview';
 
 function clientFor(respond: () => Response): { client: ApiClient; calls: string[] } {
@@ -61,27 +64,31 @@ describe('the preview asks roster and renders what roster says (§4)', () => {
   });
 });
 
-describe('the roster M8 gap degrades to one sentence, not to a guess', () => {
-  it('treats a 404 as "the route is not there yet"', async () => {
+describe('the degrade is closed: every failure is a failure (ui M8)', () => {
+  it('reports a 404 as a refusal with the server’s message, not as "coming soon"', async () => {
     const { client } = clientFor(() =>
-      json({ error: 'not_found', message: 'No such route.' }, 404),
+      json({ error: 'not_found', message: 'No such agent.' }, 404),
     );
-    expect(await fetchPermissionPreview(client, 'priya', 'lpm')).toEqual({
-      state: 'unavailable',
-      note: PREVIEW_UNAVAILABLE_NOTE,
+    expect(await fetchPermissionPreview(client, 'ghost', 'lpm')).toEqual({
+      state: 'failed',
+      message: 'No such agent.',
     });
-    expect(PREVIEW_UNAVAILABLE_NOTE).toBe('permission preview available soon');
   });
 
-  it('treats a 405 the same way, since a stub may answer method-not-allowed', async () => {
-    const { client } = clientFor(() => json({ error: 'method_not_allowed', message: 'No.' }, 405));
-    expect((await fetchPermissionPreview(client, 'priya', 'lpm')).state).toBe('unavailable');
-  });
-
-  it('never invents an effective set', async () => {
+  it('never invents an effective set, whatever comes back', async () => {
     const { client } = clientFor(() => json({}, 404));
     const preview = await fetchPermissionPreview(client, 'priya', 'lpm');
     expect(preview).not.toHaveProperty('effective');
+  });
+
+  it('treats a 200 with no effective set as a contract break, and says so', async () => {
+    // Not a state the UI models around — roster's `validate.test.ts` pins that
+    // the route answers `{ effective, diagnostics }`, so this can only be a bug.
+    const { client } = clientFor(() => json({ diagnostics: [] }));
+    expect(await fetchPermissionPreview(client, 'priya', 'lpm')).toEqual({
+      state: 'failed',
+      message: PREVIEW_MALFORMED_NOTE,
+    });
   });
 });
 

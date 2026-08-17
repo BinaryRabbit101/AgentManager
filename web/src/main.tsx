@@ -20,6 +20,7 @@ import { ApiClient } from './api/client';
 import { DEFAULT_STALE_TIME_MS } from './api/queries';
 import { AppServicesProvider } from './app/AppContext';
 import { BootGate } from './app/Boot';
+import { readDesktopBridge } from './app/bridge';
 import { EventStream } from './events/EventStream';
 import { claimTokenFromHash } from './api/pairing';
 import { readStoredTheme } from './theme/theme';
@@ -30,6 +31,9 @@ claimTokenFromHash(client);
 
 const avatars = new AvatarCache(client);
 const events = new EventStream({ client });
+// §1.5: absent in a browser, present in the Electron window. One build, and the
+// only thing that differs between the two deliveries is whether this is a stub.
+const bridge = readDesktopBridge();
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -52,7 +56,7 @@ createRoot(container).render(
     <QueryClientProvider client={queryClient}>
       <BootGate client={client}>
         {(boot) => (
-          <AppServicesProvider services={{ client, avatars, events, boot }}>
+          <AppServicesProvider services={{ client, avatars, events, boot, bridge }}>
             <BrowserRouter>
               <App />
             </BrowserRouter>

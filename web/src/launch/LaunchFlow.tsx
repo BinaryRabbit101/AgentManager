@@ -29,7 +29,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
-import { useProject, useProjects, useRoster } from '../api/queries';
+import { useProject, useProjects, useRoster, useWorkItems } from '../api/queries';
 import type { ApiFailure } from '../api/result';
 import {
   projectLaunchRefusal,
@@ -43,12 +43,12 @@ import {
   usePermissionElevationPolicy,
   useServices,
 } from '../app/AppContext';
+import { workItemPromptSeed } from '../projects/workItems';
 import { useAppStore, type LaunchIntent } from '../state/store';
 
 import {
   elevationBanner,
   fetchPermissionPreview,
-  PREVIEW_UNAVAILABLE_NOTE,
   type PermissionPreview,
 } from './permissionPreview';
 
@@ -94,7 +94,21 @@ export function LaunchFlow({ intent, onClose }: LaunchFlowProps): ReactElement {
   const [agentIdRaw, setAgentId] = useState<string | null>(intent.agentId);
   const agentId = agentIdRaw ?? preselectedAgentId(intent, projectDefaults);
 
+  // §8.2 region 4 / §5.3 row 2: work items now have an HTTP surface, so the
+  // Details multi-select is real and a dropped item arrives attached.
+  const workItems = useWorkItems(client, projectId ?? '');
+  const openItems = useMemo(
+    () => (workItems.data?.workItems ?? []).filter((item) => item.status !== 'done'),
+    [workItems.data],
+  );
+  const [selectedItems, setSelectedItems] = useState<readonly string[]>(intent.workItemIds ?? []);
+  const attached = useMemo(
+    () => openItems.filter((item) => selectedItems.includes(item.id)),
+    [openItems, selectedItems],
+  );
+
   const [prompt, setPrompt] = useState('');
+  const [promptSeeded, setPromptSeeded] = useState(false);
   const [role, setRole] = useState<string | undefined>(undefined);
   const [write, setWrite] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -116,6 +130,21 @@ export function LaunchFlow({ intent, onClose }: LaunchFlowProps): ReactElement {
   useEffect(() => {
     promptRef.current?.focus();
   }, []);
+
+  /**
+   * §5.3: a dropped work item seeds its `title` into the prompt.
+   *
+   * Once, and only while the field is untouched — the seed is a head start, not
+   * a value the flow owns, and re-seeding over something the user typed would
+   * lose their sentence the moment the item list refetched.
+   */
+  useEffect(() => {
+    if (promptSeeded || prompt !== '') return;
+    const seed = attached[0];
+    if (seed === undefined) return;
+    setPromptSeeded(true);
+    setPrompt(workItemPromptSeed(seed));
+  }, [attached, prompt, promptSeeded]);
 
   const effectiveRole = role ?? defaultRole(agent);
 
@@ -142,10 +171,16 @@ export function LaunchFlow({ intent, onClose }: LaunchFlowProps): ReactElement {
         prompt,
         ...(effectiveRole === undefined ? {} : { role: effectiveRole }),
         ...(write ? { write: true } : {}),
+        // §8.2: the created assignment carries them, and projects flips each
+        // linked item to `in_progress` server-side — the UI never sets a status
+        // it does not own (§4).
+        ...(selectedItems.length === 0 ? {} : { workItemIds: selectedItems }),
       },
     });
     setBusy(false);
     if (result.kind === 'ok') {
+      // `['projects']` covers the list, the one project, its activity and its
+      // work items — the last of which just changed status server-side.
       await queryClient.invalidateQueries({ queryKey: ['projects'] });
       onClose();
       navigate(`/sessions/${encodeURIComponent(result.value.sessionId)}`);
@@ -241,7 +276,11 @@ export function LaunchFlow({ intent, onClose }: LaunchFlowProps): ReactElement {
         <summary>
           Details
           <span className="launch__summary-line">
-            {` ${effectiveRole ?? 'no role'} · ${write ? 'write' : 'read only'} · no work items`}
+            {` ${effectiveRole ?? 'no role'} · ${write ? 'write' : 'read only'} · ${
+              attached.length === 0
+                ? 'no work items'
+                : `${String(attached.length)} work item${attached.length === 1 ? '' : 's'}`
+            }`}
           </span>
         </summary>
         <label className="field">
@@ -269,13 +308,46 @@ export function LaunchFlow({ intent, onClose }: LaunchFlowProps): ReactElement {
           />
           Let this agent write to the project
         </label>
-        {/*
-          §6's third Details control is the work-item multi-select. Work items
-          have no HTTP surface yet — they arrive with the project page (§8.2
-          region 4, IMPLEMENTATION §7) — so the summary says "no work items"
-          truthfully rather than offering an empty picker.
-        */}
+        {/* §6's third Details control: the multi-select over the project's open
+            items. Empty is rendered as a sentence rather than an empty box. */}
+        <fieldset className="launch__work-items">
+          <legend>Work items</legend>
+          {openItems.length === 0 ? (
+            <p className="empty">This project has no open work items.</p>
+          ) : (
+            openItems.map((item) => (
+              <label key={item.id} className="launch__toggle">
+                <input
+                  type="checkbox"
+                  checked={selectedItems.includes(item.id)}
+                  onChange={(event) =>
+                    setSelectedItems((was) =>
+                      event.target.checked
+                        ? [...was, item.id]
+                        : was.filter((one) => one !== item.id),
+                    )
+                  }
+                />
+                {item.title}
+              </label>
+            ))
+          )}
+        </fieldset>
       </details>
+
+      {/*
+        §5.3: "its `scopePaths` shown as a scope hint". Outside the collapsed
+        Details, because a narrowed scope changes what the agent can touch and
+        that is not a detail.
+      */}
+      {attached.length === 0 ? null : (
+        <p className="launch__scope" data-work-items={attached.length}>
+          Scoped to{' '}
+          {attached.flatMap((item) => item.scopePaths).length === 0
+            ? 'the whole project — the attached items name no paths'
+            : [...new Set(attached.flatMap((item) => item.scopePaths))].join(', ')}
+        </p>
+      )}
 
       <details
         className="launch__section"
@@ -297,10 +369,6 @@ export function LaunchFlow({ intent, onClose }: LaunchFlowProps): ReactElement {
             <dt>Ask</dt>
             <dd>{preview.effective.ask.join(', ') || 'nothing'}</dd>
           </dl>
-        ) : preview.state === 'unavailable' ? (
-          <p className="empty" data-preview-state="unavailable">
-            {PREVIEW_UNAVAILABLE_NOTE}
-          </p>
         ) : (
           <p className="notice" data-tone="danger" role="alert">
             {preview.message}

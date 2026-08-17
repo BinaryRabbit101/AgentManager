@@ -59,22 +59,41 @@ export interface BoardDndContextProps {
   /** Every card, in the order the board shows them. */
   readonly agentTargets: readonly DropTarget[];
   readonly projectTargets: readonly DropTarget[];
+  /** §5.3 row 2 — the work item rows of a project page (§8.2 region 4). */
+  readonly workItemTargets?: readonly DropTarget[];
+  /**
+   * Draggables that are **not** themselves drop targets, for naming only.
+   *
+   * The board's agent cards are both — a card can be dragged and dropped onto —
+   * so it passes none of these. The project page's agent chips are a drag source
+   * and nothing else: putting them in the ring would make the arrow keys step
+   * through targets that cannot take a drop, and leaving them out entirely would
+   * make the live region announce "picked up the agent".
+   */
+  readonly dragSources?: readonly DropTarget[];
   readonly onDrop: (outcome: DropOutcome) => void;
   readonly children: ReactNode;
 }
 
+const NO_TARGETS: readonly DropTarget[] = [];
+
 export function BoardDndContext({
   agentTargets,
   projectTargets,
+  workItemTargets = NO_TARGETS,
+  dragSources = NO_TARGETS,
   onDrop,
   children,
 }: BoardDndContextProps): ReactElement {
   const ring = useMemo(
-    () => buildRing(agentTargets, projectTargets),
-    [agentTargets, projectTargets],
+    () => buildRing(agentTargets, projectTargets, workItemTargets),
+    [agentTargets, projectTargets, workItemTargets],
   );
   const ringRef = useRef(ring);
   ringRef.current = ring;
+  /** The ring plus the sources that are not in it — the lookup for a name. */
+  const namesRef = useRef<readonly DropTarget[]>(ring);
+  namesRef.current = useMemo(() => [...ring, ...dragSources], [ring, dragSources]);
 
   /** Where the arrow keys have got to. Reset on every pick-up. */
   const ringIndex = useRef(0);
@@ -87,7 +106,7 @@ export function BoardDndContext({
     (id: UniqueIdentifier | null | undefined): DropTarget | undefined =>
       id === null || id === undefined
         ? undefined
-        : ringRef.current.find((target) => target.id === String(id)),
+        : namesRef.current.find((target) => target.id === String(id)),
     [],
   );
 

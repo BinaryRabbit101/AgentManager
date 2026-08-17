@@ -18,6 +18,7 @@ import {
   type FleetStatusMap,
 } from '../board/fleetStatus';
 import type { ConnectionState } from '../events/EventStream';
+import { applyCloneEvent, NO_CLONES, type CloneProgressMap } from '../projects/clone';
 import type { ThemeChoice } from '../theme/theme';
 
 export type BoardSort = 'board-order' | 'name' | 'recent';
@@ -48,7 +49,15 @@ export interface LaunchIntent {
   readonly agentId: string | null;
   readonly projectId: string | null;
   /** Where it was opened from, so the flow knows which picker to focus. */
-  readonly origin: 'drag' | 'agent-menu' | 'project';
+  readonly origin: 'drag' | 'agent-menu' | 'project' | 'work-item';
+  /**
+   * A work item dropped on, or picked from a row's `⋯` (§5.3, §8.2 region 4).
+   *
+   * Carried as an id list because that is what `POST /api/assignments/solo`
+   * takes; the title and the scope paths are read from the item itself so the
+   * intent never holds a stale copy of either.
+   */
+  readonly workItemIds?: readonly string[];
 }
 
 /** A transient message — the rollback path of §5.3 and nothing more. */
@@ -62,6 +71,14 @@ export interface AppState {
   readonly theme: ThemeChoice;
   readonly connection: ConnectionState;
   readonly fleet: FleetStatusMap;
+  /**
+   * In-flight clones, keyed by project id (§8.1).
+   *
+   * In the app store rather than in the dialog that started them, which is what
+   * makes "the dialog can be dismissed" true: the progress bar belongs to the
+   * rail, and the dialog is only where the clone was asked for.
+   */
+  readonly clones: CloneProgressMap;
   readonly filters: BoardFilters;
   readonly sort: BoardSort;
   readonly quickAddOpen: boolean;
@@ -88,6 +105,8 @@ export interface AppState {
   readonly setTheme: (theme: ThemeChoice) => void;
   readonly setConnection: (state: ConnectionState) => void;
   readonly ingest: (frame: EventFrame) => void;
+  /** Clears a failed clone's row once its message has been read. */
+  readonly dismissClone: (projectId: string) => void;
   readonly setFilters: (patch: Partial<BoardFilters>) => void;
   readonly setSort: (sort: BoardSort) => void;
   readonly setQuickAddOpen: (open: boolean) => void;
@@ -108,6 +127,7 @@ export const useAppStore = create<AppState>((set) => ({
   // socket has answered is the one lie the indicator must never tell.
   connection: 'reconnecting',
   fleet: EMPTY_FLEET_STATUS,
+  clones: NO_CLONES,
   filters: DEFAULT_FILTERS,
   sort: 'board-order',
   quickAddOpen: false,
@@ -118,7 +138,16 @@ export const useAppStore = create<AppState>((set) => ({
 
   setTheme: (theme) => set({ theme }),
   setConnection: (connection) => set({ connection }),
-  ingest: (frame) => set((state) => ({ fleet: applySessionEvent(state.fleet, frame) })),
+  ingest: (frame) =>
+    set((state) => ({
+      fleet: applySessionEvent(state.fleet, frame),
+      clones: applyCloneEvent(state.clones, frame),
+    })),
+  dismissClone: (projectId) =>
+    set((state) => {
+      const { [projectId]: _gone, ...rest } = state.clones;
+      return { clones: rest };
+    }),
   setFilters: (patch) => set((state) => ({ filters: { ...state.filters, ...patch } })),
   setSort: (sort) => set({ sort }),
   setQuickAddOpen: (quickAddOpen) => set({ quickAddOpen }),
@@ -136,6 +165,7 @@ export const useAppStore = create<AppState>((set) => ({
     set({
       connection: 'reconnecting',
       fleet: EMPTY_FLEET_STATUS,
+      clones: NO_CLONES,
       filters: DEFAULT_FILTERS,
       sort: 'board-order',
       quickAddOpen: false,

@@ -28,10 +28,12 @@ import { useServices } from '../app/AppContext';
 import { Icon } from '../icons/Sprite';
 import { useAppStore } from '../state/store';
 
+import { cloneProgressLabel } from './clone';
 import { QuickAddDialog } from './QuickAddDialog';
 
 function ProjectRailCard({ project }: { readonly project: Project }): ReactElement {
   const openLaunch = useAppStore((store) => store.openLaunch);
+  const clone = useAppStore((store) => store.clones[project.id]);
   const refusal = projectLaunchRefusal(project);
   const { setNodeRef, isOver } = useDroppable({
     id: project.id,
@@ -67,6 +69,26 @@ function ProjectRailCard({ project }: { readonly project: Project }): ReactEleme
           </span>
         ))}
       </div>
+      {/*
+        §8.1: the clone's progress lives on the card, not in the dialog that
+        started it — which is what makes "the dialog can be dismissed" true.
+      */}
+      {clone === undefined ? null : clone.state === 'failed' ? (
+        <p className="notice" data-tone="danger" role="alert" data-clone-state="failed">
+          {/* git's own message, verbatim: the credential helper is the user's
+              and paraphrasing an auth failure hides the fix (§8.1). */}
+          <code>{clone.stderr ?? 'git gave no output.'}</code>
+        </p>
+      ) : (
+        <p className="project-card__clone" data-clone-state="running">
+          <progress
+            aria-label={`Cloning ${project.name}`}
+            {...(clone.percent === null ? {} : { value: clone.percent, max: 100 })}
+          />
+          <span>{cloneProgressLabel(clone)}</span>
+        </p>
+      )}
+
       {refusal === undefined ? (
         <button
           type="button"

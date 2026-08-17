@@ -19,7 +19,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
 import { aProject, json, mount } from '../../test/harness';
-import type { BrowseListing, ProjectInspection } from '../api/types';
+import type { BrowseListing, ProjectInspection, RepoInspection } from '../api/types';
 
 import { QuickAddDialog } from './QuickAddDialog';
 
@@ -297,5 +297,157 @@ describe('the dialog itself (§15)', () => {
   it('cannot inspect an empty path', () => {
     mount(<QuickAddDialog onClose={() => undefined} />, { respond: server().respond });
     expect(screen.getByRole('button', { name: 'Inspect' })).toBeDisabled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The native folder picker (ui IMPLEMENTATION §6, criterion 5)
+// ---------------------------------------------------------------------------
+
+describe('Browse is one call site, feature-detected (§1.5 #5, §8.1)', () => {
+  it('uses Electron’s native dialog and posts the path it returned, unchanged', async () => {
+    const api = server({
+      inspection: { ...INSPECTION, localPath: 'D:\\Work\\ledger', name: 'ledger', slug: 'ledger' },
+    });
+    mount(<QuickAddDialog onClose={() => undefined} />, {
+      respond: api.respond,
+      bridge: { isElectron: true, pickFolder: () => Promise.resolve('D:\\Work\\ledger') },
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Browse' }));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Folder path')).toHaveValue('D:\\Work\\ledger'),
+    );
+    // The navigator is not used at all when the native dialog answered.
+    expect(screen.queryByRole('list', { name: 'Folders' })).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Inspect' }));
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('ledger'));
+    expect(api.posted[0]?.body).toEqual({ localPath: 'D:\\Work\\ledger' });
+  });
+
+  it('does nothing when the native dialog is cancelled', async () => {
+    // The user just said no; falling through to the browser navigator would be
+    // the dialog arguing with them.
+    mount(<QuickAddDialog onClose={() => undefined} />, {
+      respond: server().respond,
+      bridge: { isElectron: true, pickFolder: () => Promise.resolve(null) },
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Browse' }));
+    await new Promise((settle) => setTimeout(settle, 20));
+    expect(screen.getByLabelText('Folder path')).toHaveValue('');
+    expect(screen.queryByRole('list', { name: 'Folders' })).toBeNull();
+  });
+
+  it('falls back to /api/fs/browse with the bridge stubbed, at the same call site', async () => {
+    // "with no code change at the call site": the same button, the same handler,
+    // and the only difference is whether `bridge.pickFolder` exists.
+    const api = server();
+    mount(<QuickAddDialog onClose={() => undefined} />, {
+      respond: api.respond,
+      bridge: { isElectron: false },
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Browse' }));
+    const folders = await screen.findByRole('list', { name: 'Folders' });
+    expect(within(folders).getByRole('button', { name: 'Code' })).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The clone tab (DESIGN §8.1, IMPLEMENTATION §7)
+// ---------------------------------------------------------------------------
+
+const REPO: RepoInspection = {
+  repoUrl: 'https://example.invalid/owner/repo.git',
+  host: 'example.invalid',
+  name: 'repo',
+  slug: 'repo',
+  targetPath: 'C:\\Code\\repo',
+  targetExists: false,
+  targetEmpty: true,
+  warnings: [],
+};
+
+function cloneServer(options: { readonly refusal?: { status: number; body: unknown } } = {}) {
+  const posted: { path: string; body: unknown }[] = [];
+  const respond = (url: string, init: RequestInit): Response => {
+    const path = url.split('?')[0] ?? url;
+    if (init.method === 'POST') {
+      const raw = init.body;
+      posted.push({
+        path,
+        body: typeof raw === 'string' ? (JSON.parse(raw) as unknown) : undefined,
+      });
+    }
+    if (path === '/api/projects/inspect') return json(REPO);
+    if (path === '/api/projects/clone') {
+      if (options.refusal !== undefined) return json(options.refusal.body, options.refusal.status);
+      // 202: the row exists, the checkout does not yet (projects §2.2).
+      return json(aProject({ id: 'p9', name: 'repo', status: 'provisioning' }), 202);
+    }
+    return json({ error: 'not_found', message: `No fixture for ${path}.` }, 404);
+  };
+  return { respond, posted };
+}
+
+describe('clone: inspect → clone → dismiss (§8.1)', () => {
+  it('inspects a URL into a proposed target and clones it', async () => {
+    const api = cloneServer();
+    const created: string[] = [];
+    let closed = 0;
+    mount(<QuickAddDialog onClose={() => (closed += 1)} onCreated={(p) => created.push(p.id)} />, {
+      respond: api.respond,
+    });
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Clone URL' }));
+    await userEvent.type(
+      screen.getByLabelText('Repository URL'),
+      'https://example.invalid/owner/repo.git',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Inspect' }));
+
+    // Proposed, not typed: the server derived the name and the target path.
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('repo'));
+    expect(screen.getByText('C:\\Code\\repo')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Clone' }));
+
+    await waitFor(() => expect(created).toEqual(['p9']));
+    expect(api.posted.at(-1)).toEqual({
+      path: '/api/projects/clone',
+      body: {
+        repoUrl: 'https://example.invalid/owner/repo.git',
+        targetPath: 'C:\\Code\\repo',
+        name: 'repo',
+        slug: 'repo',
+      },
+    });
+    // The dialog closes at once: the checkout runs on, and the progress bar
+    // lives on the rail card rather than in a modal the user must watch.
+    expect(closed).toBe(1);
+  });
+
+  it('shows the server’s refusal verbatim and stays open', async () => {
+    const api = cloneServer({
+      refusal: {
+        status: 409,
+        body: {
+          error: 'target_not_empty',
+          message: 'C:\\Code\\repo already exists and is not empty.',
+        },
+      },
+    });
+    mount(<QuickAddDialog onClose={() => undefined} />, { respond: api.respond });
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Clone URL' }));
+    await userEvent.type(screen.getByLabelText('Repository URL'), 'https://x.invalid/r.git');
+    await userEvent.click(screen.getByRole('button', { name: 'Inspect' }));
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('repo'));
+    await userEvent.click(screen.getByRole('button', { name: 'Clone' }));
+
+    const notice = await screen.findByRole('alert');
+    expect(notice).toHaveTextContent('C:\\Code\\repo already exists and is not empty.');
   });
 });

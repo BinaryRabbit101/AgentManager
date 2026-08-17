@@ -40,14 +40,23 @@ export interface AgentDragData {
  */
 export interface DropTarget {
   readonly id: string;
-  readonly kind: 'agent' | 'project';
+  readonly kind: 'agent' | 'project' | 'workItem';
   readonly label: string;
   readonly refusal?: string;
+  /** `workItem` only: which project the row belongs to (§5.3's payload). */
+  readonly projectId?: string;
 }
 
 /** What a completed drag asks the app to do. Nothing here performs it. */
 export type DropOutcome =
   | { readonly kind: 'launch'; readonly agentId: string; readonly projectId: string }
+  /** §5.3 row 2: the launch flow with the item attached. */
+  | {
+      readonly kind: 'launch-work-item';
+      readonly agentId: string;
+      readonly projectId: string;
+      readonly workItemId: string;
+    }
   | { readonly kind: 'reorder'; readonly agentId: string; readonly overAgentId: string }
   | { readonly kind: 'refused'; readonly reason: string }
   /** Dropped on nothing, or on itself. "Drop on nothing cancels silently." */
@@ -68,6 +77,30 @@ export function projectTarget(project: Project): DropTarget {
 }
 
 /**
+ * A work item row (§5.3 row 2, §8.2 region 4).
+ *
+ * A `done` or `dropped` item is refused for the same reason an archived project
+ * is: the drop would open a launch flow for work the user has already closed,
+ * and refusing at the drop beats a flow that surprises on submit.
+ */
+export function workItemTarget(item: {
+  readonly id: string;
+  readonly projectId: string;
+  readonly title: string;
+  readonly status: string;
+}): DropTarget {
+  const refusal =
+    item.status === 'done' ? 'already done' : item.status === 'dropped' ? 'dropped' : undefined;
+  return {
+    id: item.id,
+    kind: 'workItem',
+    label: item.title,
+    projectId: item.projectId,
+    ...(refusal === undefined ? {} : { refusal }),
+  };
+}
+
+/**
  * The ordered ring the arrow keys walk: every card, then every project.
  *
  * The dragged card is left in place rather than removed — dnd-kit's sortable
@@ -78,8 +111,9 @@ export function projectTarget(project: Project): DropTarget {
 export function buildRing(
   agents: readonly DropTarget[],
   projects: readonly DropTarget[],
+  workItems: readonly DropTarget[] = [],
 ): readonly DropTarget[] {
-  return [...agents, ...projects];
+  return [...agents, ...projects, ...workItems];
 }
 
 /** Wraps, because a ring that stops at its ends strands a keyboard user. */
@@ -103,6 +137,17 @@ export function dropOutcome(agentId: string, target: DropTarget | undefined): Dr
       return { kind: 'refused', reason: `${target.label} is ${target.refusal}.` };
     }
     return { kind: 'launch', agentId, projectId: target.id };
+  }
+  if (target.kind === 'workItem') {
+    if (target.refusal !== undefined) {
+      return { kind: 'refused', reason: `“${target.label}” is ${target.refusal}.` };
+    }
+    return {
+      kind: 'launch-work-item',
+      agentId,
+      projectId: target.projectId ?? '',
+      workItemId: target.id,
+    };
   }
   if (target.id === agentId) return { kind: 'none' };
   return { kind: 'reorder', agentId, overAgentId: target.id };
@@ -132,6 +177,9 @@ export function overTarget(agentName: string, target: DropTarget | undefined): s
   if (target.refusal !== undefined) {
     return `${target.label} can't be launched on: ${target.refusal}.`;
   }
+  if (target.kind === 'workItem') {
+    return `Launch ${agentName} on the work item “${target.label}”.`;
+  }
   return `Launch ${agentName} on ${target.label}.`;
 }
 
@@ -139,6 +187,8 @@ export function droppedOn(agentName: string, outcome: DropOutcome, targetLabel?:
   switch (outcome.kind) {
     case 'launch':
       return `Opening the launch flow for ${agentName} on ${targetLabel ?? 'the project'}. Nothing has started yet.`;
+    case 'launch-work-item':
+      return `Opening the launch flow for ${agentName} on “${targetLabel ?? 'the work item'}”. Nothing has started yet.`;
     case 'reorder':
       return `Moved ${agentName} to ${targetLabel ?? 'a new position'}.`;
     case 'refused':

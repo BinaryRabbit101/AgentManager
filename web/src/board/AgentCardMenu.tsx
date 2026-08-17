@@ -6,15 +6,24 @@
  * table: **Launch on…**, which opens the same launch flow the drop opens, with
  * the project picker unset instead of pre-filled.
  *
- * §5.2 lists six more entries (Start a pair…, Duplicate, Edit, Export, Pin,
- * Allow remote starts, Archive). Each belongs to the milestone that builds what
- * it opens — M8 for the editor, M9 for the pair dialog, M10 for the remote
- * grant — and a menu item that opens nothing is worse than one that is not there
- * yet, so they are absent rather than stubbed.
+ * §5.2 lists six more entries. **Edit**, **Duplicate** and **Export** arrive with
+ * M8, which is what they open; **Start a pair…** (M9) and **Allow remote
+ * starts** (M10) are still absent rather than stubbed, because a menu item that
+ * opens nothing is worse than one that is not there yet.
+ *
+ * Duplicate posts and then navigates rather than opening a dialog: roster's
+ * `POST /agents/:id/duplicate` mints the second folder and returns the
+ * definition, and §7.2 says the editor opens "directly" on that — so the editor
+ * the user lands in is already editing a real, independent agent.
  */
 
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type ReactElement } from 'react';
+import { useNavigate } from 'react-router-dom';
 
+import { queryKeys } from '../api/queries';
+import type { AgentView } from '../api/types';
+import { useServices } from '../app/AppContext';
 import { useAppStore } from '../state/store';
 
 export interface AgentCardMenuProps {
@@ -27,7 +36,25 @@ export interface AgentCardMenuProps {
 export function AgentCardMenu({ agentId, agentName, archived }: AgentCardMenuProps): ReactElement {
   const [open, setOpen] = useState(false);
   const openLaunch = useAppStore((store) => store.openLaunch);
+  const pushToast = useAppStore((store) => store.pushToast);
+  const { client } = useServices();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const hostRef = useRef<HTMLDivElement>(null);
+
+  async function duplicate(): Promise<void> {
+    setOpen(false);
+    const result = await client.request<AgentView>(
+      `/roster/agents/${encodeURIComponent(agentId)}/duplicate`,
+      { method: 'POST', body: {} },
+    );
+    if (result.kind !== 'ok') {
+      pushToast(result.message);
+      return;
+    }
+    await queryClient.invalidateQueries({ queryKey: queryKeys.roster });
+    navigate(`/agents/${encodeURIComponent(result.value.definition.id)}`);
+  }
 
   // §15: `Esc` closes it and focus returns to the trigger that opened it.
   useEffect(() => {
@@ -67,6 +94,35 @@ export function AgentCardMenu({ agentId, agentName, archived }: AgentCardMenuPro
             >
               Launch on…
             </button>
+          </li>
+          <li role="none">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                navigate(`/agents/${encodeURIComponent(agentId)}`);
+              }}
+            >
+              Edit
+            </button>
+          </li>
+          <li role="none">
+            <button
+              type="button"
+              role="menuitem"
+              disabled={archived}
+              onClick={() => void duplicate()}
+            >
+              Duplicate
+            </button>
+          </li>
+          <li role="none">
+            {/* An archived agent keeps Export (§5.2): the pack is how its work
+                leaves the machine, and archiving is not deletion. */}
+            <a role="menuitem" href={`/api/roster/agents/${encodeURIComponent(agentId)}/export`}>
+              Export
+            </a>
           </li>
         </ul>
       ) : null}

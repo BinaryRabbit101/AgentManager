@@ -136,6 +136,25 @@ export default tseslint.config(
     },
   },
 
+  // The Electron shell (ui §1.5). Its own tsconfig, because it spans `electron/`
+  // and the parts of `src/` it reuses for core discovery.
+  {
+    files: ['electron/**/*.ts', 'electron/**/*.cts'],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
+      '@typescript-eslint/consistent-type-imports': 'error',
+    },
+  },
+
   // Config files live outside tsconfig's `include`, so type-aware rules cannot apply.
   {
     files: ['**/*.js', '**/*.mjs', '*.config.ts'],

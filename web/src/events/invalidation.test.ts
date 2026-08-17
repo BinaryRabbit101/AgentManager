@@ -47,7 +47,11 @@ describe('the invalidation map (§3.4)', () => {
     for (const type of SESSION_LIFECYCLE_TYPES) {
       const outcome = plan(frame(type));
       expect(outcome.sessionLifecycle, type).toBe(true);
-      expect(outcome.invalidate, type).toEqual([['projects']]);
+      // Since ui M6 the fleet status is orchestrator's own
+      // `GET /api/orchestrator/status` (§2.2's badge reads `questions.open` from
+      // it), so a lifecycle event invalidates that too — not just the project
+      // list whose `lastActivityAt` moved.
+      expect(outcome.invalidate, type).toEqual([['projects'], ['orchestrator', 'status']]);
     }
   });
 
@@ -74,7 +78,11 @@ describe('the invalidation map (§3.4)', () => {
       'assignment.round.completed',
       'assignment.halted',
     ]) {
-      expect(plan(frame(type)).invalidate, type).toEqual([['questions'], ['assignments']]);
+      expect(plan(frame(type)).invalidate, type).toEqual([
+        ['questions'],
+        ['assignments'],
+        ['orchestrator', 'status'],
+      ]);
     }
   });
 

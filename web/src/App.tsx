@@ -10,21 +10,31 @@
 import type { ReactElement } from 'react';
 import { Route, Routes } from 'react-router-dom';
 
+import { AgentDetail } from './agents/AgentDetail';
+import { AgentWizard } from './agents/AgentWizard';
 import { Board } from './board/Board';
 import { AppFrame } from './app/AppFrame';
 import { DebugPanel } from './app/DebugPanel';
 import { Placeholder } from './app/Placeholder';
 import { Toasts } from './app/Toasts';
-import { useServices } from './app/AppContext';
+import { useBridge, useServices } from './app/AppContext';
+import { useDesktopBridge } from './app/useDesktopBridge';
 import { useEventStream } from './app/useEventStream';
+import { useOpenQuestions } from './app/useOpenQuestions';
 import { Sprite } from './icons/Sprite';
 import { LaunchFlowHost } from './launch/LaunchFlow';
+import { ProjectPage } from './projects/ProjectPage';
 import { QuestionInbox } from './questions/QuestionInbox';
 import { SessionView } from './session/SessionView';
 
 export function App(): ReactElement {
-  const { events, avatars } = useServices();
+  const { client, events, avatars } = useServices();
+  const bridge = useBridge();
   useEventStream(events, avatars);
+  // §2.2's badge, from the server (M6 closed M5's degrade), and §1.5 #6's toast
+  // and taskbar badge, which mirror it.
+  useOpenQuestions(client);
+  useDesktopBridge(bridge, events);
 
   return (
     <>
@@ -32,18 +42,9 @@ export function App(): ReactElement {
       <AppFrame>
         <Routes>
           <Route path="/" element={<Board />} />
-          <Route
-            path="/agents/new"
-            element={<Placeholder title="New agent" milestone="M8" what="The drafting wizard" />}
-          />
-          <Route
-            path="/agents/:id"
-            element={<Placeholder title="Agent" milestone="M8" what="The agent editor" />}
-          />
-          <Route
-            path="/projects/:id"
-            element={<Placeholder title="Project" milestone="M7" what="The project page" />}
-          />
+          <Route path="/agents/new" element={<AgentWizard />} />
+          <Route path="/agents/:id" element={<AgentDetail />} />
+          <Route path="/projects/:id" element={<ProjectPage />} />
           <Route path="/sessions/:id" element={<SessionView />} />
           <Route
             path="/assignments/:id"

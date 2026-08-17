@@ -16,6 +16,8 @@ import type { EffectiveConfig, Health } from '../api/types';
 import type { EventStream } from '../events/EventStream';
 import type { SseTransport } from '../events/sse';
 
+import { BROWSER_BRIDGE, type DesktopBridge } from './bridge';
+
 export interface BootFacts {
   readonly config: EffectiveConfig;
   readonly health: Health;
@@ -36,6 +38,14 @@ export interface AppServices {
    * this file exists: a screen must be mountable without a network.
    */
   readonly sessionTransport?: SseTransport | undefined;
+  /**
+   * The Electron preload bridge (§1.5), or the browser stub.
+   *
+   * Read once at boot and carried here rather than reached for through
+   * `globalThis` at each call site, for the same reason everything else in this
+   * file is: a screen must be mountable without the environment it ships in.
+   */
+  readonly bridge?: DesktopBridge | undefined;
 }
 
 const AppServicesContext = createContext<AppServices | undefined>(undefined);
@@ -55,6 +65,16 @@ export function useServices(): AppServices {
     throw new Error('useServices was called outside <AppServicesProvider>.');
   }
   return services;
+}
+
+/**
+ * §1.5's bridge, feature-detected at every call site.
+ *
+ * Defaults to the browser stub, so a component that forgets to check still gets
+ * a well-formed object with nothing on it rather than `undefined`.
+ */
+export function useBridge(): DesktopBridge {
+  return useServices().bridge ?? BROWSER_BRIDGE;
 }
 
 /** `edition`, the module list and the policy flags of §3.5, read once at boot. */

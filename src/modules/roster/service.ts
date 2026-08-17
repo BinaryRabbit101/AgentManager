@@ -82,7 +82,7 @@ import {
   RosterServiceError,
   UnknownBoardOrderIdError,
 } from './serviceErrors.js';
-import { validateSkills } from './skills.js';
+import { SKILLS_DIRNAME, validateSkills } from './skills.js';
 import { mintAgentId } from './slug.js';
 import {
   AGENT_JSON_FILENAME,
@@ -523,6 +523,24 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
     );
   }
 
+  /**
+   * Writes `skills/<name>/SKILL.md` for each accepted suggestion (§12.4).
+   *
+   * Folder first, `agent.json` second — the same order `duplicate` and the pack
+   * importer use, and required here because {@link requireSkillFolders} reads the
+   * folder listing and would refuse a name whose folder does not exist yet.
+   */
+  function writeSkillStubs(id: string, skills: readonly AcceptedSkill[]): void {
+    if (skills.length === 0) return;
+    store.writeFolderFiles(
+      id,
+      skills.map((skill) => ({
+        name: `${SKILLS_DIRNAME}/${skill.name}/SKILL.md`,
+        data: Buffer.from(skillStub(skill), 'utf8'),
+      })),
+    );
+  }
+
   function persist(definition: AgentDefinition, persona: string | undefined): ResolvedAgent {
     const written = store.write(definition, persona);
     registry.apply(written);
@@ -588,7 +606,7 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
     },
 
     create(body) {
-      const { record, personaText } = splitBody(body);
+      const { record, personaText, acceptedSkills } = splitBody(body);
       const now = isoTimestamp(clock());
 
       const requestedId = record['id'];
@@ -631,6 +649,14 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
         },
         'POST /api/roster/agents',
       );
+
+      // DESIGN §12.4: "`suggestedSkills` are inert until accepted. Accepting one
+      // creates `skills/<name>/SKILL.md` with the description as a stub and adds
+      // the name to `skills.names`; the user (or a later agent session) writes
+      // the body." The wizard cannot write files (ui §4), and the folder must
+      // exist before `requireSkillFolders` reads it — so the stubs are written
+      // here, from a wire-only field, in the same request that declares them.
+      writeSkillStubs(id, acceptedSkills);
 
       requireSkillFolders(definition, 'POST /api/roster/agents');
 
@@ -1132,6 +1158,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function splitBody(body: unknown): {
   readonly record: Record<string, unknown>;
   readonly personaText: string | undefined;
+  readonly acceptedSkills: readonly AcceptedSkill[];
 } {
   const record = asRecord(body);
   if (record === undefined) {
@@ -1144,9 +1171,58 @@ function splitBody(body: unknown): {
       'personaText',
     );
   }
+  const acceptedSkills = readAcceptedSkills(record['acceptedSkills']);
   const rest = { ...record };
   delete rest['personaText'];
-  return { record: rest, personaText };
+  delete rest['acceptedSkills'];
+  return { record: rest, personaText, acceptedSkills };
+}
+
+/**
+ * `suggestedSkills` the wizard's user ticked (§12.4).
+ *
+ * The second wire-only field, and lifted out for the same reason `personaText`
+ * is: it names files rather than definition fields, and the definition schema
+ * rejects unknown top-level keys on purpose.
+ */
+export interface AcceptedSkill {
+  readonly name: string;
+  readonly description: string;
+}
+
+function readAcceptedSkills(value: unknown): readonly AcceptedSkill[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new InvalidRosterRequestError(
+      '"acceptedSkills" must be an array of { name, description }.',
+      'acceptedSkills',
+    );
+  }
+  return value.map((entry, index) => {
+    const record = asRecord(entry);
+    const name = record?.['name'];
+    const description = record?.['description'];
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new InvalidRosterRequestError(
+        'Every accepted skill needs a "name" — the folder name under skills/.',
+        `acceptedSkills.${String(index)}.name`,
+      );
+    }
+    return {
+      name,
+      description: typeof description === 'string' ? description : '',
+    };
+  });
+}
+
+/** The stub body §12.4 asks for: the description, and nothing invented. */
+export function skillStub(skill: AcceptedSkill): string {
+  return (
+    `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n` +
+    `# ${skill.name}\n\n${skill.description}\n\n` +
+    'Write the steps here. This stub was created when the skill was accepted in ' +
+    'the agent wizard (DESIGN §12.4); nothing has been authored for it yet.\n'
+  );
 }
 
 /**

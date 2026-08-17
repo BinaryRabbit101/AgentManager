@@ -24,15 +24,16 @@ export interface InvalidationPlan {
   readonly sessionLifecycle: boolean;
   /** True when the frame is per-session detail the global feed must never see. */
   readonly perSessionDetail: boolean;
+  /** True for `project.clone.*` — §8.1's progress row, folded in the store. */
+  readonly cloneProgress: boolean;
   /**
    * `+1` when a question was raised, `-1` when one was answered, `0` otherwise.
    *
-   * §2.2's badge count is `GET /api/orchestrator/status`'s `questions.open`,
-   * which is **orchestrator M9** and lands after ui M5 — so until it does the
-   * count is the inbox's own length, kept live by `assignment.question.raised` /
-   * `.answered` exactly as §11.1 describes. The same deliberate degrade the board
-   * made for the status pill (M2): the rendering and the words do not change,
-   * only where the number is read.
+   * §2.2's badge count is `GET /api/orchestrator/status`'s `questions.open`, and
+   * since ui M6 that is where it is read from (`app/useOpenQuestions.ts`). This
+   * delta is not a substitute for it — it is §11.1's "bump/clear the badge",
+   * which has to happen inside a second of a card arriving, faster than the
+   * invalidated query can come back. The query then settles the number.
    */
   readonly questionDelta: -1 | 0 | 1;
 }
@@ -42,6 +43,7 @@ const EMPTY: InvalidationPlan = {
   avatars: [],
   sessionLifecycle: false,
   perSessionDetail: false,
+  cloneProgress: false,
   questionDelta: 0,
 };
 
@@ -82,7 +84,7 @@ export function plan(frame: EventFrame): InvalidationPlan {
     return {
       ...EMPTY,
       sessionLifecycle: true,
-      invalidate: [['projects']],
+      invalidate: [['projects'], queryKeys.orchestratorStatus],
     };
   }
 
@@ -97,6 +99,13 @@ export function plan(frame: EventFrame): InvalidationPlan {
     };
   }
 
+  if (type.startsWith('project.clone.')) {
+    // §8.1's progress row is folded into the store (see `projects/clone.ts`);
+    // the project list is invalidated too, because `completed` and `failed` both
+    // change what is in it.
+    return { ...EMPTY, cloneProgress: true, invalidate: [['projects']] };
+  }
+
   if (type.startsWith('project.') || type.startsWith('workspace.')) {
     return { ...EMPTY, invalidate: [['projects']] };
   }
@@ -104,7 +113,7 @@ export function plan(frame: EventFrame): InvalidationPlan {
   if (type.startsWith('assignment.') || type.startsWith('question.')) {
     return {
       ...EMPTY,
-      invalidate: [['questions'], ['assignments']],
+      invalidate: [['questions'], ['assignments'], queryKeys.orchestratorStatus],
       questionDelta:
         type === 'assignment.question.raised'
           ? 1

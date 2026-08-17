@@ -1,0 +1,13 @@
+{
+  // The Electron shell (ui DESIGN §1.5). Its own project because it is a
+  // *client* of the core, not part of it: it imports `src/lifecycle/portFile.ts`
+  // and `src/config` (one implementation of "is a core listening"), so `rootDir`
+  // has to cover both, and the root project's `rootDir: "src"` cannot.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "outDir": "../app",
+    "noEmit": true
+  },
+  "include": ["**/*.ts", "**/*.cts"]
+}

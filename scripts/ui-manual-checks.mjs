@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * The ui M1–M5 acceptance criteria that cannot be automated in this repository,
+ * The ui M1–M8 acceptance criteria that cannot be automated in this repository,
  * as a runnable checklist.
  *
  * `npm run checks:ui` prints it. Everything **not** listed here is automated —
@@ -11,10 +11,14 @@
  *
  * - Three of them are about the *first paint* or about *how the network
  *   behaves*, and jsdom has neither a paint nor a network stack.
- * - Two are wall-clock measurements of a **human** doing something. A test can
+ * - Three are wall-clock measurements of a **human** doing something. A test can
  *   prove the flow is four interactions and that the machine half takes
  *   milliseconds (it does), but "under a minute" is a claim about a person.
- * - One is Electron, which arrives in M6.
+ * - Several are **Electron at the window level**. The shell's logic is unit-
+ *   tested against the `ElectronHost` seam (`electron/*.test.ts`), because
+ *   Electron needs a downloaded binary and a display that this environment does
+ *   not have. What needs a real window, a real detached process or a real OS
+ *   notification is here.
  *
  * Playwright was considered and not used: it needs a browser download this
  * environment cannot rely on, and a suite that silently skips is worse than a
@@ -85,11 +89,14 @@ const CHECKS = [
     criterion:
       'The byte-identical dist/ loads from an Electron window (stubbed) and from a browser, with no build flag distinguishing them.',
     reference: 'ui IMPLEMENTATION §1',
-    why: 'The Electron shell is M6. There is nothing to load it from yet.',
+    why: 'Needs a real Electron window beside a real browser. The shell landed in M6; the diff is still a pair of eyes.',
     automated:
-      'vite.config.ts has no mode switch, no `define`, and one `base`; web/test/bundle.test.ts asserts every asset reference is relative and same-origin, which is what makes one artifact serve both.',
+      'vite.config.ts has no mode switch, no `define`, and one `base`; web/test/bundle.test.ts asserts every asset reference is relative and same-origin, which is what makes one artifact serve both. web/src/app/bridge.test.ts asserts the only runtime difference is whether the preload bridge is there.',
     steps: [
-      'Defer to M6. When the shell lands: load the same app/web from the Electron window and from Chrome and diff the rendered board.',
+      'Build once and start the shell (see M6-shell-runs-at-all).',
+      'Open the same http://127.0.0.1:<port> in Chrome beside the Electron window.',
+      'Diff the rendered board: identical, except that the Electron window’s Add project → Browse opens the native dialog.',
+      'Confirm no second build was produced: app/web has one index.html and one asset set, loaded by both.',
     ],
   },
   {
@@ -187,16 +194,125 @@ const CHECKS = [
       'Confirm no horizontal page scroll at any point, and that every target you tapped was comfortable for a thumb.',
     ],
   },
+  {
+    id: 'M6-shell-runs-at-all',
+    criterion:
+      'The shell launches: built into app/electron and run with a locally installed Electron, it opens a window on the core.',
+    reference: 'ui DESIGN §1.5, foundation §4.1 / §7',
+    why: 'Electron is deliberately not a dependency of this repository — packaging is foundation §7’s explicitly deferred half — and it needs a downloaded binary plus a display.',
+    automated:
+      'electron/shell.test.ts drives the whole shell against the ElectronHost seam: startup, the single-instance lock, the tray rows, the folder picker, toasts, the badge, and Stop background service. electron/window.test.ts pins the webPreferences and the navigation policy; electron/preload.test.ts pins the five bridge keys and the three channels at the source.',
+    steps: [
+      'Build: npm run build && npm run build:web && npx tsc -p electron/tsconfig.json --outDir app --noEmit false',
+      'Install Electron locally, uncommitted: npm install --no-save electron',
+      'Run: npx electron app/electron/main.js',
+      'A window opens on http://127.0.0.1:<port>. Check the address bar of devtools: it must not be file://.',
+      'Confirm the tray icon carries Open / N questions waiting / Stop background service / Quit, in that order.',
+    ],
+  },
+  {
+    id: 'M6-core-outlives-the-window',
+    criterion:
+      'With no core running, launching the app starts one detached and connects; closing the window leaves the core running (process check, and a session still progressing).',
+    reference: 'ui IMPLEMENTATION §6, foundation §4.1',
+    why: 'A real detached process, a real window close, and a real session that keeps writing its transcript.',
+    automated:
+      'electron/discovery.test.ts — the spawn/connect decision, staleness, the readiness poll, the failure message, and a source assertion that nothing in the module can kill what it started. electron/shell.test.ts — closing the window makes no request and does not quit.',
+    steps: [
+      'Stop any running core and delete a stale <dataRoot>\\run\\core.port.',
+      'Launch the shell. It connects after a splash; Get-Process node shows a new process.',
+      'Start a long session from the board, then close the window.',
+      'Confirm the node process is still there and the session still progresses (re-open, or curl /api/sessions/<id>).',
+      'Launch again: it connects to the same core — no second process, and no "already running" line in core.log.',
+      'Launch a third time with the window open: the existing window is focused and no second window appears.',
+    ],
+  },
+  {
+    id: 'M6-toast-and-badge',
+    criterion:
+      'A question raised while the window is unfocused produces a desktop toast; clicking it focuses the window on that card. The tray label and the taskbar badge match the inbox count.',
+    reference: 'ui DESIGN §1.5 #6, IMPLEMENTATION §6',
+    why: 'A real OS notification, a real taskbar and a real window focus state.',
+    automated:
+      'web/src/app/desktop.test.tsx — the renderer asks for a toast only when unfocused, with the card’s deep link, and pushes the count. electron/shell.test.ts — the toast is shown, the click focuses and navigates, and one number drives the tray label and the badge.',
+    steps: [
+      'With the shell running, click another application so the window loses focus.',
+      'Make an agent ask something (an `ask` permission rule is the easy way).',
+      'A Windows toast appears naming the question. Click it: the window comes forward on /questions/<id>.',
+      'Check the taskbar badge and the tray tooltip read the same count as the Questions rail badge.',
+      'Answer it and confirm all three clear together.',
+    ],
+  },
+  {
+    id: 'M6-external-links-and-stop',
+    criterion:
+      'An external URL is refused in-window and opens in the system browser; "Stop background service" stops the core and the window reports the disconnected state honestly.',
+    reference: 'ui DESIGN §1.5 #3, #7',
+    why: 'The system browser and a real process shutdown.',
+    automated:
+      'electron/window.test.ts (the decision, including the refused file: and javascript: schemes), electron/shell.test.ts (the wiring, and that Stop posts /api/service/shutdown without quitting the app).',
+    steps: [
+      'Open a session whose transcript contains an external link and click it: the default browser opens it and the window does not navigate.',
+      'Tray → Stop background service. The indicator goes reconnecting, then offline, and the banner appears. The window stays open and says so plainly.',
+      'Tray → Quit with the core running: the window closes and the node process survives.',
+    ],
+  },
+  {
+    id: 'M7-clone-a-real-repo',
+    criterion:
+      'Cloning a repo shows progress, survives dismissing the dialog, flips the card to active on completion, and on failure shows git’s own message and removes the row.',
+    reference: 'ui IMPLEMENTATION §7',
+    why: 'A real git clone over a real network, and a real credential failure on the unhappy path.',
+    automated:
+      'web/src/projects/clone.test.ts — the fold over project.clone.progress/completed/failed, that git’s stderr is kept verbatim, and that a completed clone drops the row so the project’s own status is the only claim. web/src/projects/QuickAddDialog.test.tsx — inspect → clone, the 202, and the dialog closing at once.',
+    steps: [
+      'Add project → Clone URL → paste a repository of a few hundred MB → Inspect → Clone.',
+      'Dismiss the dialog immediately. The rail card shows provisioning with git’s phases and percentages moving.',
+      'Wait for completion: the card flips to active and the progress row disappears.',
+      'Repeat with a private repository you have no credentials for: git’s own message is shown verbatim and the row disappears.',
+    ],
+  },
+  {
+    id: 'M7-worktree-review',
+    criterion:
+      'A worktree with unmerged commits appears under Review needed with its branch and commit count; Clean up requires a confirmation naming the branch; a clean worktree never appears there.',
+    reference: 'ui IMPLEMENTATION §7',
+    why: 'Needs a real git worktree with real commits — the counts are computed by projects from git itself.',
+    automated:
+      'web/src/projects/ProjectPage.test.tsx — the region, the branch and count, the confirmation naming the branch, the cleanup call, and that a clean worktree is absent.',
+    steps: [
+      'Launch a write-capable agent on a git project so it takes a worktree, and let it commit something.',
+      'Open the project page: the branch and commit count are under Review needed.',
+      'Press Clean up: the confirmation names the branch. Cancel — nothing is removed.',
+      'Confirm it, and check git worktree list no longer shows it.',
+      'Repeat with a session that changed nothing: the worktree must not appear there at all.',
+    ],
+  },
+  {
+    id: 'M8-under-a-minute',
+    criterion:
+      'Under a minute from clicking New agent to a saved card on the board, with a one-sentence description and no edits.',
+    reference: 'ui IMPLEMENTATION §8, DESIGN §7.1',
+    why: 'A stopwatch on a person, plus a real drafting call whose latency is roster’s (§12.2 budgets ~8s p50).',
+    automated:
+      'web/src/agents/AgentWizard.test.tsx — the whole flow is describe → Draft → Save with no edits and exactly two requests. web/e2e/agent.test.ts — the saved definition read back byte-equal, persona.md byte-for-byte, and the accepted skill’s SKILL.md on disk.',
+    steps: [
+      'Start the stopwatch, click New agent, type one sentence, press Draft this agent.',
+      'Edit nothing. Press Save when the review step appears.',
+      'Stop when the new card is on the board. Record the total and how much of it was the drafting call.',
+      'Any run over a minute is a milestone failure — say whether it was the model or the form.',
+    ],
+  },
 ];
 
 const bold = (text) => `[1m${text}[0m`;
 const dim = (text) => `[2m${text}[0m`;
 
-console.log(bold('\nui M1–M5 — manual acceptance checks'));
+console.log(bold('\nui M1–M8 — manual acceptance checks'));
 console.log(
   dim(
     `${String(CHECKS.length)} criteria that need a real browser, a real process kill, a real phone, or a stopwatch.\n` +
-      'Everything else in ui IMPLEMENTATION §1–§5 is covered by `npm test`.\n',
+      'Everything else in ui IMPLEMENTATION §1–§8 is covered by `npm test`.\n',
   ),
 );
 

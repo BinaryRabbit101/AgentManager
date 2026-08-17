@@ -6,6 +6,7 @@
 
 @import './theme/tokens.css';
 @import './core-loop.css';
+@import './pages.css';
 
 *,
 *::before,

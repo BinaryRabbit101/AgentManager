@@ -36,6 +36,16 @@ export default defineConfig({
         },
       },
       {
+        // The Electron shell (ui M6). Node, because the shell is a Node program
+        // — and *only* the shell: Electron itself needs a downloaded binary and
+        // a display, so `host.ts` is the seam every test here drives instead.
+        test: {
+          name: 'electron',
+          include: ['electron/**/*.test.ts'],
+          environment: 'node',
+        },
+      },
+      {
         test: {
           name: 'web-e2e',
           include: ['web/e2e/**/*.test.ts'],

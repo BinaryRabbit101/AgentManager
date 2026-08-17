@@ -30,6 +30,7 @@
     "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:web": "tsc -p web/tsconfig.json --noEmit",
+    "typecheck:electron": "tsc -p electron/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:boundary": "vitest run --project server boundary src/lifecycle/bind.test.ts src/lifecycle/process.test.ts src/main.test.ts src/modules/runner/boundaries.test.ts",
@@ -37,7 +38,7 @@
     "checks:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Verify-Install.ps1",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
-    "ci": "npm run lint && npm run typecheck && npm run typecheck:web && npm run build && npm run build:web && npm test"
+    "ci": "npm run lint && npm run typecheck && npm run typecheck:web && npm run typecheck:electron && npm run build && npm run build:web && npm test"
   },
   "devDependencies": {
     "@dnd-kit/core": "^6.3.1",

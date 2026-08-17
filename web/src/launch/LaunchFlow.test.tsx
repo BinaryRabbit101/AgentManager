@@ -57,10 +57,11 @@ function serving(options: Options = {}): {
       return json(answer.body, answer.status);
     }
     if (path.endsWith('/validate')) {
-      // roster M8 is not mounted in this build; the default is its 404.
+      // The route is mounted since roster M8; the default is a refusal, which
+      // is what the panel has to render honestly.
       const answer = options.validate ?? {
-        status: 404,
-        body: { error: 'not_found', message: 'No route POST /api/roster/agents/priya/validate.' },
+        status: 400,
+        body: { error: 'unknown_project', message: 'No project "ghost" exists.' },
       };
       return json(answer.body, answer.status);
     }
@@ -255,8 +256,8 @@ describe('the elevation banner is never collapsed (§6)', () => {
   });
 });
 
-describe('the permission preview, and the roster M8 gap (§6)', () => {
-  it('hides the panel behind one sentence when /validate is not mounted', async () => {
+describe('the permission preview (§6)', () => {
+  it('shows roster’s refusal verbatim and guesses nothing', async () => {
     const fixture = serving();
     mount(<App />, { respond: fixture.respond });
     openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
@@ -266,7 +267,7 @@ describe('the permission preview, and the roster M8 gap (§6)', () => {
     await user.click(within(dialog).getByText('Permissions'));
 
     await waitFor(() =>
-      expect(within(dialog).getByText('permission preview available soon')).toBeInTheDocument(),
+      expect(within(dialog).getByText('No project "ghost" exists.')).toBeInTheDocument(),
     );
     // Nothing is guessed: no mode, no rule list.
     expect(within(dialog).queryByText('Mode')).toBeNull();

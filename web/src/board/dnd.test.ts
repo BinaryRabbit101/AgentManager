@@ -22,6 +22,7 @@ import {
   pickedUp,
   projectTarget,
   stepRing,
+  workItemTarget,
 } from './dnd';
 
 const priya = agentTarget('priya', 'Priya');
@@ -142,5 +143,57 @@ describe('the live region says the same sentence the floating label does (§5.3,
       'Nothing was started',
     );
     expect(cancelled('Priya')).toContain('stayed where it was');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The work item row (§5.3 row 2, added with the project page in M7)
+// ---------------------------------------------------------------------------
+
+describe('dropping an agent on a work item', () => {
+  const open = workItemTarget({
+    id: 'w1',
+    projectId: 'lpm',
+    title: 'Fix the 500 on /invoices',
+    status: 'open',
+  });
+
+  it('opens the launch flow with the item attached, and starts nothing', () => {
+    expect(dropOutcome('priya', open)).toEqual({
+      kind: 'launch-work-item',
+      agentId: 'priya',
+      projectId: 'lpm',
+      workItemId: 'w1',
+    });
+    expect(droppedOn('Priya', dropOutcome('priya', open), open.label)).toContain(
+      'Nothing has started yet',
+    );
+  });
+
+  it('refuses an item the user has already closed, and says which', () => {
+    // The same rule an archived project follows: refusing at the drop beats a
+    // flow that surprises on submit.
+    for (const status of ['done', 'dropped'] as const) {
+      const closed = workItemTarget({ id: 'w2', projectId: 'lpm', title: 'Old', status });
+      const outcome = dropOutcome('priya', closed);
+      expect(outcome.kind).toBe('refused');
+      expect(overTarget('Priya', closed)).toContain("can't be launched on");
+    }
+  });
+
+  it('announces the item by name while it is under the cursor', () => {
+    expect(overTarget('Priya', open)).toBe(
+      'Launch Priya on the work item “Fix the 500 on /invoices”.',
+    );
+  });
+
+  it('sits after the projects in the keyboard ring', () => {
+    // The arrows walk cards, then projects, then work items — one deterministic
+    // order on every viewport, which is what the live region reads out.
+    expect(buildRing([priya], [lpm], [open]).map((target) => target.id)).toEqual([
+      'priya',
+      'lpm',
+      'w1',
+    ]);
   });
 });

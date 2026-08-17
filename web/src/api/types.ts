@@ -86,6 +86,28 @@ export type Avatar =
   | { readonly kind: 'file'; readonly value: string }
   | { readonly kind: 'initials'; readonly value: string; readonly color: string };
 
+/** roster §6's four rungs, least to most permissive. The editor's mode picker. */
+export const PERMISSION_MODES = ['plan', 'dontAsk', 'default', 'acceptEdits'] as const;
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
+
+/** orchestrator §2.3's pinned five. The role checkboxes, and nothing else. */
+export const ROLES = ['implementer', 'architect', 'skeptic', 'reviewer', 'overseer'] as const;
+export type Role = (typeof ROLES)[number];
+
+export interface PermissionSet {
+  readonly mode?: PermissionMode;
+  /** Auto-approve, never a restriction (roster §6.1) — restriction is `deny`. */
+  readonly allow?: readonly string[];
+  readonly deny?: readonly string[];
+  readonly ask?: readonly string[];
+}
+
+export interface ModelSelection {
+  readonly primary: string;
+  readonly fallback?: string;
+  readonly effort?: string;
+}
+
 export interface AgentDefinition {
   readonly schemaVersion: number;
   readonly id: string;
@@ -94,12 +116,23 @@ export interface AgentDefinition {
   readonly specialty: Specialty;
   readonly tagline?: string;
   readonly tags?: readonly string[];
+  /** `mode` is `append` onto Claude Code's preset, or `replace` (roster §5). */
+  readonly persona?: { readonly mode: string; readonly file: string };
+  readonly model?: ModelSelection;
+  readonly permissions?: PermissionSet;
+  readonly skills?: { readonly mode: string; readonly names?: readonly string[] };
+  readonly integrations?: Readonly<Record<string, unknown>>;
   readonly capabilities?: {
     readonly overseer?: boolean;
     /** The pinned five of orchestrator §2.3; the role picker is limited to these. */
     readonly roles?: readonly string[];
   };
-  readonly meta: { readonly createdAt: string; readonly origin?: string };
+  readonly meta: {
+    readonly createdAt: string;
+    readonly origin?: string;
+    /** roster §9.2 — the "cloned from" line and the shared-credentials note (§7.2). */
+    readonly duplicatedFrom?: string | null;
+  };
 }
 
 export type DiagnosticLevel = 'error' | 'warn' | 'info';
@@ -185,12 +218,65 @@ export interface PermissionElevation {
   readonly reason: string;
 }
 
+/** projects §1.3's stored override. Never composed here (§4) — roster composes. */
+export interface PermissionOverride {
+  readonly allow?: readonly string[];
+  readonly deny?: readonly string[];
+  readonly ask?: readonly string[];
+  readonly mode?: string;
+}
+
+/**
+ * projects §1.4. **The UI renders the name and never the value.**
+ *
+ * A literal `value` can be in the row, so the type says so honestly — but §8.2
+ * pins that env entries are shown "as `secretRef` names with a set/unset
+ * indicator, never values", and `envEntryView` below is the only way this record
+ * reaches a component.
+ */
+export type EnvEntry =
+  | { readonly name: string; readonly value: string }
+  | { readonly name: string; readonly secretRef: string };
+
 export interface ProjectDefaults {
   readonly agentIds?: readonly string[];
+  readonly overseerAgentId?: string;
+  readonly permissions?: PermissionOverride;
   readonly permissionElevation?: PermissionElevation;
+  readonly env?: readonly EnvEntry[];
   readonly setupCommand?: string;
   readonly instructionsPath?: string;
 }
+
+/**
+ * What §8.2 lets the settings panel see of one env entry.
+ *
+ * The `value` branch is collapsed to `set: true` **here**, in the type layer, so
+ * no component is ever handed the string. That is the difference between a rule
+ * and a habit: a future settings field cannot print a value it was never given.
+ */
+export interface EnvEntryView {
+  readonly name: string;
+  /** The `secretRef` name, or `null` for a literal stored in the project row. */
+  readonly secretRef: string | null;
+  /** Whether anything is there at all — the set/unset indicator of §8.2. */
+  readonly set: boolean;
+}
+
+export function envEntryView(entry: EnvEntry): EnvEntryView {
+  if ('secretRef' in entry) {
+    return { name: entry.name, secretRef: entry.secretRef, set: entry.secretRef !== '' };
+  }
+  return { name: entry.name, secretRef: null, set: entry.value !== '' };
+}
+
+export interface RetentionSettings {
+  readonly transcriptDays: number;
+  readonly transcriptCapMb: number;
+  readonly keepPinned: boolean;
+}
+
+export type WorkspacePolicy = 'auto' | 'shared' | 'worktree';
 
 /**
  * `GET /api/projects/:id` — the full record, which the list route also spreads.
@@ -202,6 +288,9 @@ export interface ProjectDefaults {
  */
 export interface ProjectDetail extends Project {
   readonly defaults: ProjectDefaults;
+  readonly workspacePolicy: WorkspacePolicy;
+  /** `null` = inherit the global retention settings (projects §3.3). */
+  readonly retention: RetentionSettings | null;
 }
 
 /**
@@ -228,6 +317,19 @@ export function projectLaunchRefusal(project: Project): string | undefined {
 export interface InspectionWarning {
   readonly code: string;
   readonly message: string;
+}
+
+/** `POST /api/projects/inspect { repoUrl }` — the clone form, filled (§8.1). */
+export interface RepoInspection {
+  readonly repoUrl: string;
+  readonly host: string | null;
+  readonly name: string;
+  readonly slug: string;
+  /** `<projectsRoot>\<name>`, canonicalised. */
+  readonly targetPath: string;
+  readonly targetExists: boolean;
+  readonly targetEmpty: boolean;
+  readonly warnings: readonly InspectionWarning[];
 }
 
 export interface ProjectInspection {
@@ -445,4 +547,200 @@ export interface QuestionCard {
 
 export interface QuestionListView {
   readonly questions: readonly QuestionCard[];
+}
+
+/** `GET /api/orchestrator/status` (orchestrator §11.3) — the fleet view. */
+export interface AgentStatus {
+  readonly agentId: string;
+  readonly state: FleetState;
+  readonly assignmentId: string | null;
+  readonly sessionId: string | null;
+  readonly projectId: string | null;
+  readonly role: string | null;
+  readonly headline: string | null;
+  readonly since: string | null;
+}
+
+export interface FleetStatus {
+  readonly agents: readonly AgentStatus[];
+  readonly assignments: {
+    readonly open: number;
+    readonly halted: number;
+    readonly awaitingUser: number;
+  };
+  /** §2.2's badge count, and the number the Electron tray mirrors (§1.5 #6). */
+  readonly questions: { readonly open: number; readonly oldestOpenedAt: string | null };
+}
+
+// ---------------------------------------------------------------------------
+// Projects — the project page (§8.2)
+// ---------------------------------------------------------------------------
+
+/** projects §3.1's derived projection. **Read, never derived here** (§4). */
+export type AssignmentOutcome = 'running' | 'completed' | 'stopped' | 'failed';
+
+export interface ActivitySession {
+  readonly id: string;
+  readonly agentId: string;
+  readonly status: SessionStatus;
+  /** `transcript_path IS NOT NULL` — `false` renders "transcript pruned" (§8.2). */
+  readonly transcriptAvailable: boolean;
+  readonly summary: string | null;
+  readonly pinned: boolean;
+  readonly startedAt: string | null;
+  readonly endedAt: string | null;
+}
+
+export type WorkspaceKind = 'primary' | 'worktree';
+
+export interface ProjectActivityEntry {
+  readonly assignmentId: string;
+  readonly workItemIds: readonly string[];
+  readonly agentIds: readonly string[];
+  /** `null` for a solo assignment (projects §3.1). */
+  readonly pattern: string | null;
+  readonly scopeSummary: string | null;
+  readonly workspace: {
+    readonly kind: WorkspaceKind;
+    readonly path: string;
+    readonly branch: string | null;
+  } | null;
+  readonly startedAt: string;
+  readonly endedAt: string | null;
+  readonly outcome: AssignmentOutcome;
+  readonly tokens: { readonly input: number; readonly output: number };
+  readonly sessions: readonly ActivitySession[];
+}
+
+export interface ProjectActivityPage {
+  readonly entries: readonly ProjectActivityEntry[];
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+}
+
+export type WorkItemKind = 'bug' | 'feature' | 'chore' | 'question';
+export const WORK_ITEM_KINDS = ['bug', 'feature', 'chore', 'question'] as const;
+export type WorkItemStatus = 'open' | 'in_progress' | 'done' | 'dropped';
+
+/** projects §1.5's deliberately thin backlog entry: no priority, no assignee. */
+export interface WorkItem {
+  readonly id: string;
+  readonly projectId: string;
+  readonly kind: WorkItemKind;
+  readonly title: string;
+  readonly body: string;
+  readonly status: WorkItemStatus;
+  readonly rank: number;
+  readonly scopePaths: readonly string[];
+  readonly source: 'user' | 'overseer';
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly closedAt: string | null;
+}
+
+export interface WorkItemListView {
+  readonly workItems: readonly WorkItem[];
+}
+
+/** projects §4.4's "review needed" state. Derived on read, never stored. */
+export interface WorkspaceReview {
+  readonly commits: number;
+  readonly dirty: boolean;
+  readonly present: boolean;
+}
+
+export interface WorkspaceListEntry {
+  readonly id: string;
+  readonly projectId: string;
+  readonly assignmentId: string;
+  readonly kind: WorkspaceKind;
+  readonly path: string;
+  readonly branch: string | null;
+  readonly baseCommit: string | null;
+  readonly write: boolean;
+  readonly state: 'active' | 'released' | 'orphaned';
+  readonly acquiredAt: string;
+  readonly releasedAt: string | null;
+  readonly scopePaths: readonly string[];
+  /** Present for a retained worktree — the loudest thing on the page (§8.2). */
+  readonly review?: WorkspaceReview;
+}
+
+export interface WorkspaceListView {
+  readonly workspaces: readonly WorkspaceListEntry[];
+}
+
+/** `GET /api/sessions?agentId=` — the agent detail page's history (§7.3). */
+export interface SessionListView {
+  readonly sessions: readonly SessionRecord[];
+  readonly next: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Roster — the wizard and the editor (§7)
+// ---------------------------------------------------------------------------
+
+export const MODEL_TIERS = ['fast', 'balanced', 'max'] as const;
+export type ModelTier = (typeof MODEL_TIERS)[number];
+
+export const PERSONA_MODES = ['append', 'replace'] as const;
+export type PersonaMode = (typeof PERSONA_MODES)[number];
+
+export interface SuggestedSkill {
+  readonly name: string;
+  readonly description: string;
+}
+
+export interface SuggestedIntegration {
+  readonly name: string;
+  readonly why: string;
+  /** A placeholder ref, never a credential (roster §12.2, §10). */
+  readonly secretRef?: string;
+}
+
+/** roster §12.3's `draft`: "an `agent.json`-shaped object, minus id/meta". */
+export interface AgentDraft {
+  readonly schemaVersion?: number;
+  readonly name?: string;
+  readonly avatar?: { readonly kind: 'emoji'; readonly value: string };
+  readonly specialty?: string;
+  readonly tagline?: string;
+  readonly tags?: readonly string[];
+  readonly persona?: { readonly mode: string; readonly file: string };
+  readonly model?: {
+    readonly primary: string;
+    readonly fallback?: string;
+    readonly effort?: string;
+  };
+  readonly permissions?: {
+    readonly mode?: string;
+    readonly allow?: readonly string[];
+    readonly deny?: readonly string[];
+    readonly ask?: readonly string[];
+  };
+  readonly capabilities?: { readonly overseer: boolean; readonly roles: readonly string[] };
+}
+
+/** `POST /api/roster/draft` → roster §12.3, verbatim in field names. */
+export interface DraftResponse {
+  readonly draft: AgentDraft;
+  /** The markdown body — `persona.md`, which the wizard posts as `personaText`. */
+  readonly persona: string;
+  /** Per-field-group prose, shown beside each section (§7.1). */
+  readonly rationale: Readonly<Record<string, string>>;
+  readonly suggestedSkills: readonly SuggestedSkill[];
+  readonly suggestedIntegrations: readonly SuggestedIntegration[];
+  readonly warnings: readonly string[];
+  /** "Claude couldn't finish this draft" — every partial field stays editable. */
+  readonly degraded: boolean;
+  readonly attempts?: number;
+}
+
+/** `DELETE /api/roster/agents/:id[?purge=true]` (roster §9.1). */
+export interface RemoveAgentResult {
+  readonly agentId: string;
+  /** Where it went, or `null` when it was purged outright. */
+  readonly archivedAt: string | null;
+  readonly purged: boolean;
 }
