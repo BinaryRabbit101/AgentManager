@@ -240,6 +240,11 @@ export function createRunnerModule(
         transcripts: reader,
         launch,
         recovery,
+        // §7.4's `cliReported` row reads the settings key the launch chain
+        // writes — the same repository, so the usage screen sees an event the
+        // moment a session captured it, without a second store to keep in step.
+        settings: ctx.store.settings,
+        clock: ctx.clock,
       });
 
       // §5.4 stages 2 and 3 seen from outside the callback, plus §9.2's question

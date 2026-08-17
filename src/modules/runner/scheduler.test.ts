@@ -10,6 +10,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { coolDownSuite } from './__tests__/coolDownSuite.js';
 import { makeTempDir, type TempDir } from './__tests__/helpers.js';
 import {
   fakeInit,
@@ -28,7 +29,6 @@ import {
 } from './__tests__/launchHarness.js';
 import type { QueryFn } from './sdk.js';
 import { CAPACITY_SETTING_KEY } from './scheduler.js';
-import type { SDKMessage } from './sdk.js';
 
 let temp: TempDir;
 
@@ -89,14 +89,6 @@ async function drain(
 ): Promise<void> {
   gate.autoFinish();
   for (const sessionId of sessionIds) await harness.service.awaitSettled(sessionId);
-}
-
-/** A rate-limited turn, classified from `terminal_reason` (SDK-NOTES G7). */
-function blockingLimitTail(): SDKMessage[] {
-  return [
-    fakeResult({ subtype: 'error_during_execution', terminalReason: 'blocking_limit' }),
-    fakeSessionStateChanged('idle'),
-  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -350,98 +342,11 @@ describe('blocked entries wait for a workspace (M5, §6.2, §3.2)', () => {
 });
 
 describe('the rate-limit cool-down (M5, §6.4)', () => {
-  it('blocks admissions while running sessions continue, and emits runner.ratelimited with a source', async () => {
-    const gate = gatedQuery();
-    const harness = makeLaunchHarness({
-      dataRoot: dataRoot(),
-      query: gate.query,
-      config: { maxConcurrent: 2 },
-    });
-    try {
-      const seed = harness.seed();
-      const survivor = await launch(harness, seed);
-      const limited = await launch(harness, seed);
-      await gate.started(2);
-
-      gate.sessions[1]?.finish(blockingLimitTail());
-      await harness.service.awaitSettled(limited);
-
-      const queued = await launch(harness, seed);
-      expect(harness.service.queueState().cooling).toBe(true);
-      // "Running sessions are left alone; queued sessions stay queued."
-      expect(statusOf(harness, survivor)).toBe('running');
-      expect(statusOf(harness, queued)).toBe('queued');
-
-      const emitted = harness.events.filter((event) => event.type === 'runner.ratelimited');
-      expect(emitted).toHaveLength(1);
-      expect(emitted[0]?.persist).toBe(true);
-      expect(emitted[0]?.payload).toMatchObject({ source: 'terminal-reason' });
-
-      // Only the survivor can be drained: the queued one is still waiting on a
-      // cool-down that this test never lets expire, which is the point.
-      await drain(harness, gate, [survivor]);
-      expect(statusOf(harness, queued)).toBe('queued');
-    } finally {
-      harness.close();
-    }
-  });
-
-  it('doubles the cool-down on a second consecutive hit and clears it on the next successful start', async () => {
-    const clock = movableClock();
-    const gate = gatedQuery();
-    const harness = makeLaunchHarness({
-      dataRoot: dataRoot(),
-      query: gate.query,
-      clock: clock.now,
-      config: { maxConcurrent: 2, rateLimit: { cooldownMs: 300_000, maxCooldownMs: 1_800_000 } },
-    });
-    try {
-      const seed = harness.seed();
-      const first = await launch(harness, seed);
-      const second = await launch(harness, seed);
-      await gate.started(2);
-
-      gate.sessions[0]?.finish(blockingLimitTail());
-      await harness.service.awaitSettled(first);
-      expect(harness.service.queueState().coolingUntil).toBe(
-        new Date(START.getTime() + 300_000).toISOString(),
-      );
-
-      gate.sessions[1]?.finish([
-        fakeResult({
-          subtype: 'error_during_execution',
-          errors: ['API Error: 429 rate limit exceeded'],
-        }),
-        fakeSessionStateChanged('idle'),
-      ]);
-      await harness.service.awaitSettled(second);
-
-      // Doubled, and classified from the error text this time (§6.4's fallback).
-      expect(harness.service.queueState().coolingUntil).toBe(
-        new Date(START.getTime() + 600_000).toISOString(),
-      );
-      expect(
-        harness.events
-          .filter((event) => event.type === 'runner.ratelimited')
-          .map((event) => (event.payload as { source: string }).source),
-      ).toEqual(['terminal-reason', 'error-text']);
-
-      // A session enqueued during the cool-down waits for it.
-      const waiting = await launch(harness, seed);
-      expect(statusOf(harness, waiting)).toBe('queued');
-
-      // …and the cool-down is cleared by the next successful start, not by a timer.
-      clock.advanceMinutes(11);
-      harness.launch.onWorkspaceReleased();
-      await gate.started(3);
-      expect(statusOf(harness, waiting)).toBe('running');
-      expect(harness.service.queueState()).toMatchObject({ cooling: false, coolingUntil: null });
-
-      await drain(harness, gate, [waiting]);
-    } finally {
-      harness.close();
-    }
-  });
+  // The suite itself lives in `__tests__/coolDownSuite.ts` so M11 can run the
+  // *same* two tests with `rate_limit_event` handling switched off and assert
+  // that scheduling is identical (`usageWindows.test.ts`). Nothing inside it
+  // changed when it moved.
+  coolDownSuite({ dataRoot });
 });
 
 describe('a CLI-reported rate limit (M5, §6.4, §7.4)', () => {

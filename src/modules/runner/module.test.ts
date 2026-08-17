@@ -112,8 +112,9 @@ describe('module registration', () => {
   it('applies migrations/runner/ after foundation and records it under "runner"', async () => {
     const booted = await bootCore();
 
-    // Two migrations now: `0001_runner.sql` and M4's `0002_usage.sql`.
-    expect(booted.storage.setVersions[RUNNER_MODULE_ID]).toBe(2);
+    // Three migrations now: `0001_runner.sql`, M4's `0002_usage.sql` and M11's
+    // `0003_usage_windows.sql`.
+    expect(booted.storage.setVersions[RUNNER_MODULE_ID]).toBe(3);
     const ledger = booted.storage.db
       .prepare<[], { module: string; version: number }>(
         'SELECT module, version FROM schema_migrations',
@@ -121,6 +122,7 @@ describe('module registration', () => {
       .all();
     expect(ledger).toContainEqual({ module: RUNNER_MODULE_ID, version: 1 });
     expect(ledger).toContainEqual({ module: RUNNER_MODULE_ID, version: 2 });
+    expect(ledger).toContainEqual({ module: RUNNER_MODULE_ID, version: 3 });
 
     // The added columns exist, which is only possible if foundation's
     // `0001_init.sql` created `sessions` first.
@@ -155,13 +157,13 @@ describe('module registration', () => {
 
     const second = await bootCore();
     expect(second.storage.applied.some((entry) => entry.setId === RUNNER_MODULE_ID)).toBe(false);
-    expect(second.storage.setVersions[RUNNER_MODULE_ID]).toBe(2);
+    expect(second.storage.setVersions[RUNNER_MODULE_ID]).toBe(3);
     const rows = second.storage.db
       .prepare<[string], { n: number }>(
         'SELECT COUNT(*) AS n FROM schema_migrations WHERE module = ?',
       )
       .get(RUNNER_MODULE_ID);
-    expect(rows?.n).toBe(2);
+    expect(rows?.n).toBe(3);
   });
 
   it('reports healthy with no sessions present, and stops cleanly', async () => {

@@ -129,7 +129,6 @@ import {
   classifyRateLimit,
   outcomeForResult,
   readAssistant,
-  readRateLimitEvent,
   readStreamDelta,
   readUser,
 } from './messages.js';
@@ -143,6 +142,7 @@ import {
   createScheduler,
   type QueueEntry,
   type QueueState,
+  type RateLimitStatus,
   type Scheduler,
 } from './scheduler.js';
 import type { QueryFn } from './sdk.js';
@@ -150,6 +150,7 @@ import { TERMINAL_STATUSES, type ExitReason } from './status.js';
 import { composeSummary } from './summary.js';
 import type { SessionTranscript, TranscriptFactory } from './transcript.js';
 import { createRunMeter, type UsageRepository } from './usage.js';
+import { createRateLimitEventCapture, type RateLimitEventCapture } from './usageWindows.js';
 
 /** How much of the child's stderr is kept for a failure message (§3.2, §9.2). */
 const STDERR_TAIL_BYTES = 4096;
@@ -386,6 +387,8 @@ export interface LaunchChain {
   queueState(): QueueState;
   /** The queue panel's rows, running first (§11.1's `GET /api/runner/queue`). */
   queueEntries(): readonly QueueEntry[];
+  /** §7.4's `observed` rate-limit row, for `GET /api/runner/usage` (M11). */
+  rateLimitStatus(): RateLimitStatus;
   /** `PUT /api/runner/capacity` (§6.1). Returns the clamped value stored. */
   setCapacity(maxConcurrent: number): number;
   /** Stops admitting. {@link shutdown} is the whole of §9.1. */
@@ -515,6 +518,19 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     },
     log,
   });
+
+  /**
+   * §7.4's `cli-reported` row (M11), or nothing at all.
+   *
+   * Built once, and **not built** when `rateLimit.observeCliEvent` is false —
+   * so turning the key off removes the `rate_limit_event` handler rather than
+   * making it a no-op that still runs. That distinction is what M11's fourth
+   * acceptance bullet is actually asserting when it runs M5's cool-down suite
+   * "with the handler disabled".
+   */
+  const rateLimitEvents: RateLimitEventCapture | undefined = config.rateLimit.observeCliEvent
+    ? createRateLimitEventCapture({ settings: store.settings, clock: deps.clock, log })
+    : undefined;
 
   /** A queued session that will never start, settled without a transcript. */
   function failQueued(sessionId: string, exitReason: ExitReason, message: string): void {
@@ -876,8 +892,17 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
               error: describe(error),
             });
           }
-          const rateLimit = readRateLimitEvent(message);
+          // §7.4, M11. `capture` both stores whatever it recognised into
+          // `settings['runner.rateLimit.lastEvent']` and hands back the parsed
+          // facts; it never throws, so an unexpected shape costs a display and
+          // not a session. `rateLimitEvents` is `undefined` when
+          // `rateLimit.observeCliEvent` is off, which removes the handler
+          // outright — the state M11's acceptance runs M5's cool-down suite in.
+          const rateLimit = rateLimitEvents?.capture(message);
           if (rateLimit?.exhausted === true) {
+            // §6.4 acts on the *presence* of an exhaustion, never on the
+            // numbers: `resetsAt` only ever moves a deadline the backoff would
+            // otherwise have guessed, and every other captured field is display.
             scheduler.noteRateLimit({
               source: 'rate_limit_event',
               resetsAt: rateLimit.resetsAt,
@@ -2144,6 +2169,7 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
     activeCount: () => scheduler.activeCount(),
     queueState: () => scheduler.state(),
     queueEntries: () => scheduler.entries(),
+    rateLimitStatus: () => scheduler.rateLimitStatus(),
     setCapacity: (maxConcurrent) => scheduler.setCapacity(maxConcurrent),
     stopAdmitting: () => {
       scheduler.stop();

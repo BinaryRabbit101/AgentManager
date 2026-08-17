@@ -2,10 +2,10 @@
  * `RunnerService` — the in-process face of runner DESIGN §11.2, as far as M1–M10
  * take it.
  *
- * §11.2's full interface also carries `usageWindows`, which needs the rolling
- * `usage_events` sums of M11 and is **absent rather than stubbed**: a method
- * that resolves without doing anything is a contract another element can build
- * against and then discover is a lie.
+ * §11.2's `usageWindows` landed with M11 and completes the pinned interface. It
+ * is the one method here that reads no session row: §7.4's payload is two
+ * indexed window queries over `usage_events`, the scheduler's observed
+ * rate-limit state, and whatever the CLI last volunteered.
  *
  * ## Why `stop` and `continueFrom` landing here change something elsewhere
  *
@@ -17,7 +17,7 @@
  * starting a stranger — "not an optimisation detail" (orchestrator §3.2), and
  * asserted end to end from orchestrator's side.
  */
-import type { SessionStatus } from '../../storage/index.js';
+import type { Clock, SessionStatus, SettingsRepository } from '../../storage/index.js';
 
 import { LaunchUnavailableError } from './errors.js';
 import type {
@@ -31,7 +31,8 @@ import type {
 } from './launch.js';
 import type { Recovery } from './recovery.js';
 import type { ExitReason } from './status.js';
-import { bandRank, type QueueEntry, type QueueState } from './scheduler.js';
+import { bandRank, type QueueEntry, type QueueState, type RateLimitStatus } from './scheduler.js';
+import { createUsageWindows, type UsageWindows } from './usageWindows.js';
 import { TERMINAL_STATUSES } from './status.js';
 import type { ListSessionsQuery, RunnerSessionRecord, SessionRepository } from './repository.js';
 import type { ReadForwardOptions, TranscriptPage, TranscriptReader } from './transcriptReader.js';
@@ -161,6 +162,16 @@ export interface RunnerService {
   /** The queue panel's rows (`GET /api/runner/queue`). */
   queueEntries(): readonly QueueEntry[];
   /**
+   * §11.2's `usageWindows()` — `GET /api/runner/usage`'s payload (§7.4, M11).
+   *
+   * Rolling 5-hour and 7-day sums of **AgentManager's own** spend, the observed
+   * rate-limit state, whatever the CLI last volunteered, and the disclaimer that
+   * says none of it is the owner's remaining plan window. There is deliberately
+   * no method here that answers "how much is left", because nothing this
+   * process can read knows.
+   */
+  usageWindows(): UsageWindows;
+  /**
    * `PUT /api/runner/capacity` (§6.1): the runtime cap, clamped to 1..8 and
    * written to foundation's `settings` rather than to config, which is immutable
    * per process. Returns the value actually stored.
@@ -208,12 +219,39 @@ export interface RunnerServiceOptions {
    * the honest degradation for a build that has not wired recovery.
    */
   readonly recovery?: Pick<Recovery, 'resumability'> | undefined;
+  /**
+   * Foundation's `settings`, for §7.4's `cliReported` row (M11).
+   *
+   * Optional for the same reason `launch` is: a caller that only reads sessions
+   * and transcripts has no rate-limit history to report. Absent, the row is
+   * `null` — which is also what it says on an installation the CLI has never
+   * volunteered an event to, so the degraded shape and the ordinary one are the
+   * same shape.
+   */
+  readonly settings?: Pick<SettingsRepository, 'get'> | undefined;
+  readonly clock?: Clock | undefined;
 }
+
+/** What a service with no launch chain reports for §7.4's `observed` row. */
+const NO_RATE_LIMIT: RateLimitStatus = {
+  state: 'ok',
+  lastHitAt: null,
+  resetsAt: null,
+  lastSource: null,
+  consecutiveHits: 0,
+};
 
 const ACTIVE_STATUSES: readonly SessionStatus[] = ['queued', 'running', 'paused'];
 
 export function createRunnerService(options: RunnerServiceOptions): RunnerService {
   const { sessions, transcripts, usage } = options;
+
+  const usageWindows = createUsageWindows({
+    usage,
+    settings: options.settings ?? { get: () => undefined },
+    rateLimit: () => options.launch?.rateLimitStatus() ?? NO_RATE_LIMIT,
+    clock: options.clock ?? ((): Date => new Date()),
+  });
 
   function launchChain(): LaunchChain {
     if (options.launch === undefined) {
@@ -294,6 +332,7 @@ export function createRunnerService(options: RunnerServiceOptions): RunnerServic
 
     queueState: () => launchChain().queueState(),
     queueEntries: () => launchChain().queueEntries(),
+    usageWindows,
     setCapacity: (maxConcurrent) => launchChain().setCapacity(maxConcurrent),
 
     getTranscriptTail: (sessionId, tail = {}) =>

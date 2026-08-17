@@ -85,6 +85,27 @@ export interface RateLimitHit {
   readonly hint?: string | undefined;
 }
 
+/**
+ * §7.4's third row: the **observed** rate-limit state, and the only
+ * authoritative one — "it arrives only after the fact".
+ *
+ * This is what `GET /api/runner/usage` reports under `source: 'observed'`
+ * (M11). It carries no utilization, no percentage and no remaining figure,
+ * because the scheduler has none: it knows that a request was refused and when
+ * it will next try, and nothing about the size of the window that refused it.
+ */
+export interface RateLimitStatus {
+  readonly state: 'ok' | 'cooling';
+  /** When the most recent hit was observed, across the process's lifetime. */
+  readonly lastHitAt: string | null;
+  /** The end of the current cool-down; `null` once nothing is pending. */
+  readonly resetsAt: string | null;
+  /** How the most recent hit was classified (§6.4, SDK-NOTES G7). */
+  readonly lastSource: RateLimitSource | null;
+  /** Consecutive hits since the last successful start — the backoff's exponent. */
+  readonly consecutiveHits: number;
+}
+
 export type SchedulerLog = (
   level: 'debug' | 'info' | 'warn' | 'error',
   message: string,
@@ -122,6 +143,8 @@ export interface Scheduler {
   noteStarted(): void;
   /** An observed rate limit (§6.4). */
   noteRateLimit(hit: RateLimitHit): void;
+  /** §7.4's `observed` row, for `GET /api/runner/usage` (M11). */
+  rateLimitStatus(): RateLimitStatus;
   isActive(sessionId: string): boolean;
   activeCount(): number;
   activeWeight(): number;
@@ -149,6 +172,16 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   let coolingUntil = 0;
   let consecutiveHits = 0;
   let wake: NodeJS.Timeout | undefined;
+  /**
+   * The last observed hit, for §7.4's `observed` row.
+   *
+   * Kept past the cool-down that it opened and past `noteStarted()`'s reset —
+   * "AgentManager was rate limited at 14:02" stays true after 14:32, and a
+   * usage screen that forgot it the moment admissions resumed would answer "no
+   * rate limiting has been seen" to a user who watched the queue stall.
+   */
+  let lastHitAtMs: number | null = null;
+  let lastHitSource: RateLimitSource | null = null;
 
   function nowMs(): number {
     return clock().getTime();
@@ -346,8 +379,20 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       evaluate();
     },
 
+    rateLimitStatus: () => ({
+      state: cooling() ? 'cooling' : 'ok',
+      lastHitAt: lastHitAtMs === null ? null : new Date(lastHitAtMs).toISOString(),
+      // The deadline only while it is still ahead of us: reporting a passed
+      // `resetsAt` beside `state: 'ok'` would read as "it resets in the past".
+      resetsAt: cooling() ? new Date(coolingUntil).toISOString() : null,
+      lastSource: lastHitSource,
+      consecutiveHits,
+    }),
+
     noteRateLimit(hit) {
       consecutiveHits += 1;
+      lastHitAtMs = nowMs();
+      lastHitSource = hit.source;
       const backoff = Math.min(
         config.rateLimit.cooldownMs * 2 ** (consecutiveHits - 1),
         config.rateLimit.maxCooldownMs,

@@ -1,6 +1,5 @@
 /**
- * Runner's HTTP surface — §11.1's table, complete but for `GET
- * /api/runner/usage`, which needs M11's rolling `usage_events` windows.
+ * Runner's HTTP surface — §11.1's table, complete.
  *
  * ```
  * POST /api/sessions                 { assignmentId, agentId, projectId, … }  (M10)
@@ -15,6 +14,7 @@
  * POST /api/sessions/:id/stop        { reason? }                       (M6)
  * POST /api/sessions/:id/pin         { pinned }                        (M6)
  * GET  /api/runner/queue             the queue panel's state and rows  (M5)
+ * GET  /api/runner/usage             rolling 5h/7d windows + sources   (M11)
  * PUT  /api/runner/capacity          { maxConcurrent }, 1..8, settings (M5)
  * ```
  *
@@ -349,6 +349,17 @@ export function createRunnerRoutes(deps: RunnerRoutesDeps): readonly RouteDefini
   const queue = (_req: RequestContext, res: ResponseTools): Promise<HttpResult> =>
     Promise.resolve(res.json({ ...service.queueState(), entries: service.queueEntries() }));
 
+  /**
+   * `GET /api/runner/usage` — §7.4's payload, and nothing that resembles a quota.
+   *
+   * The handler is a pass-through on purpose: every honesty label, the
+   * disclaimer, and the decision not to divide one number by another are made in
+   * `usageWindows.ts`, so the in-process caller of §11.2 and the HTTP caller of
+   * §11.1 cannot end up being told different things about the same windows.
+   */
+  const usage = (_req: RequestContext, res: ResponseTools): Promise<HttpResult> =>
+    Promise.resolve(res.json(service.usageWindows()));
+
   const capacity = (req: RequestContext, res: ResponseTools): Promise<HttpResult> => {
     const body = req.body;
     const requested =
@@ -438,6 +449,13 @@ export function createRunnerRoutes(deps: RunnerRoutesDeps): readonly RouteDefini
       path: '/api/runner/queue',
       description: 'The scheduler: capacity, cool-down, and every queued or running session (§6).',
       handler: (req, res) => guard(() => queue(req, res), res, logger),
+    },
+    {
+      method: 'GET',
+      path: '/api/runner/usage',
+      description:
+        'AgentManager’s own rolling 5-hour and 7-day token windows, with their sources (§7.4).',
+      handler: (req, res) => guard(() => usage(req, res), res, logger),
     },
     {
       // §15.3 leaves "a remote client may lower the cap but not raise it" to

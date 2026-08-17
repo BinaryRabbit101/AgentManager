@@ -194,6 +194,27 @@ export interface RecordTurnInput {
   readonly at?: string;
 }
 
+/**
+ * One rolling window's sums over `usage_events` (§7.4, M11).
+ *
+ * `sessions` is `COUNT(DISTINCT session_id)` rather than a row count: §7.4's
+ * payload says "N sessions since <t>", and a session that wrote forty deltas is
+ * still one session. It counts sessions that *spent* in the window, which is a
+ * different — and more useful — number than sessions that *started* in it: a
+ * long session started before the cut-off is still consuming the owner's plan
+ * window right now, and a window that ignored it would under-report exactly
+ * when the owner most wants the truth.
+ */
+export interface UsageWindowSums {
+  /** The window's lower bound, inclusive, as it was queried. */
+  readonly since: string;
+  readonly tokens: UsageTokens;
+  /** `usage_events` rows in the window. */
+  readonly events: number;
+  /** Distinct sessions that recorded any of them. */
+  readonly sessions: number;
+}
+
 export interface UsageRepository {
   /** One live delta: event + rollup + assignment total, in one transaction. */
   recordDelta(input: RecordDeltaInput): UsageWriteResult;
@@ -206,6 +227,15 @@ export interface UsageRepository {
   runTotalsByModel(sessionId: string, runId: string): ReadonlyMap<string, UsageTokens>;
   /** `SUM(usage_events)` for a session, which M4 asserts equals the rollup. */
   eventSums(sessionId: string): UsageTokens & { readonly events: number };
+  /**
+   * §7.4's rolling window: every session's spend since `since`.
+   *
+   * One indexed range scan over `usage_events_window` (`migrations/runner/
+   * 0003_usage_windows.sql`) and no in-memory accumulator anywhere, which is
+   * what makes the answer survive a restart: the window is *derived* on every
+   * read from the append-only table, so there is no counter to lose.
+   */
+  windowSums(since: string): UsageWindowSums;
 }
 
 interface TotalsRow {
@@ -231,6 +261,10 @@ interface ModelSumRow {
 
 interface EventSumRow extends ModelSumRow {
   readonly events: number;
+}
+
+interface WindowSumRow extends EventSumRow {
+  readonly sessions: number;
 }
 
 interface EventRow {
@@ -353,6 +387,21 @@ export function createUsageRepository(options: UsageRepositoryOptions): UsageRep
             COALESCE(SUM(cache_read_tokens), 0)   AS cache_read_tokens,
             COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens
      FROM usage_events WHERE session_id = ?`,
+  );
+
+  // §7.4's window, M11. `ts >= ?` over the `usage_events_window` index; the
+  // upper bound is deliberately open, because a row stamped a few milliseconds
+  // into the future by a clock skew is still this app's spend and dropping it
+  // would make the window quietly wrong rather than visibly late.
+  const readWindow = db.prepare<[string], WindowSumRow>(
+    `SELECT COUNT(*)                                AS events,
+            COUNT(DISTINCT session_id)              AS sessions,
+            ''                                      AS model,
+            COALESCE(SUM(input_tokens), 0)          AS input_tokens,
+            COALESCE(SUM(output_tokens), 0)         AS output_tokens,
+            COALESCE(SUM(cache_read_tokens), 0)     AS cache_read_tokens,
+            COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens
+     FROM usage_events WHERE ts >= ?`,
   );
 
   function now(): string {
@@ -501,6 +550,21 @@ export function createUsageRepository(options: UsageRepositoryOptions): UsageRep
         cacheRead: row.cache_read_tokens,
         cacheCreation: row.cache_creation_tokens,
         events: row.events,
+      };
+    },
+
+    windowSums(since) {
+      const row = readWindow.get(since) as WindowSumRow;
+      return {
+        since,
+        tokens: {
+          input: row.input_tokens,
+          output: row.output_tokens,
+          cacheRead: row.cache_read_tokens,
+          cacheCreation: row.cache_creation_tokens,
+        },
+        events: row.events,
+        sessions: row.sessions,
       };
     },
   };

@@ -1,0 +1,23 @@
+-- 0003_usage_windows.sql — the index behind runner DESIGN §7.4's rolling
+-- 5-hour and 7-day windows (milestone M11).
+--
+-- §7.4's first row is "AgentManager's own consumption, rolling 5-hour and 7-day
+-- sums over `usage_events`", and M11's acceptance pins that they are "computed
+-- by **indexed** queries". Foundation's `usage_events_session_idx` is
+-- `(session_id, ts)`, which serves the per-session cost chart and cannot serve
+-- a window: the leading column is the session, so a `WHERE ts >= ?` over every
+-- session in the database is a full scan that grows with the install's whole
+-- history. The window query is the opposite shape — one range over `ts`, every
+-- session — so it gets its own index rather than a rewritten one, because the
+-- per-session read is on the hot path of every UI open and must not lose its
+-- covering index to make room.
+--
+-- Deliberately **not** a partial index on a rolling cut-off (`WHERE ts >=
+-- '<some date>'`): a predicate baked into the schema goes stale the day after
+-- it is written, and SQLite would silently stop using the index for the rows
+-- that matter.
+--
+-- Applied inside a transaction opened by the migration runner: no BEGIN/COMMIT
+-- and no `IF NOT EXISTS`, per `0001_runner.sql`'s note.
+
+CREATE INDEX usage_events_window ON usage_events (ts);

@@ -76,6 +76,25 @@ export const runnerConfigSchema = z.strictObject({
     cooldownMs: positiveInt,
     /** …doubling up to this (§6.4). */
     maxCooldownMs: positiveInt,
+    /**
+     * Whether to consume the CLI's `rate_limit_event` at all (§7.4, M11).
+     *
+     * **A kill switch, not a feature toggle.** §7.4 consumes the message
+     * defensively "and no scheduling logic depends on its fields — only on its
+     * presence plus the observed-error path… If a future SDK removes it, runner
+     * loses a display, not a behaviour." This key is that promise made
+     * operable: turned off, runner neither records the event to
+     * `settings['runner.rateLimit.lastEvent']` nor lets it open a cool-down,
+     * and §6.4 runs entirely on observed errors. M11's acceptance runs M5's
+     * cool-down suite with it `false` and asserts the scheduling is identical,
+     * which is only a real assertion because this is a shipped path rather
+     * than a test seam.
+     *
+     * Defaults **on**: the message is declared and typed in the pinned SDK
+     * (SDK-NOTES §7.1), and a reset time the CLI volunteers is a better
+     * cool-down deadline than a doubling guess.
+     */
+    observeCliEvent: z.boolean(),
   }),
 });
 
@@ -95,7 +114,7 @@ export const RUNNER_CONFIG_DEFAULTS: RunnerConfig = {
   queueStaleHours: 24,
   question: { holdMs: 900_000, expireHours: 24 },
   transcript: { flushLines: 50, flushMs: 2000, maxMb: 512, maxTailBytes: 1_048_576 },
-  rateLimit: { cooldownMs: 300_000, maxCooldownMs: 1_800_000 },
+  rateLimit: { cooldownMs: 300_000, maxCooldownMs: 1_800_000, observeCliEvent: true },
 };
 
 /**

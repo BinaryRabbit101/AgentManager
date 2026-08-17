@@ -355,6 +355,23 @@ export interface LaunchHarness {
   close(): void;
 }
 
+/**
+ * A test's config override, partial **all the way down**.
+ *
+ * `Partial<RunnerConfig>` only reaches the top level, so adding one key to a
+ * nested group — as M11 does with `rateLimit.observeCliEvent` — would make every
+ * existing test that names that group fail to compile until it restated the
+ * group in full. A harness that forces a test to repeat defaults it does not
+ * care about is a harness that hides which value the test is actually about.
+ */
+export type PartialRunnerConfig = Partial<
+  Omit<RunnerConfig, 'question' | 'transcript' | 'rateLimit'>
+> & {
+  readonly question?: Partial<RunnerConfig['question']>;
+  readonly transcript?: Partial<RunnerConfig['transcript']>;
+  readonly rateLimit?: Partial<RunnerConfig['rateLimit']>;
+};
+
 export interface LaunchHarnessOptions {
   readonly dataRoot: string;
   readonly query?: QueryFn;
@@ -376,7 +393,7 @@ export interface LaunchHarnessOptions {
   readonly assignmentContext?: AssignmentContextProvider;
   readonly secrets?: SecretResolver;
   readonly auth?: LaunchChainDeps['auth'];
-  readonly config?: Partial<RunnerConfig>;
+  readonly config?: PartialRunnerConfig;
   readonly agentEnv?: Record<string, string | null>;
   /** An advanceable clock, for the deadlines M5 measures in minutes. */
   readonly clock?: () => Date;
@@ -390,7 +407,13 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
   const config: RunnerConfig = {
     ...RUNNER_CONFIG_DEFAULTS,
     ...options.config,
+    question: { ...RUNNER_CONFIG_DEFAULTS.question, ...options.config?.question },
     transcript: { ...RUNNER_CONFIG_DEFAULTS.transcript, ...options.config?.transcript },
+    // Merged rather than replaced, so a test that only wants to move the
+    // cool-down keeps `observeCliEvent`'s shipped default — and a test that
+    // only wants to switch the handler off keeps the shipped backoff, which is
+    // exactly what M11's "identical scheduling" assertion needs.
+    rateLimit: { ...RUNNER_CONFIG_DEFAULTS.rateLimit, ...options.config?.rateLimit },
   };
 
   const sessions = createSessionRepository({ db: storage.db, store: storage.store, clock });
@@ -515,6 +538,8 @@ export function makeLaunchHarness(options: LaunchHarnessOptions): LaunchHarness 
     transcripts: reader,
     launch,
     recovery,
+    settings: storage.store.settings,
+    clock,
   });
   const routes = createRunnerRoutes({
     service,

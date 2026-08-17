@@ -160,12 +160,14 @@ describe('the element migration, through boot', () => {
       // Foundation's numbered set first, then each element's in module
       // topological order (§1.3) — `roster` sits before `projects`, which sits
       // before `runner`, which sits before `orchestrator`. One entry per
-      // *migration*, so `projects`, `runner` and `orchestrator` each appear
-      // twice (their 0001 plus 0002_lease_scope / 0002_usage / 0002_breakers).
+      // *migration*, so `projects` and `orchestrator` each appear twice (their
+      // 0001 plus 0002_lease_scope / 0002_breakers) and `runner` three times
+      // (0001 plus 0002_usage and M11's 0003_usage_windows).
       'foundation',
       'roster',
       'projects',
       'projects',
+      'runner',
       'runner',
       'runner',
       'orchestrator',
@@ -185,6 +187,7 @@ describe('the element migration, through boot', () => {
       { module: 'roster', version: 1 },
       { module: 'runner', version: 1 },
       { module: 'runner', version: 2 },
+      { module: 'runner', version: 3 },
     ]);
   });
 

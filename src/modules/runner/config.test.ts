@@ -71,7 +71,10 @@ describe('the composed namespace', () => {
       queueStaleHours: 24,
       question: { holdMs: 900_000, expireHours: 24 },
       transcript: { flushLines: 50, flushMs: 2000, maxMb: 512, maxTailBytes: 1_048_576 },
-      rateLimit: { cooldownMs: 300_000, maxCooldownMs: 1_800_000 },
+      // `observeCliEvent` is M11's kill switch for the CLI's `rate_limit_event`
+      // (§7.4). It defaults **on**, and turning it off must cost a display and
+      // no scheduling behaviour at all.
+      rateLimit: { cooldownMs: 300_000, maxCooldownMs: 1_800_000, observeCliEvent: true },
     });
   });
 });

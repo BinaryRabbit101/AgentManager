@@ -68,7 +68,8 @@
     },
     "rateLimit": {
       "cooldownMs": 300000,
-      "maxCooldownMs": 1800000
+      "maxCooldownMs": 1800000,
+      "observeCliEvent": true
     }
   },
   "projects": {
