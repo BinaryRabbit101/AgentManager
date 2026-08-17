@@ -53,6 +53,25 @@ export type RequestOrigin = 'local' | 'remote';
  * inventing a third convention for query strings would be a contract every
  * element has to learn.
  */
+/**
+ * The audit detail remote attaches alongside the `tokenId` (remote §9.1 #4).
+ *
+ * > "Every remote request is access-logged — method, path, status, duration,
+ * > `origin: 'remote'`, `tokenId`, `token_prefix`, peer IP, resolved node name,
+ * > `requestId`."
+ *
+ * Both fields are **audit enrichment and nothing else**. The prefix is a
+ * six-character display string that collides in principle (remote R3), and the
+ * node name comes from a best-effort, possibly stale peer map that remote §9.3
+ * forbids as an authentication input. Neither is ever read back by foundation.
+ */
+export interface TokenAttribution {
+  /** `remote_tokens.token_prefix` — for a human reading a log line. */
+  readonly prefix?: string;
+  /** The tailnet node name the peer map resolved, when it resolved one. */
+  readonly peerName?: string;
+}
+
 export interface RequestContext {
   /** The method as received (`GET`, `POST`, …). Never the route's `ALL`. */
   readonly method: string;
@@ -73,6 +92,8 @@ export interface RequestContext {
    * authentication by design (§6.4).
    */
   readonly tokenId: string | undefined;
+  /** {@link TokenAttribution} as the authenticating middleware supplied it. */
+  readonly tokenAttribution: TokenAttribution | undefined;
   readonly headers: IncomingHttpHeaders;
   /** Path and query as received, before parsing. */
   readonly url: string;
@@ -84,8 +105,13 @@ export interface RequestContext {
   /** The route this request matched, once one has. */
   readonly route: RegisteredRoute | undefined;
 
-  /** Records the credential that authenticated this request (remote's middleware). */
-  attributeToken(tokenId: string): void;
+  /**
+   * Records the credential that authenticated this request (remote's middleware).
+   *
+   * @param detail optional audit enrichment for the `access.log` line. Never a
+   *   credential, and never anything a handler may make a decision on.
+   */
+  attributeToken(tokenId: string, detail?: TokenAttribution): void;
 }
 
 export interface ResponseInit {

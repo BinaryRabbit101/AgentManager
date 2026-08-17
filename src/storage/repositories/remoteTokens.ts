@@ -30,6 +30,17 @@ export interface RemoteTokenRecord {
   readonly tokenPrefix: string;
   readonly createdAt: string;
   readonly lastUsedAt: string | null;
+  /**
+   * Which device last presented this token — the peer IP, plus the tailnet node
+   * name when remote's cached peer map resolved it (`100.64.0.7 (pixel-9)`).
+   *
+   * The column is added by `migrations/remote/0001_last_used_peer.sql`, so it
+   * exists in every database foundation opens. It is an **audit** field and
+   * never an authentication input: remote DESIGN §9.3 is explicit that "if the
+   * map is stale or absent, the request proceeds and the field is null", and
+   * nothing anywhere may branch on it.
+   */
+  readonly lastUsedPeer: string | null;
   readonly expiresAt: string | null;
   readonly revokedAt: string | null;
 }
@@ -50,8 +61,18 @@ export interface RemoteTokensRepository {
   /** The verification lookup. Backed by the UNIQUE index on `token_hash`. */
   findByHash(tokenHash: string): RemoteTokenRecord | undefined;
   list(options?: { includeRevoked?: boolean }): readonly RemoteTokenRecord[];
-  /** Stamps `last_used_at`. One write per authenticated request. */
-  touch(id: string, at?: string): void;
+  /**
+   * Stamps `last_used_at`, and `last_used_peer` when a peer is supplied.
+   *
+   * Remote throttles this to one write per token per 60 s (its §4.6) — "every
+   * authenticated request writing a row would make an SSE reconnect storm a
+   * write storm" — so this is not once per request in practice.
+   *
+   * @param peer omit to leave the existing peer untouched; pass `null` to clear
+   *   it. Only the caller that authenticated the request knows the peer, so it
+   *   is never derived here.
+   */
+  touch(id: string, at?: string, peer?: string | null): void;
   revoke(id: string, at?: string): boolean;
   delete(id: string): boolean;
 }
@@ -64,12 +85,39 @@ interface RemoteTokenRow {
   readonly token_prefix: string;
   readonly created_at: string;
   readonly last_used_at: string | null;
+  /** Absent from the row when remote's module migration has not been applied. */
+  readonly last_used_peer?: string | null;
   readonly expires_at: string | null;
   readonly revoked_at: string | null;
 }
 
-const COLUMNS =
+/** The columns `0001_init.sql` creates — present in every database (§1.4). */
+const CORE_COLUMNS =
   'id, label, device, token_hash, token_prefix, created_at, last_used_at, expires_at, revoked_at';
+
+const INSERT_COLUMNS = CORE_COLUMNS;
+
+/**
+ * `last_used_peer` (remote DESIGN §4.1) arrives with
+ * `migrations/remote/0001_last_used_peer.sql`, and a **module** migration set is
+ * applied only when its module is loaded — so the column exists in the home
+ * edition with remote enabled and nowhere else (§1.3, §6.2).
+ *
+ * The repository is built in *every* edition, so it asks the schema rather than
+ * assuming: with the column absent the field reads `null`, and remote — the only
+ * caller that ever writes it, and one that cannot exist without its own
+ * migration — sees it exactly as it left it. Preparing a statement naming a
+ * column that a work-edition database has never heard of would fail the boot of
+ * the edition that has no remote listener at all.
+ */
+function hasPeerColumn(db: Database): boolean {
+  const row = db
+    .prepare<[], { n: number }>(
+      "SELECT COUNT(*) AS n FROM pragma_table_info('remote_tokens') WHERE name = 'last_used_peer'",
+    )
+    .get();
+  return (row?.n ?? 0) > 0;
+}
 
 function toRecord(row: RemoteTokenRow): RemoteTokenRecord {
   return {
@@ -80,30 +128,39 @@ function toRecord(row: RemoteTokenRow): RemoteTokenRecord {
     tokenPrefix: row.token_prefix,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
+    lastUsedPeer: row.last_used_peer ?? null,
     expiresAt: row.expires_at,
     revokedAt: row.revoked_at,
   };
 }
 
 export function createRemoteTokensRepository(db: Database, clock: Clock): RemoteTokensRepository {
+  const peerColumn = hasPeerColumn(db);
+  const columns = peerColumn ? `${CORE_COLUMNS}, last_used_peer` : CORE_COLUMNS;
+
   const insert = db.prepare(
-    `INSERT INTO remote_tokens (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO remote_tokens (${INSERT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const getStatement = db.prepare<[string], RemoteTokenRow>(
-    `SELECT ${COLUMNS} FROM remote_tokens WHERE id = ?`,
+    `SELECT ${columns} FROM remote_tokens WHERE id = ?`,
   );
   const byHash = db.prepare<[string], RemoteTokenRow>(
-    `SELECT ${COLUMNS} FROM remote_tokens WHERE token_hash = ?`,
+    `SELECT ${columns} FROM remote_tokens WHERE token_hash = ?`,
   );
   const listAll = db.prepare<[], RemoteTokenRow>(
-    `SELECT ${COLUMNS} FROM remote_tokens ORDER BY created_at DESC, id DESC`,
+    `SELECT ${columns} FROM remote_tokens ORDER BY created_at DESC, id DESC`,
   );
   const listLive = db.prepare<[], RemoteTokenRow>(
-    `SELECT ${COLUMNS} FROM remote_tokens WHERE revoked_at IS NULL ORDER BY created_at DESC, id DESC`,
+    `SELECT ${columns} FROM remote_tokens WHERE revoked_at IS NULL ORDER BY created_at DESC, id DESC`,
   );
   const touch = db.prepare<[string, string]>(
     'UPDATE remote_tokens SET last_used_at = ? WHERE id = ?',
   );
+  const touchWithPeer = peerColumn
+    ? db.prepare<[string, string | null, string]>(
+        'UPDATE remote_tokens SET last_used_at = ?, last_used_peer = ? WHERE id = ?',
+      )
+    : undefined;
   // `revoked_at IS NULL` in the WHERE clause keeps the first revocation's time:
   // when a credential was withdrawn is an incident-review fact.
   const revoke = db.prepare<[string, string]>(
@@ -121,6 +178,7 @@ export function createRemoteTokensRepository(db: Database, clock: Clock): Remote
         tokenPrefix: input.tokenPrefix,
         createdAt: input.createdAt ?? isoTimestamp(clock()),
         lastUsedAt: null,
+        lastUsedPeer: null,
         expiresAt: orNull(input.expiresAt),
         revokedAt: null,
       };
@@ -151,7 +209,17 @@ export function createRemoteTokensRepository(db: Database, clock: Clock): Remote
     list: (options = {}) =>
       (options.includeRevoked === true ? listAll : listLive).all().map(toRecord),
 
-    touch: (id, at) => void touch.run(at ?? isoTimestamp(clock()), id),
+    touch: (id, at, peer) => {
+      const stamp = at ?? isoTimestamp(clock());
+      // `peer === undefined` means "leave it alone", which is why this is two
+      // statements rather than one with a COALESCE: a caller that does not know
+      // the peer must not be able to blank an audit field by omission.
+      if (peer === undefined || touchWithPeer === undefined) {
+        touch.run(stamp, id);
+        return;
+      }
+      touchWithPeer.run(stamp, peer, id);
+    },
 
     revoke: (id, at) => revoke.run(at ?? isoTimestamp(clock()), id).changes > 0,
 

@@ -19,6 +19,7 @@ import type { Logger } from 'pino';
 
 import type { RemoteListener, RemoteTimers } from './listener.js';
 import type { TailscaleDetector, TailscaleDetectorDeps } from './tailscale.js';
+import type { RemoteTokenService } from './tokens.js';
 
 /** What only the composition root can supply. */
 export interface RemoteModuleDeps {
@@ -37,6 +38,14 @@ export interface RemoteModuleDeps {
 export interface RemoteInternals {
   readonly detector: TailscaleDetector;
   readonly listener: RemoteListener;
+  /**
+   * §4's credential store.
+   *
+   * Handed out so a test can mint a token against the *real* module — the same
+   * service the middleware verifies against — instead of reaching through an HTTP
+   * route it is also trying to test.
+   */
+  readonly tokens: RemoteTokenService;
 }
 
 export interface RemoteModuleOptions {

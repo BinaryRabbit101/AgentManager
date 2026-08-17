@@ -12,7 +12,7 @@ import type { Logger } from 'pino';
 
 import type { RegisteredRoute } from '../modules/types.js';
 
-import type { RequestContext, RequestOrigin } from './types.js';
+import type { RequestContext, RequestOrigin, TokenAttribution } from './types.js';
 
 /** Bodies larger than this are refused with 413 rather than buffered. */
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
@@ -102,6 +102,7 @@ class Request implements RequestContext {
   #params: Readonly<Record<string, string>> = {};
   #route: RegisteredRoute | undefined = undefined;
   #tokenId: string | undefined = undefined;
+  #tokenAttribution: TokenAttribution | undefined = undefined;
 
   constructor(options: RequestContextOptions) {
     const { request } = options;
@@ -133,8 +134,13 @@ class Request implements RequestContext {
     return this.#tokenId;
   }
 
-  attributeToken(tokenId: string): void {
+  get tokenAttribution(): TokenAttribution | undefined {
+    return this.#tokenAttribution;
+  }
+
+  attributeToken(tokenId: string, detail?: TokenAttribution): void {
     this.#tokenId = tokenId;
+    if (detail !== undefined) this.#tokenAttribution = Object.freeze({ ...detail });
   }
 
   /** Called by the listener once the router has picked a route. */

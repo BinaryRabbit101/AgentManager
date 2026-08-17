@@ -20,6 +20,7 @@
  * a developer's machine that *is* on a tailnet they would open a real socket. Both
  * are reasons to inject.
  */
+import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -32,7 +33,6 @@ import { controllableQuery, fakeAssistant, fakeResult } from '../runner/__tests_
 import { makeTempDir, repoRoot, type TempDir } from '../__tests__/helpers.js';
 
 import type { RemoteStatus, RemoteTimers } from './listener.js';
-import { REMOTE_UNAUTHENTICATED } from './middleware.js';
 import type { Detection, TailscaleDetector } from './tailscale.js';
 
 /** The literals, restated rather than imported (see the file comment). */
@@ -384,12 +384,28 @@ describe('M3 — the shared route table (§6.4) and remote’s own routes (§5)'
     );
 
     expect(table.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
+      'DELETE /api/remote/tokens/:id',
       'GET /api/remote/status',
+      'GET /api/remote/tokens',
       'POST /api/remote/restart',
+      'POST /api/remote/tokens',
+      'PUT /api/remote/enabled',
     ]);
     expect(table.find((route) => route.path === '/api/remote/status')?.remote).toBe('allow');
-    // §3.2's loosening principle, declared where the route is defined.
+    // §3.2's loosening principle, declared where the routes are defined: minting a
+    // credential and restarting the transport are local-only; listing and revoking
+    // are reductions of remote privilege and stay reachable remotely.
     expect(table.find((route) => route.path === '/api/remote/restart')?.remote).toBe('deny');
+    expect(
+      table.find((route) => route.method === 'POST' && route.path === '/api/remote/tokens')?.remote,
+    ).toBe('deny');
+    expect(
+      table.find((route) => route.method === 'GET' && route.path === '/api/remote/tokens')?.remote,
+    ).toBe('allow');
+    expect(table.find((route) => route.path === '/api/remote/tokens/:id')?.remote).toBe('allow');
+    // Not declarable either way: the *direction* of the change decides, so the
+    // body-conditional backstop is the enforcement (§3.2).
+    expect(table.find((route) => route.path === '/api/remote/enabled')?.remote).toBe('allow');
     expect(table.every((route) => route.moduleId === REMOTE_MODULE_ID)).toBe(true);
   });
 
@@ -564,6 +580,89 @@ describe('M3 — running sessions survive every listener transition', () => {
 });
 
 // ---------------------------------------------------------------------------
+// M4 — the plaintext appears in the creation response and nowhere else
+// ---------------------------------------------------------------------------
+
+describe('M4 — a minted token’s plaintext reaches no log file and no column', () => {
+  it('appears in the creation response only, and in neither core.log, access.log nor the database', async () => {
+    // The scanning half of M4's first criterion, and it needs the *real* core: the
+    // real logger with its real redaction chain, the real files on disk, and the
+    // real SQLite file. A unit test cannot claim this.
+    const booted = await bootHome();
+    const base = booted.url() ?? '';
+
+    const minted = await call<{ id: string; token: string; prefix: string }>(
+      'POST',
+      '/api/remote/tokens',
+      { label: 'Pixel 9', device: 'Android 15' },
+    );
+    expect(minted.status).toBe(201);
+    const token = minted.body.token;
+    expect(token).toHaveLength(43);
+
+    // Exercise every path that could plausibly echo it: a list, the status, a
+    // health report, and a request that carries the token as a Bearer header on
+    // the *local* listener (which does not authenticate, so the header is pure
+    // log fodder — exactly the case foundation §5.4's redaction exists for).
+    await call('GET', '/api/remote/tokens');
+    await call('GET', '/api/remote/status');
+    await call('GET', '/api/health');
+    await fetch(`${base}/api/health`, { headers: { authorization: `Bearer ${token}` } });
+
+    // Flush by shutting the core down: pino's file streams are asynchronous, and a
+    // scan of a half-written file would pass for the wrong reason.
+    await booted.shutdown();
+    service = undefined;
+
+    const logsDir = join(dataRootDir.path, 'state', 'logs');
+    for (const file of ['core.log', 'access.log']) {
+      const text = readFileSync(join(logsDir, file), 'utf8');
+      expect(text.length, file).toBeGreaterThan(0);
+      expect(text, file).not.toContain(token);
+      // The mint *is* logged — by id and prefix, which is what makes an incident
+      // reviewable without making it exploitable.
+      if (file === 'core.log') expect(text).toContain(minted.body.id);
+    }
+
+    // And the database file, byte for byte: the digest is there, the token is not.
+    const database = readFileSync(join(dataRootDir.path, 'state', 'agentmanager.db'));
+    expect(database.includes(Buffer.from(token, 'utf8'))).toBe(false);
+    expect(
+      database.includes(Buffer.from(createHash('sha256').update(token).digest('hex'), 'utf8')),
+    ).toBe(true);
+  });
+
+  it('does not echo the token when the same label is minted twice', async () => {
+    await bootHome();
+    const first = await call<{ token: string }>('POST', '/api/remote/tokens', { label: 'Pixel 9' });
+    const second = await call<{ token: string }>('POST', '/api/remote/tokens', {
+      label: 'Pixel 9',
+    });
+
+    // Two devices with the same name is a user's problem, not a collision: each
+    // gets its own credential, and neither response mentions the other's.
+    expect(first.body.token).not.toBe(second.body.token);
+    expect(second.text).not.toContain(first.body.token);
+
+    const listed = await call('GET', '/api/remote/tokens');
+    expect(listed.text).not.toContain(first.body.token);
+    expect(listed.text).not.toContain(second.body.token);
+  });
+
+  it('refuses a mint with no label, and reports the active count in the status', async () => {
+    await bootHome();
+    const bad = await call<{ error: string }>('POST', '/api/remote/tokens', { device: 'Android' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('invalid_request');
+
+    await call('POST', '/api/remote/tokens', { label: 'one' });
+    await call('POST', '/api/remote/tokens', { label: 'two' });
+    const status = await call<{ activeTokenCount: number }>('GET', '/api/remote/status');
+    expect(status.body.activeTokenCount).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Static assertions over remote's own source (M10 owns the tree-wide versions)
 // ---------------------------------------------------------------------------
 
@@ -573,7 +672,11 @@ describe('M3 — remote’s source never binds a socket itself', () => {
     'listener.ts',
     'tailscale.ts',
     'routes.ts',
+    'tokenRoutes.ts',
     'middleware.ts',
+    'policy.ts',
+    'rateLimit.ts',
+    'tokens.ts',
     'ports.ts',
     'config.ts',
     'options.ts',
@@ -620,11 +723,15 @@ describe('M3 — remote’s source never binds a socket itself', () => {
 // The hard deny, end to end (M3's placeholder policy)
 // ---------------------------------------------------------------------------
 
-describe('M3 — the placeholder policy is wired into the mounted listener', () => {
-  it('puts exactly one middleware in front of the remote listener, and it denies', async () => {
+describe('M4/M6 — the real policy chain is wired into the mounted listener', () => {
+  it('puts §3.1/§9.2’s three middlewares in front of the remote listener', async () => {
     // The socket cannot be bound without a tailnet, so the wiring is asserted where
-    // it is decided: the module hands foundation's `mount` a middleware chain, and
-    // that chain refuses. `listener.test.ts` proves the refusal over a real socket.
+    // it is decided: the module hands foundation's `mount` the chain of §9.2 #6
+    // (peer guard), §9.2 #8 (`Host` allowlist) and §3.1 (the route policy).
+    // `policy.test.ts` and `auth.test.ts` prove what each of them does over a real
+    // socket. The count is asserted because the *order* is the security property —
+    // peer before routing, deny before auth — and a chain that quietly lost a link
+    // would still answer every happy-path test.
     const mounts: { middleware: number }[] = [];
     await bootHome({
       remote: {
@@ -652,8 +759,7 @@ describe('M3 — the placeholder policy is wired into the mounted listener', () 
       ],
     });
 
-    // One mount attempt, with one middleware: M3's hard deny.
-    expect(mounts).toEqual([{ middleware: 1 }]);
-    expect(REMOTE_UNAUTHENTICATED).toBe('remote_unauthenticated');
+    // One mount attempt, with three middlewares.
+    expect(mounts).toEqual([{ middleware: 3 }]);
   });
 });

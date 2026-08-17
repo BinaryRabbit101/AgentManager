@@ -344,6 +344,14 @@ function logAccess(input: AccessLogInput): void {
       listener: input.listener,
       ...(input.streamed ? { streamed: true } : {}),
       ...(context?.tokenId === undefined ? {} : { tokenId: context.tokenId }),
+      // Remote's audit enrichment (its §9.1 #4): the display prefix and the
+      // tailnet node name, present only on the listener that authenticates.
+      ...(context?.tokenAttribution?.prefix === undefined
+        ? {}
+        : { tokenPrefix: context.tokenAttribution.prefix }),
+      ...(context?.tokenAttribution?.peerName === undefined
+        ? {}
+        : { peerName: context.tokenAttribution.peerName }),
       ...(context?.remoteAddress === undefined ? {} : { peer: context.remoteAddress }),
       ...(context?.route === undefined ? {} : { route: context.route.path }),
     },

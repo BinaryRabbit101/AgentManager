@@ -16,21 +16,23 @@
  *
  * ## What this milestone group builds, and what it deliberately does not
  *
- * | Built (M1–M3) | Not yet |
+ * | Built (M1–M6) | Not yet |
  * |---|---|
- * | The module under foundation's contract: `dependsOn: ['storage', 'http']`, **`critical: false`** | Bearer tokens and authentication (M4) |
- * | §11's config sub-schema, with `bind` as a literal (`config.ts`) | Rate limiting and lockout (M5) |
- * | `migrations/remote/0001_last_used_peer.sql` | The four-rule route policy and the deny list (M6) |
- * | §2.1/§2.2 detection, injectable end to end (`tailscale.ts`) | Stream tickets, WS/SSE auth (M7) |
- * | §2.3's listener state machine (`listener.ts`) | Per-agent grants (M8) |
+ * | The module under foundation's contract: `dependsOn: ['storage', 'http']`, **`critical: false`** | Stream tickets, WS/SSE auth (M7) |
+ * | §11's config sub-schema, with `bind` as a literal (`config.ts`) | Per-agent grants and the launch gate (M8) |
+ * | `migrations/remote/0001_last_used_peer.sql` | The end-to-end phone path (M9) |
+ * | §2.1/§2.2 detection, injectable end to end (`tailscale.ts`) | The edition/boundary suite (M10) |
+ * | §2.3's listener state machine (`listener.ts`) | |
  * | `ctx.provide('remote', { boundAddress })` — foundation §6.3's claim | |
+ * | §4's token store and bearer authentication (`tokens.ts`) | |
+ * | §4.6's lockout and §3.3's route bucket (`rateLimit.ts`) | |
+ * | §3.1/§3.2's route policy and deny list (`policy.ts`, `middleware.ts`) | |
  *
- * Because the socket exists from M3 and authentication arrives in M4, this
- * milestone mounts the route table behind a **hard deny** (`middleware.ts`): every
- * request on the tailnet listener is refused. A milestone that opened an
- * unauthenticated tailnet listener "temporarily" would be the exact failure D5
- * exists to prevent, and the deny is a `Middleware` so M4 replaces it rather than
- * editing anything that binds.
+ * M3 mounted the route table behind a hard deny, because a socket existed and no
+ * credential mechanism did. M4–M6 replace that placeholder with the real chain —
+ * peer guard, `Host` allowlist, then §3.1's rules — and nothing that binds a socket
+ * changed to make it happen, which is why the placeholder was a `Middleware` in the
+ * first place.
  *
  * ## `critical: false`
  *
@@ -45,15 +47,20 @@
  * file reads `ctx.config.remote` and `ctx.config.modules.remote`; it never reads
  * `ctx.config.edition`.
  */
+import { realpathSync } from 'node:fs';
+
 import type { RemoteService } from '../../lifecycle/bind.js';
 import { noteModuleLoaded } from '../loadProbe.js';
 import type { HealthReport, Module, ModuleContext, ModuleHandle } from '../types.js';
 
 import { createRemoteListener, realTimers, type RemoteListener } from './listener.js';
-import { denyEveryRequest } from './middleware.js';
+import { createRemoteMiddleware, type RemoteAuditSink } from './middleware.js';
 import { HTTP_PORT_NAME, hasMount, type HttpPort } from './ports.js';
+import { createAuthLimiter, createRouteBucket } from './rateLimit.js';
 import { createRemoteRoutes } from './routes.js';
 import { createTailscaleDetector, type TailscaleDetector } from './tailscale.js';
+import { createTokenRoutes, REMOTE_ENABLED_SETTING } from './tokenRoutes.js';
+import { createRemoteTokenService, type RemoteTokenService } from './tokens.js';
 import type { RemoteModuleDeps, RemoteModuleOptions } from './options.js';
 
 export {
@@ -66,6 +73,15 @@ export type { RemoteConfig } from './config.js';
 export type { RemoteInternals, RemoteModuleDeps, RemoteModuleOptions } from './options.js';
 export type { RemoteListener, RemoteListenerState, RemoteStatus } from './listener.js';
 export type { Detection, TailscaleDetector } from './tailscale.js';
+export {
+  BACKSTOP_DENY_PATTERNS,
+  ROUTE_DENIED_CODE,
+  decideRoutePolicy,
+  effectiveDenyList,
+} from './policy.js';
+export { UNAUTHORIZED_CODE, UNAUTHORIZED_MESSAGE } from './tokens.js';
+export type { RemoteTokenService, TokenView } from './tokens.js';
+export { REMOTE_ENABLED_SETTING } from './tokenRoutes.js';
 
 /** The module id, used by `dependsOn`, the registry and `migrations/remote/`. */
 export const REMOTE_MODULE_ID = 'remote';
@@ -76,9 +92,6 @@ export const REMOTE_MODULE_ID = 'remote';
  * asserted equal in a test instead of being trivially the same by construction.
  */
 export const REMOTE_SERVICE = 'remote';
-
-/** DESIGN §5's runtime kill switch. A `settings` key, deliberately not config. */
-export const REMOTE_ENABLED_SETTING = 'remote.enabled';
 
 // Runs on evaluation of this file, and only then — the whole point of the gate.
 noteModuleLoaded(REMOTE_MODULE_ID);
@@ -126,22 +139,109 @@ export function createRemoteModule(
         );
       }
 
+      // §4: the credential store. It receives foundation's repository and the
+      // clock, and nothing else — no `SecretResolver`, because R5 pins that remote
+      // never calls `.reveal()`: there is no stored secret to read.
+      const tokens: RemoteTokenService = createRemoteTokenService({
+        tokens: ctx.store.remoteTokens,
+        clock: ctx.clock,
+        defaultTtlDays: config.token.ttlDays,
+        maxActive: config.token.maxActive,
+      });
+
+      // §4.6's per-peer sliding window, and §3.3's per-token browse bucket. Both
+      // in memory, both keyed by the caller's clock reading.
+      const limiter = createAuthLimiter({
+        maxFailures: config.auth.maxFailures,
+        failWindowMs: config.auth.failWindowMs,
+        blockMs: config.auth.blockMs,
+      });
+      const browseBucket = createRouteBucket({
+        limit: config.browseRateLimitPerMin,
+        windowMs: 60_000,
+      });
+
+      // Where the middleware's audit output lands: `access.log` for the line and
+      // the event bus for the persisted record the UI reads. §4.6 is precise about
+      // the volume — one event and one `warn` per *window*, not per failure — and
+      // that shaping lives in the middleware, so this sink is only a destination.
+      const audit: RemoteAuditSink = {
+        authFailed: (detail) => {
+          deps.accessLogger.warn(
+            { ...detail, origin: 'remote', outcome: 'auth_failed' },
+            'a remote sign-in failed',
+          );
+          ctx.bus.emit({
+            type: 'remote.auth.failed',
+            persist: true,
+            payload: { peer: detail.peer ?? null, failures: detail.failures, at: detail.at },
+          });
+        },
+        authBlocked: (detail) => {
+          deps.accessLogger.warn(
+            { ...detail, origin: 'remote', outcome: 'auth_blocked' },
+            'a remote peer is locked out after repeated failed sign-ins',
+          );
+          // A distinct type from `remote.auth.failed` so §4.6's "one event per
+          // window" stays literally one, while a lockout — the thing a user needs
+          // to be told about — is still a persisted, surfaceable fact.
+          ctx.bus.emit({
+            type: 'remote.auth.blocked',
+            persist: true,
+            payload: {
+              peer: detail.peer ?? null,
+              failures: detail.failures,
+              until: detail.until,
+              retryAfterSeconds: detail.retryAfterSeconds,
+            },
+          });
+        },
+        browsed: (detail) => {
+          // §3.3: "this is the one route where the audit trail is the control".
+          deps.accessLogger.info(
+            { ...detail, origin: 'remote', outcome: 'fs_browse' },
+            'a remote client listed a folder',
+          );
+        },
+        refused: (detail) => {
+          deps.accessLogger.warn(
+            { ...detail, origin: 'remote', outcome: 'refused' },
+            `refused a request on the remote listener: ${detail.reason}`,
+          );
+        },
+      };
+
       const listener: RemoteListener = createRemoteListener({
         detector,
         mount: (listenerOptions) => http.mount(listenerOptions),
         port,
         pollMs: config.detect.pollMs,
         retryMaxMs: config.detect.retryMaxMs,
-        // M3's placeholder policy. M4 puts the real chain in front of it and M6
-        // removes it; nothing that binds a socket changes when it does.
-        middleware: [
-          denyEveryRequest((request) => {
-            ctx.logger.warn(
-              { method: request.method, path: request.path, peer: request.remoteAddress },
-              'refused a request on the remote listener: bearer authentication is not built yet (M4)',
+        // §3.1 and §9.2, in order: peer guard, `Host` allowlist, then the four-rule
+        // policy. This is what replaced M3's hard deny, and the listener did not
+        // change to accommodate it.
+        middleware: createRemoteMiddleware({
+          tokens,
+          limiter,
+          browseBucket,
+          clock: ctx.clock,
+          audit,
+          // §9.3: best-effort enrichment from the cached peer map. Never consulted
+          // for a decision — only written to a log line and an audit column.
+          peerName: (address) => detector.peerName(address),
+          // §9.2 #8's allowlist. Read per request, because the MagicDNS name and
+          // the bound address both change when the tailnet re-keys (§2.3).
+          allowedHosts: () => {
+            const status = listener.status();
+            return [status.boundAddress?.address, status.magicDnsName, config.hostnameHint].filter(
+              (entry): entry is string => typeof entry === 'string' && entry.length > 0,
             );
-          }),
-        ],
+          },
+          // §3.3's audit line wants the *resolved* path, and the OS is the only
+          // thing that can resolve a junction. Audit only: a failure here is
+          // swallowed and the requested path is logged instead.
+          resolvePath: (target) => realpathSync.native(target),
+        }),
         logger: ctx.logger,
         accessLogger: deps.accessLogger,
         clock: ctx.clock,
@@ -166,10 +266,40 @@ export function createRemoteModule(
       ctx.provide(REMOTE_SERVICE, service);
 
       ctx.registerRoutes(
-        createRemoteRoutes({ listener, logger: ctx.logger, hostnameHint: config.hostnameHint }),
+        createRemoteRoutes({
+          listener,
+          logger: ctx.logger,
+          hostnameHint: config.hostnameHint,
+          tokens,
+          // The live table, read per request: a route registered by a module that
+          // starts after remote must still appear in the effective deny list.
+          routes: () => http.routes(),
+        }),
+      );
+      ctx.registerRoutes(
+        createTokenRoutes({
+          tokens,
+          listener,
+          settings: ctx.settings,
+          hostnameHint: config.hostnameHint,
+          logger: ctx.logger,
+          // Deferred by one turn of the event loop, deliberately: switching the
+          // kill switch off closes the socket the response is travelling on, so the
+          // response has to be written first (§5).
+          onEnabledChanged: () => {
+            setImmediate(() => {
+              void listener.restart().catch((error: unknown) => {
+                ctx.logger.error(
+                  { err: error },
+                  'the remote listener failed to react to the remote.enabled setting',
+                );
+              });
+            });
+          },
+        }),
       );
 
-      options.onReady?.({ detector, listener });
+      options.onReady?.({ detector, listener, tokens });
 
       ctx.logger.info(
         { bind: config.bind, port, pollMs: config.detect.pollMs },

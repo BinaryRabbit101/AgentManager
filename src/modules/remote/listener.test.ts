@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { observeListeners } from '../../lifecycle/bind.js';
 import { mountRoutes } from '../../http/server.js';
+import type { Middleware } from '../../http/types.js';
 import type { Logger } from 'pino';
 
 import {
@@ -33,9 +34,19 @@ import {
   type RemoteListener,
   type RemoteTimers,
 } from './listener.js';
-import { REMOTE_UNAUTHENTICATED, denyEveryRequest } from './middleware.js';
 import type { HttpListener, ListenerOptions } from './ports.js';
 import { isCgnatIPv4, type Detection, type TailscaleDetector } from './tailscale.js';
+
+/**
+ * The stand-in policy for the lifecycle tests.
+ *
+ * These tests are about *binding*, not about the request policy — that is
+ * `auth.test.ts` and `policy.test.ts`, which mount the real chain. What matters
+ * here is that a socket the tests open (including, in the gated `describe` at the
+ * end, a **real** one on a real tailnet address) serves nothing while it is open.
+ */
+const refuseEverything: Middleware = (_request, response) =>
+  response.error(503, 'remote_unavailable', 'This fixture listener serves nothing.');
 
 const TAILNET_ADDRESS = '100.101.102.103';
 const OTHER_TAILNET_ADDRESS = '100.99.98.97';
@@ -216,7 +227,7 @@ function harness(
     port: options.port ?? 7478,
     pollMs: POLL_MS,
     retryMaxMs: RETRY_MAX_MS,
-    middleware: [denyEveryRequest()],
+    middleware: [refuseEverything],
     logger,
     accessLogger: logger,
     clock: () => now,
@@ -586,50 +597,10 @@ describe('M3 — stop()', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The hard deny (M3's placeholder policy)
-// ---------------------------------------------------------------------------
-
-describe('M3 — the placeholder policy refuses every request', () => {
-  it('answers 503 remote_unauthenticated to any request, without revealing whether the route exists', async () => {
-    // Bound to loopback deliberately: this is a test of the *middleware*, not of
-    // the bind, and it is the only way to exercise it over a real socket without a
-    // tailnet. The listener itself would never accept this address (assertBindable).
-    const logger = quietLogger();
-    const mounted = mountRoutes(
-      [
-        {
-          moduleId: 'fixture',
-          method: 'GET',
-          path: '/api/health',
-          remote: 'allow',
-          handler: (_request, response) => response.json({ status: 'ok' }),
-        },
-      ],
-      {
-        bind: '127.0.0.1',
-        port: 0,
-        origin: 'remote',
-        name: 'remote-middleware-fixture',
-        logger,
-        accessLogger: logger,
-        middleware: [denyEveryRequest()],
-      },
-    );
-    const address = await mounted.listen();
-    try {
-      const base = `http://127.0.0.1:${String(address.port)}`;
-      for (const path of ['/', '/assets/app.js', '/api/health', '/api/does-not-exist']) {
-        const answer = await fetch(`${base}${path}`);
-        const body = (await answer.json()) as { error: string };
-        expect(answer.status, path).toBe(503);
-        expect(body.error, path).toBe(REMOTE_UNAUTHENTICATED);
-      }
-    } finally {
-      await mounted.close();
-    }
-  });
-});
+// M3's hard-deny placeholder is gone: M4–M6 replaced it with the real chain, and
+// the request policy is now asserted over a real mounted listener in
+// `policy.test.ts` and `auth.test.ts`. Nothing in the listener changed to make
+// that swap, which is what the placeholder being a `Middleware` bought.
 
 // ---------------------------------------------------------------------------
 // Static assertions over remote's own source
@@ -701,7 +672,7 @@ describe.skipIf(realAddress === undefined)(
         port: 0,
         pollMs: POLL_MS,
         retryMaxMs: RETRY_MAX_MS,
-        middleware: [denyEveryRequest()],
+        middleware: [refuseEverything],
         logger,
         accessLogger: logger,
         clock: () => new Date(),
