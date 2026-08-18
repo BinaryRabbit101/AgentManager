@@ -50,8 +50,15 @@ describe('the invalidation map (§3.4)', () => {
       // Since ui M6 the fleet status is orchestrator's own
       // `GET /api/orchestrator/status` (§2.2's badge reads `questions.open` from
       // it), so a lifecycle event invalidates that too — not just the project
-      // list whose `lastActivityAt` moved.
-      expect(outcome.invalidate, type).toEqual([['projects'], ['orchestrator', 'status']]);
+      // list whose `lastActivityAt` moved. `['sessions']` is there because home
+      // (§2.4) and the sessions index (§9.5) list sessions *by status*, and a
+      // start or an end is precisely a status changing; without it those screens
+      // would have to poll, which §16 forbids.
+      expect(outcome.invalidate, type).toEqual([
+        ['sessions'],
+        ['projects'],
+        ['orchestrator', 'status'],
+      ]);
     }
   });
 

@@ -121,7 +121,7 @@ describe('every dialog traps focus, closes on Escape, and restores it (§15)', (
   const DIALOGS = [
     {
       name: 'Launch',
-      route: '/',
+      route: '/agents',
       open: async (user: ReturnType<typeof userEvent.setup>) => {
         const trigger = await screen.findByRole('button', { name: 'Actions for Ada' });
         await user.click(trigger);
@@ -131,7 +131,7 @@ describe('every dialog traps focus, closes on Escape, and restores it (§15)', (
     },
     {
       name: 'Start a pair',
-      route: '/',
+      route: '/agents',
       open: async (user: ReturnType<typeof userEvent.setup>) => {
         const trigger = await screen.findByRole('button', { name: 'Actions for Ada' });
         await user.click(trigger);
@@ -197,7 +197,7 @@ describe('every dialog traps focus, closes on Escape, and restores it (§15)', (
 
 describe('the card menu is a menu, and behaves like one (§15)', () => {
   it('opens, is walkable, closes on Escape and restores focus', async () => {
-    mountAt('/');
+    mountAt('/agents');
     const user = userEvent.setup();
     const trigger = await screen.findByRole('button', { name: 'Actions for Ada' });
     await user.click(trigger);
@@ -214,7 +214,7 @@ describe('the card menu is a menu, and behaves like one (§15)', () => {
 
 describe('reorder mode is operable without a pointer (§5.4)', () => {
   it('exposes ▲▼ buttons with names and a position readout', async () => {
-    mountAt('/');
+    mountAt('/agents');
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Reorder' }));
 

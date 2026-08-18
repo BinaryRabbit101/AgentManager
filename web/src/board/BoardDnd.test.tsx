@@ -26,6 +26,9 @@ import { anAgent, aProject, json, mount, type Responder } from '../../test/harne
 import { App } from '../App';
 import type { AgentView, Project } from '../api/types';
 
+/** The board's route since §2.4 gave `/` to home. The gesture did not move. */
+const BOARD_ROUTE = '/agents';
+
 beforeAll(() => {
   // dnd-kit scrolls the lifted card into view. jsdom implements no scrolling, and
   // a missing method would fail the drag rather than the assertion.
@@ -129,7 +132,7 @@ async function ready(): Promise<void> {
 describe('the keyboard drag on the board (§5.4, IMPLEMENTATION §3)', () => {
   it('lifts with Space and announces each target the arrows reach', async () => {
     const fixture = serving({ agents: [PRIYA, SAM], projects: [LPM] });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
 
     const user = userEvent.setup();
@@ -145,7 +148,7 @@ describe('the keyboard drag on the board (§5.4, IMPLEMENTATION §3)', () => {
 
   it('wraps the ring, so the last arrow press does not strand the drag', async () => {
     const fixture = serving({ agents: [PRIYA, SAM], projects: [LPM] });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
 
     const user = userEvent.setup();
@@ -158,7 +161,7 @@ describe('the keyboard drag on the board (§5.4, IMPLEMENTATION §3)', () => {
 
   it('cancels on Escape and starts nothing', async () => {
     const fixture = serving({ agents: [PRIYA, SAM], projects: [LPM] });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
 
     const user = userEvent.setup();
@@ -182,7 +185,7 @@ describe('the keyboard drag on the board (§5.4, IMPLEMENTATION §3)', () => {
 describe('agent → agent: the pair gesture (§5.3 row 3, §10.4)', () => {
   it('opens the pair dialog with both seats pre-filled, and starts nothing', async () => {
     const fixture = serving({ agents: [PRIYA, SAM], projects: [LPM] });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
 
     const user = userEvent.setup();
@@ -202,7 +205,7 @@ describe('agent → agent: the pair gesture (§5.3 row 3, §10.4)', () => {
 
   it('has a pointer-free equivalent on the card menu (§5.4)', async () => {
     const fixture = serving({ agents: [PRIYA, SAM], projects: [LPM] });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
 
     const user = userEvent.setup();
@@ -220,7 +223,7 @@ describe('board reorder by keyboard, persisted as one whole-list write (§5.3)',
 
   it('drops onto another card, moves it, and PUTs the whole order once', async () => {
     const fixture = serving({ agents: [PRIYA, SAM], projects: [LPM] });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
     expect(cardNames()).toEqual(['priya', 'sam']);
 
@@ -246,7 +249,7 @@ describe('board reorder by keyboard, persisted as one whole-list write (§5.3)',
       boardOrderStatus: 400,
       boardOrderBody: { error: 'unknown_board_order_id', message },
     });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
 
     const user = userEvent.setup();
@@ -269,7 +272,7 @@ describe('board reorder by keyboard, persisted as one whole-list write (§5.3)',
 describe('Reorder mode — the pointer-free path to board order (§5.4)', () => {
   it('gives every card ▲▼ and a position readout, and persists once on leaving', async () => {
     const fixture = serving({ agents: [PRIYA, SAM], projects: [LPM] });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
 
     const user = userEvent.setup();
@@ -293,7 +296,7 @@ describe('Reorder mode — the pointer-free path to board order (§5.4)', () => 
 describe('the card menu — the non-drag path to the launch flow (§5.4)', () => {
   it('opens the launch flow with the agent pre-filled and the project to pick', async () => {
     const fixture = serving({ agents: [PRIYA], projects: [LPM] });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
 
     const user = userEvent.setup();
@@ -307,7 +310,7 @@ describe('the card menu — the non-drag path to the launch flow (§5.4)', () =>
 
   it('closes on Escape and returns focus to the trigger (§15)', async () => {
     const fixture = serving({ agents: [PRIYA], projects: [LPM] });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
 
     const user = userEvent.setup();
@@ -330,7 +333,7 @@ describe('an archived agent is not draggable (§5.2)', () => {
       ],
       projects: [LPM],
     });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
 
     const user = userEvent.setup();

@@ -82,7 +82,7 @@ describe('agent → project', () => {
   }, 20_000);
 
   it('pointer-free: the card menu’s Launch on…, and the project’s Launch an agent…', async () => {
-    mountAt('/');
+    mountAt('/agents');
     await board();
     let user = userEvent.setup();
 
@@ -143,7 +143,7 @@ describe('agent → work item', () => {
 
 describe('agent → agent (the pair)', () => {
   it('keyboard: lift one card, arrow to another, drop into the pair dialog', async () => {
-    mountAt('/');
+    mountAt('/agents');
     await board();
     const user = userEvent.setup();
 
@@ -160,7 +160,7 @@ describe('agent → agent (the pair)', () => {
   }, 20_000);
 
   it('pointer-free: the card menu’s Start a pair…', async () => {
-    mountAt('/');
+    mountAt('/agents');
     await board();
     const user = userEvent.setup();
 
@@ -175,7 +175,7 @@ describe('agent → agent (the pair)', () => {
 
 describe('board reorder', () => {
   it('keyboard: Reorder mode, lift, arrow, drop — and the order is written once', async () => {
-    const mounted = mountAt('/');
+    const mounted = mountAt('/agents');
     await board();
     const user = userEvent.setup();
 
@@ -196,7 +196,7 @@ describe('board reorder', () => {
   }, 20_000);
 
   it('pointer-free: the ▲▼ controls, persisted once on leaving the mode', async () => {
-    const mounted = mountAt('/');
+    const mounted = mountAt('/agents');
     await board();
     const user = userEvent.setup();
 
@@ -215,7 +215,7 @@ describe('board reorder', () => {
 
 describe('every gesture is announced, and Escape cancels every one of them', () => {
   it('says what will happen, then that nothing happened', async () => {
-    mountAt('/');
+    mountAt('/agents');
     await board();
     const user = userEvent.setup();
 

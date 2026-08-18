@@ -1,7 +1,7 @@
 /**
  * The app root: routes (§2.1), the frame (§2.2) and the boot gate (§3.5).
  *
- * Thirteen routes, every one deep-linkable and every one surviving a reload — the
+ * Fourteen routes, every one deep-linkable and every one surviving a reload — the
  * ntfy notification and the Electron toast both navigate by URL, and
  * foundation §6.4's history fallback is what makes a cold `GET /questions/abc`
  * arrive here rather than at a 404.
@@ -25,6 +25,7 @@ import { useBridge, useServices } from './app/AppContext';
 import { useDesktopBridge } from './app/useDesktopBridge';
 import { useEventStream } from './app/useEventStream';
 import { useOpenQuestions } from './app/useOpenQuestions';
+import { Home } from './home/Home';
 import { Sprite } from './icons/Sprite';
 import { LaunchFlowHost } from './launch/LaunchFlow';
 import { ProjectPage } from './projects/ProjectPage';
@@ -47,7 +48,16 @@ export function App(): ReactElement {
       <Sprite />
       <AppFrame>
         <Routes>
-          <Route path="/" element={<Board />} />
+          {/*
+            §2.4: home is mission control, and the board is a destination named
+            for what it holds (§5). `/agents` is declared *after* its own two
+            deeper routes only in this file's reading order — react-router v6
+            ranks by specificity, not by source order, so `/agents/new` and
+            `/agents/:id` still win over `/agents`. `shell.test.tsx` asserts it
+            rather than trusting it.
+          */}
+          <Route path="/" element={<Home />} />
+          <Route path="/agents" element={<Board />} />
           <Route path="/agents/new" element={<AgentWizard />} />
           <Route path="/agents/:id" element={<AgentDetail />} />
           <Route path="/projects" element={<ProjectsPage />} />

@@ -27,7 +27,7 @@ import { describe, expect, it } from 'vitest';
 import { CONTENT_SECURITY_POLICY, SECURITY_HEADERS } from '../../../src/http/routes/spa.js';
 
 const webSrc = resolve(process.cwd(), 'web', 'src');
-const SHEETS = ['styles.css', 'core-loop.css', 'pages.css', 'collaboration.css'];
+const SHEETS = ['styles.css', 'core-loop.css', 'pages.css', 'collaboration.css', 'home.css'];
 
 function sheet(name: string): string {
   return readFileSync(join(webSrc, name), 'utf8');

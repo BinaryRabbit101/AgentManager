@@ -94,12 +94,12 @@ describe('the same screens, both ways in', () => {
 
 describe('§13.4’s differences, each asserted explicitly', () => {
   it('under the hood: the bearer rides every request over the tailnet, and none locally', async () => {
-    const remote = mountAt('/', { token: 'a-device-token' });
+    const remote = mountAt('/agents', { token: 'a-device-token' });
     await waitFor(() => expect(screen.getByRole('link', { name: 'Ada' })).toBeInTheDocument());
     expect(remote.client.headers()['authorization']).toBe('Bearer a-device-token');
     cleanup();
 
-    const local = mountAt('/', { bridge: ELECTRON_BRIDGE });
+    const local = mountAt('/agents', { bridge: ELECTRON_BRIDGE });
     await waitFor(() => expect(screen.getByRole('link', { name: 'Ada' })).toBeInTheDocument());
     expect(local.client.headers()['authorization']).toBeUndefined();
   }, 30_000);

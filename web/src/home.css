@@ -1,0 +1,73 @@
+/**
+ * The home screen (DESIGN §2.4).
+ *
+ * Deliberately small. Home is three stacked regions of things the rest of the
+ * app already knows how to draw — question cards (`.question-list`, core-loop),
+ * compact records (`.record-list` / `.record-row`, pages) and the shared
+ * `.badge` / `.button` / `.empty` / `.notice` utilities — so what is left for
+ * this file is the stacking, the region headers and the one row tweak that a
+ * scanning list needs and a browsing list does not.
+ *
+ * No fixed widths and no fixed grid tracks: §2.3 and §15 want home readable at
+ * 390px and at 200% zoom, and the regions are a single column at every size.
+ */
+
+.home {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  min-width: 0;
+}
+
+.home-region {
+  min-width: 0;
+}
+
+/*
+  The region header is a row so a region can carry an action beside its
+  heading — "Start work" on Running now, "All sessions" on Recently finished —
+  without the action becoming a second heading. It wraps rather than shrinking,
+  because a 44px target that has been squeezed is no longer a 44px target.
+*/
+.home-region__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.home-region__head h2 {
+  margin: 0;
+  margin-right: auto;
+}
+
+.home-region__more {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/*
+  Home's rows are read in a glance rather than browsed, so they sit tighter
+  than the same row on its own index page, and the empty state that follows a
+  region does not need the index page's full breathing room above it.
+*/
+.home-row {
+  padding: 0.45rem 0.7rem;
+}
+
+.home-region .empty {
+  padding: 0.75rem 0;
+}
+
+/*
+  The cards on home are the inbox's cards; only the gap between them belongs to
+  this screen, because `.question-list` is a shared list and home stacks it
+  above two more regions rather than owning the page.
+*/
+.home-region .question-list {
+  margin-bottom: 0.5rem;
+}

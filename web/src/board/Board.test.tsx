@@ -21,6 +21,14 @@ import type { AgentView, Project } from '../api/types';
 
 import { agentLabel, DELETED_AGENT_LABEL } from './AgentCard';
 
+/**
+ * The board is `/agents` now (§2.1, §2.4) — `/` is the home screen.
+ *
+ * Every mount below names it rather than defaulting to `/`, because everything
+ * these tests assert is the board's and none of it moved with the route.
+ */
+const BOARD_ROUTE = '/agents';
+
 interface Fixture {
   readonly respond: Responder;
   set(next: { agents?: readonly AgentView[]; projects?: readonly Project[] }): void;
@@ -83,7 +91,7 @@ describe('the card grid and its three avatar kinds (§5.2)', () => {
         anAgent({ id: 'pat', name: 'Pat', avatar: { kind: 'file', value: 'avatar.png' } }),
       ],
     });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
 
     await waitFor(() => expect(screen.getByRole('link', { name: 'Priya' })).toBeInTheDocument());
 
@@ -108,7 +116,7 @@ describe('the card grid and its three avatar kinds (§5.2)', () => {
 
   it('falls back to initials from the name when a definition declares no avatar', async () => {
     const fixture = serving({ agents: [anAgent({ id: 'x', name: 'Ada Lovelace' })] });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await waitFor(() =>
       expect(screen.getByRole('img', { name: 'Ada Lovelace' })).toHaveTextContent('AL'),
     );
@@ -127,7 +135,7 @@ describe('the card grid and its three avatar kinds (§5.2)', () => {
         }),
       ],
     });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await waitFor(() => expect(screen.getByRole('link', { name: 'Priya' })).toBeInTheDocument());
 
     // §14.1: colour is never the only carrier — the word is always present.
@@ -143,12 +151,12 @@ describe('the card grid and its three avatar kinds (§5.2)', () => {
     const fixture = serving({
       agents: [anAgent({ id: 'priya', name: 'Priya', needsCredentials: true })],
     });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await waitFor(() => expect(screen.getByText('needs credential')).toBeInTheDocument());
   });
 
   it('has an empty state with a voice, not "no records found"', async () => {
-    mount(<App />, { respond: serving({}).respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: serving({}).respond });
     await waitFor(() =>
       expect(
         screen.getByText(
@@ -185,7 +193,7 @@ describe('a roster diagnostic (§5.2, IMPLEMENTATION §2)', () => {
         },
       ],
     });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
 
     await waitFor(() => expect(screen.getByRole('link', { name: 'Broken' })).toBeInTheDocument());
 
@@ -201,7 +209,7 @@ describe('a roster diagnostic (§5.2, IMPLEMENTATION §2)', () => {
   });
 
   it('surfaces a failed roster read as the server’s message, not a blank grid', async () => {
-    mount(<App />, {
+    mount(<App />, { route: BOARD_ROUTE,
       respond: () =>
         json({ error: 'roster_unreadable', message: 'The roster folder is not readable.' }, 500),
     });
@@ -217,7 +225,7 @@ describe('the status pill, live from session.* (§5.2)', () => {
       agents: [anAgent({ id: 'priya', name: 'Priya' })],
       projects: [aProject({ id: 'lpm', name: 'littlepocketmuseum' })],
     });
-    const { stream, calls } = mount(<App />, { respond: fixture.respond });
+    const { stream, calls } = mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
 
     await waitFor(() => expect(screen.getByRole('link', { name: 'Priya' })).toBeInTheDocument());
     expect(within(card('Priya')).getByText('idle')).toBeInTheDocument();
@@ -250,7 +258,7 @@ describe('the status pill, live from session.* (§5.2)', () => {
 
   it('reads awaiting_user for a park on a question, in orchestrator’s own words', async () => {
     const fixture = serving({ agents: [anAgent({ id: 'priya', name: 'Priya' })] });
-    const { stream } = mount(<App />, { respond: fixture.respond });
+    const { stream } = mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await waitFor(() => expect(screen.getByRole('link', { name: 'Priya' })).toBeInTheDocument());
 
     await act(async () => {
@@ -271,7 +279,7 @@ describe('roster.changed updates the card in place (IMPLEMENTATION §2)', () => 
     const fixture = serving({
       agents: [anAgent({ id: 'priya', name: 'Priya', tagline: 'Reproduces first.' })],
     });
-    const { stream } = mount(<App />, { respond: fixture.respond });
+    const { stream } = mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await waitFor(() => expect(screen.getByText('Reproduces first.')).toBeInTheDocument());
 
     // The file on disk is edited — or `git pull` rewrote it. Roster's watcher
@@ -300,7 +308,7 @@ describe('the archive filter (§5.2)', () => {
         anAgent({ id: 'old', name: 'Old Hand', archivedAt: '2026-07-01T00:00:00.000Z' }),
       ],
     });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await waitFor(() => expect(screen.getByRole('link', { name: 'Priya' })).toBeInTheDocument());
     expect(screen.queryByRole('link', { name: 'Old Hand' })).not.toBeInTheDocument();
 
@@ -315,7 +323,7 @@ describe('the archive filter (§5.2)', () => {
 
   it('says "No archived agents" rather than nothing when there are none', async () => {
     const fixture = serving({ agents: [anAgent({ id: 'priya', name: 'Priya' })] });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await waitFor(() => expect(screen.getByRole('link', { name: 'Priya' })).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: 'Archived' }));
     expect(screen.getByText('No archived agents.')).toBeInTheDocument();
@@ -338,7 +346,7 @@ describe('filters and sort (§5.1)', () => {
         anAgent({ id: 'ana', name: 'Ana', boardOrder: 1 }),
       ],
     });
-    mount(<App />, { respond: fixture.respond });
+    mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await waitFor(() => expect(screen.getByRole('link', { name: 'Zed' })).toBeInTheDocument());
 
     const names = (): string[] =>
@@ -358,7 +366,7 @@ describe('filters and sort (§5.1)', () => {
         anAgent({ id: 'sam', name: 'Sam', specialty: 'testing' }),
       ],
     });
-    const { stream } = mount(<App />, { respond: fixture.respond });
+    const { stream } = mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await waitFor(() => expect(screen.getByRole('link', { name: 'Priya' })).toBeInTheDocument());
 
     await userEvent.selectOptions(screen.getByLabelText('Specialty'), 'testing');
@@ -401,7 +409,7 @@ describe('the remote grant badge on the card (§13.2, remote §12.4)', () => {
   }
 
   it('shows the expiry, and repaints when a grant event arrives', async () => {
-    const mounted = mount(<App />, {
+    const mounted = mount(<App />, { route: BOARD_ROUTE,
       respond: withGrants([
         {
           agentId: 'priya',
@@ -483,7 +491,7 @@ describe('the remote grant badge on the card (§13.2, remote §12.4)', () => {
 
   it('revokes a live grant from the card menu, checked to match the badge', async () => {
     const recorder = grantsRecording([GRANT]);
-    mount(<App />, { respond: recorder.respond, boot: REMOTE_BOOT });
+    mount(<App />, { route: BOARD_ROUTE, respond: recorder.respond, boot: REMOTE_BOOT });
     await waitFor(() =>
       expect(document.querySelector('[data-remote-grant="priya"]')).not.toBeNull(),
     );
@@ -499,7 +507,7 @@ describe('the remote grant badge on the card (§13.2, remote §12.4)', () => {
 
   it('grants from the card menu when there is none, and shows unchecked first', async () => {
     const recorder = grantsRecording([]);
-    mount(<App />, { respond: recorder.respond, boot: REMOTE_BOOT });
+    mount(<App />, { route: BOARD_ROUTE, respond: recorder.respond, boot: REMOTE_BOOT });
     await waitFor(() => expect(screen.getByRole('link', { name: 'Priya' })).toBeInTheDocument());
 
     const menu = await openMenu();
@@ -511,7 +519,7 @@ describe('the remote grant badge on the card (§13.2, remote §12.4)', () => {
   });
 
   it('omits the toggle entirely in the work edition (§13.5)', async () => {
-    mount(<App />, { respond: withGrants([]) });
+    mount(<App />, { route: BOARD_ROUTE, respond: withGrants([]) });
     const menu = await openMenu();
     // Absent, not disabled: the capability does not exist here.
     expect(within(menu).queryByRole('menuitemcheckbox')).toBeNull();
@@ -519,7 +527,7 @@ describe('the remote grant badge on the card (§13.2, remote §12.4)', () => {
   });
 
   it('asks nothing of the remote module when it is not loaded (§3.5)', async () => {
-    const mounted = mount(<App />, { respond: withGrants([]) });
+    const mounted = mount(<App />, { route: BOARD_ROUTE, respond: withGrants([]) });
     await waitFor(() => expect(screen.getByRole('link', { name: 'Priya' })).toBeInTheDocument());
     expect(mounted.calls.filter((call) => call.startsWith('/api/remote'))).toEqual([]);
     expect(document.querySelector('[data-remote-grant]')).toBeNull();

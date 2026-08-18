@@ -20,9 +20,24 @@ import { THEME_STORAGE_KEY } from '../theme/theme';
 import { BootGate, coreUrl, LOG_PATH_HINT } from './Boot';
 import { OFFLINE_BANNER_DELAY_MS } from './ConnectionIndicator';
 
+/**
+ * A core with nothing in it — every list home and the board read, empty.
+ *
+ * Home is `/` now (§2.4) and reads five of these; a missing fixture would draw
+ * an error notice with `role="alert"` on every screen in this file, which is
+ * exactly the role the offline-banner assertions below look for.
+ */
 const EMPTY = routes({
   '/api/roster/agents': { agents: [], diagnostics: [] },
   '/api/projects': { projects: [] },
+  '/api/questions': { questions: [] },
+  '/api/sessions': { sessions: [], next: null },
+  '/api/assignments': { assignments: [] },
+  '/api/orchestrator/status': {
+    agents: [],
+    assignments: { open: 0, halted: 0, awaitingUser: 0 },
+    questions: { open: 0, oldestOpenedAt: null },
+  },
 });
 
 function bootWith(respond: (url: string) => Response) {
@@ -116,18 +131,31 @@ describe('the boot sequence (§3.5, IMPLEMENTATION §1)', () => {
 });
 
 describe('the frame and the debug panel (§2.2, IMPLEMENTATION §1)', () => {
-  it('renders the five destinations as real links inside a nav landmark', async () => {
-    mount(<App />, { respond: EMPTY });
+  it('renders every destination as a real link inside a nav landmark', async () => {
+    mount(<App />, { respond: EMPTY, route: '/agents' });
     const nav = screen.getByRole('navigation', { name: 'Main' });
-    for (const label of ['Board', 'Projects', 'Questions', 'Usage', 'Settings']) {
+    // §2.2's rail, in order. Home leads it and the board follows as Agents
+    // (§2.4) — the roster is a destination now rather than the front door.
+    for (const label of [
+      'Home',
+      'Agents',
+      'Projects',
+      'Sessions',
+      'Assignments',
+      'Questions',
+      'Usage',
+      'Settings',
+    ]) {
       expect(within(nav).getByRole('link', { name: label })).toBeInTheDocument();
     }
+    expect(within(nav).getByRole('link', { name: 'Home' })).toHaveAttribute('href', '/');
+    expect(within(nav).getByRole('link', { name: 'Agents' })).toHaveAttribute('href', '/agents');
     expect(screen.getByRole('main')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText(/No agents yet/u)).toBeInTheDocument());
   });
 
   it('shows the edition, the module list and the event filter', async () => {
-    mount(<App />, { respond: EMPTY });
+    mount(<App />, { respond: EMPTY, route: '/agents' });
     expect(screen.getByTestId('debug-edition')).toHaveTextContent('home');
     expect(screen.getByTestId('debug-modules')).toHaveTextContent('roster:ok');
     expect(screen.getByTestId('debug-modules')).toHaveTextContent('orchestrator:ok');
@@ -139,6 +167,7 @@ describe('the frame and the debug panel (§2.2, IMPLEMENTATION §1)', () => {
   it('displays health warnings persistently, not as a dismissible toast', async () => {
     mount(<App />, {
       respond: EMPTY,
+      route: '/agents',
       boot: {
         config: BOOT_FACTS.config,
         health: {
@@ -164,14 +193,23 @@ describe('the frame and the debug panel (§2.2, IMPLEMENTATION §1)', () => {
     await waitFor(() => expect(screen.getByText(/No agents yet/u)).toBeInTheDocument());
   });
 
-  it('renders every one of the ten routes rather than a blank frame', () => {
+  it('renders every one of the routes rather than a blank frame', () => {
     // Foundation's history fallback hands a cold `GET /questions/abc` to the
     // SPA, so each route must render *something* from the first milestone.
+    //
+    // `/agents` and its two deeper routes are all here on purpose: react-router
+    // v6 ranks by specificity rather than by declaration order, and this is what
+    // proves it — `/agents/new` must reach the wizard and `/agents/a1` the
+    // editor, not the board, now that `/agents` is a route of its own.
     for (const route of [
+      '/agents',
       '/agents/new',
       '/agents/a1',
+      '/projects',
       '/projects/p1',
+      '/sessions',
       '/sessions/s1',
+      '/assignments',
       '/assignments/a1',
       '/questions',
       '/questions/abc',

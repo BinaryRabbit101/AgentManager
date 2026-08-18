@@ -33,9 +33,17 @@ interface Destination {
   a detail route and no index, so a run that stopped and the assignment it
   belonged to could only be found again by walking back through a project page.
   A screen with no way in is a screen that does not exist.
+
+  Home leads it and the board follows as **Agents** (§2.1, §2.4). The board was
+  `/` and therefore the first thing anyone saw, which answered "who do I have"
+  to a person who had come to find out what needed them. The roster is still one
+  click away — it is a destination like the rest, named for what it holds. The
+  board's icon comes with it: `/agents` *is* the board, and giving the same
+  screen two glyphs in one session would be the inconsistency, not the reuse.
 */
 const DESTINATIONS: readonly Destination[] = [
-  { to: '/', label: 'Board', icon: 'board' },
+  { to: '/', label: 'Home', icon: 'home' },
+  { to: '/agents', label: 'Agents', icon: 'board' },
   { to: '/projects', label: 'Projects', icon: 'folder' },
   { to: '/sessions', label: 'Sessions', icon: 'sessions' },
   { to: '/assignments', label: 'Assignments', icon: 'assignments' },

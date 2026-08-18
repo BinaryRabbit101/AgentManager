@@ -61,6 +61,15 @@ function serving(options: { created?: unknown; status?: number; posts?: Posted[]
   };
 }
 
+/**
+ * The board, which is `/agents` since §2.4 gave `/` to the home screen.
+ *
+ * The dialog is opened from a card there, and the screen behind it matters to
+ * these tests for one reason: several assert that **no** `role="alert"` is on
+ * screen, and home reads five lists this file has no fixtures for.
+ */
+const PAIR_ROUTE = '/agents';
+
 function openPair(): void {
   useAppStore.getState().openPair({ agentId: 'ada', withAgentId: 'sam' });
 }
@@ -71,7 +80,7 @@ async function dialog(): Promise<HTMLElement> {
 
 describe('the dialog is driven entirely by GET /api/patterns (§10.4)', () => {
   it('takes its seats, roles, tiers, defaults and cap from the server', async () => {
-    mount(<App />, { respond: serving({}) });
+    mount(<App />, { route: PAIR_ROUTE, respond: serving({}) });
     openPair();
     const sheet = await dialog();
 
@@ -89,7 +98,7 @@ describe('the dialog is driven entirely by GET /api/patterns (§10.4)', () => {
   });
 
   it('lists candidates with their open-assignment count (§10.4)', async () => {
-    mount(<App />, { respond: serving({}) });
+    mount(<App />, { route: PAIR_ROUTE, respond: serving({}) });
     openPair();
     const sheet = await dialog();
     const drafter = await within(sheet).findByLabelText('drafter agent');
@@ -99,7 +108,7 @@ describe('the dialog is driven entirely by GET /api/patterns (§10.4)', () => {
   });
 
   it('pre-fills the dragged agent as drafter and the target as critic (§5.3)', async () => {
-    mount(<App />, { respond: serving({}) });
+    mount(<App />, { route: PAIR_ROUTE, respond: serving({}) });
     openPair();
     const sheet = await dialog();
     await waitFor(() => expect(within(sheet).getByLabelText('drafter agent')).toHaveValue('ada'));
@@ -110,7 +119,7 @@ describe('the dialog is driven entirely by GET /api/patterns (§10.4)', () => {
 describe('every server warning is surfaced before the user confirms (§10.4)', () => {
   it('creates parked, shows the warnings, and starts nothing until Start', async () => {
     const posts: Posted[] = [];
-    mount(<App />, {
+    mount(<App />, { route: PAIR_ROUTE,
       respond: serving({
         posts,
         created: {
@@ -161,7 +170,7 @@ describe('every server warning is surfaced before the user confirms (§10.4)', (
   });
 
   it('refuses nothing client-side that the server would accept', async () => {
-    mount(<App />, { respond: serving({}) });
+    mount(<App />, { route: PAIR_ROUTE, respond: serving({}) });
     openPair();
     const sheet = await dialog();
     const user = userEvent.setup();
@@ -178,7 +187,7 @@ describe('every server warning is surfaced before the user confirms (§10.4)', (
   });
 
   it('shows the server’s refusal verbatim when it does refuse', async () => {
-    mount(<App />, {
+    mount(<App />, { route: PAIR_ROUTE,
       respond: serving({
         status: 400,
         created: {
@@ -198,7 +207,7 @@ describe('every server warning is surfaced before the user confirms (§10.4)', (
 describe('a returned gate prevents any "it is running" impression (§10.4)', () => {
   it('offers no Start button, says it is waiting for approval, and links to the card', async () => {
     const posts: Posted[] = [];
-    mount(<App />, {
+    mount(<App />, { route: PAIR_ROUTE,
       respond: serving({
         posts,
         created: {
@@ -261,7 +270,7 @@ describe('a remote pattern launch of two ungranted agents (§13.4, IMPLEMENTATIO
       return serving({ posts })(url, init);
     };
 
-    mount(<App />, { respond, token: 'a-device-token' });
+    mount(<App />, { route: PAIR_ROUTE, respond, token: 'a-device-token' });
     openPair();
     const sheet = await dialog();
     await within(sheet).findByLabelText('drafter agent');
@@ -288,7 +297,7 @@ describe('a remote pattern launch of two ungranted agents (§13.4, IMPLEMENTATIO
 
 describe('the dialog closes the way every dialog does (§15)', () => {
   it('closes on Escape', async () => {
-    mount(<App />, { respond: serving({}) });
+    mount(<App />, { route: PAIR_ROUTE, respond: serving({}) });
     openPair();
     const sheet = await dialog();
     const user = userEvent.setup();

@@ -48,8 +48,16 @@ export const DEFAULT_FILTERS: BoardFilters = Object.freeze({
 export interface LaunchIntent {
   readonly agentId: string | null;
   readonly projectId: string | null;
-  /** Where it was opened from, so the flow knows which picker to focus. */
-  readonly origin: 'drag' | 'agent-menu' | 'project' | 'work-item';
+  /**
+   * Where it was opened from, so the flow knows which picker to focus.
+   *
+   * `home` is the fourth way in (§2.4's **Start work**) and the only one that
+   * arrives with *neither* seat filled: the other three all come from a card, a
+   * row or a drop that already names an agent or a project. It is a word in this
+   * vocabulary rather than a reused one because the flow's first question
+   * differs — "which agent, on which project" rather than "on what".
+   */
+  readonly origin: 'drag' | 'agent-menu' | 'project' | 'work-item' | 'home';
   /**
    * A work item dropped on, or picked from a row's `⋯` (§5.3, §8.2 region 4).
    *

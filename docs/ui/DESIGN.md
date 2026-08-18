@@ -141,7 +141,8 @@ MSI/Squirrel, global hotkeys, multiple windows, deep OS integration.
 
 | Route | Screen | Purpose |
 |---|---|---|
-| `/` | **Board** | The roster as a board of agent cards. The home screen and the drag surface. |
+| `/` | **Home** | Mission control: what needs you, what is running, what just finished (§2.4). |
+| `/agents` | **Agents** | The roster as a board of agent cards. The drag surface (§5). |
 | `/agents/:id` | Agent detail / editor | Definition, persona, permissions, integrations, skills, diagnostics, session history. |
 | `/agents/new` | Agent wizard | Draft-from-description → edit → save (§6). |
 | `/projects` | **Projects** | The project list: status, health, and the agent→project drop target (§5.1). |
@@ -155,8 +156,18 @@ MSI/Squirrel, global hotkeys, multiple windows, deep OS integration.
 | `/usage` | Usage | Plan-window local estimate, queue, per-assignment spend (§12). |
 | `/settings` | Settings | Remote access, capacity, notifications, logs, health, about (§13). |
 
-Thirteen routes. Every one is deep-linkable and survives a reload, because the ntfy notification and
+Fourteen routes. Every one is deep-linkable and survives a reload, because the ntfy notification and
 the Electron toast both navigate by URL.
+
+**Home is not the board.** `/` was the roster, which answers "who do I have" — a question about the
+tool. The question someone opens the app with is a question about the *work*: what is waiting on me,
+what is running, what just happened. So `/` is the home screen (§2.4) and the board is `/agents`, a
+destination named for what it holds. Nothing about the board changed with the route: it is still the
+drag surface, still the centre of gravity of §5, and still one click away.
+
+`/agents` sits above `/agents/new` and `/agents/:id` in the URL space but not in the router's ranking
+— react-router v6 ranks by specificity, so the wizard and the editor still win their own addresses.
+That is asserted rather than assumed.
 
 **Sessions and assignments are destinations, not just detail routes.** Both started with a `:id` route
 and no index, which meant a session that had stopped, and the assignment it belonged to, could only be
@@ -166,14 +177,18 @@ run ends.
 
 ### 2.2 Navigation
 
-**Desktop (≥ 900px)**: a narrow left rail — Board · Projects · Sessions · Assignments · Questions
-(badge) · Usage · Settings — plus a persistent top bar carrying the connection indicator, the global
-search-free "New agent" and "Add project" buttons, and the theme toggle. Detail screens open as full
-pages, not modals, so they can be linked and shared.
+**Desktop (≥ 900px)**: a narrow left rail — Home · Agents · Projects · Sessions · Assignments ·
+Questions (badge) · Usage · Settings — plus a persistent top bar carrying the connection indicator,
+the global search-free "New agent" and "Add project" buttons, and the theme toggle. Detail screens
+open as full pages, not modals, so they can be linked and shared.
 
-**Phone / narrow (< 640px)**: a bottom tab bar with the same seven destinations (thumb-reachable, 48px
-targets), the top bar collapsed to a title and a single overflow menu. Detail screens push; modals
-become **bottom sheets**.
+Home leads the rail because it is where the app opens and where a person returns to between tasks;
+Agents follows it, carrying the board's own icon, because `/agents` **is** the board and one screen
+with two glyphs is a screen the eye stops recognising.
+
+**Phone / narrow (< 640px)**: a bottom tab bar with the same eight destinations (thumb-reachable,
+48px targets), the top bar collapsed to a title and a single overflow menu. Detail screens push;
+modals become **bottom sheets**.
 
 **The shell owns the scroll, the document does not.** The top bar and the rail are fixed to the
 viewport and the content region is the scrollport. A page that scrolls as one document takes the
@@ -201,6 +216,35 @@ component tree; the screens where the difference is more than reflow are called 
 | **Question inbox** (§11) | Identical by design — this is the phone's primary surface and must not be a reduced mode (remote §12.8). Option buttons are full-width. |
 | **Settings → Remote** (§13) | Token creation and the QR are **local-only** by remote's deny list; the phone sees them disabled with the reason, and sees its own pairing state instead. |
 | **Project quick-add** (§7) | The native-dialog Browse button is replaced by the `/api/fs/browse` navigator. Both viewports always accept a typed path. |
+| **Home** (§2.4) | Nothing but reflow. Three stacked regions at every width — it is a list of lists, and there is no second layout to drift. |
+
+### 2.4 The home screen — mission control
+
+`/`. Three regions, stacked in the order they matter, each a real `section` with its own heading:
+
+1. **Needs you** — every open question card, plus the assignments the server has put in `halted` or
+   `awaiting_user`. The cards are answered **here**: the same `QuestionCardView` and the same
+   `useAnswering` hook the inbox uses (§11.3's "one answer endpoint, one shape" is only true if there
+   is also one client path to it). The assignments are rows with a link, not answerable things —
+   they are a place to go. Empty: *"Nothing needs you."* Calm, not apologetic.
+2. **Running now** — the live sessions and the queued ones behind them, as compact rows: agent
+   avatar and name, project, elapsed time in words, linking to `/sessions/:id`. The region header
+   carries **Start work**, which opens the launch flow of §6 with neither seat filled — §5.4's rule
+   that every gesture has a non-drag equivalent, reaching home.
+3. **Recently finished** — the last five done / failed / interrupted / orphaned sessions with their
+   outcome as a word, linking to the transcript, beside a link to the full `/sessions` index.
+
+The rules the screen is built to, each asserted:
+
+- **A question is answered where it is seen.** One component, one hook, one POST — never a copy.
+- **Nothing polls** (§16). Every region's liveness is §3.4's map: `assignment.question.*` invalidates
+  `['questions']` and `['assignments']`; the session lifecycle frames invalidate `['sessions']`,
+  `['projects']` and the orchestrator status. `['sessions']` joined that list here, because home and
+  §9.5's index are the two screens that list sessions *by status* and a start or an end is exactly a
+  status changing.
+- **The server's order is preserved** (§4). Home filters and slices; it never sorts.
+- **Every region teaches when empty.** A first-run screen says what to do and links to `/projects`,
+  rather than showing three blank boxes.
 
 ---
 
@@ -302,7 +346,7 @@ The `EventStream` maps event types to cache operations. The interesting entries:
 | Event | Effect |
 |---|---|
 | `roster.changed` | refetch the roster list (covers external file edits and `git pull`) |
-| `session.queued/started/paused/resumed/ended/orphaned` | patch the session record, invalidate the fleet status and the project timeline |
+| `session.queued/started/paused/resumed/ended/orphaned` | patch the session record, invalidate the session lists (§2.4, §9.5), the fleet status and the project timeline |
 | `session.delta/message/tool.*/usage` | append to the per-session ring buffer only (never the query cache) |
 | `runner.queue.changed`, `runner.ratelimited` | patch the queue panel |
 | `assignment.question.raised/answered` | invalidate the inbox, bump/clear the badge, fire the Electron toast |
@@ -342,7 +386,8 @@ Stated once, because every screen below inherits it:
 
 ## 5. The roster board
 
-The home screen and the element's centre of gravity.
+`/agents` (§2.1), and the element's centre of gravity. It was `/` until home took that address; what
+moved was the route and the rail label, and nothing else on this screen.
 
 ### 5.1 Layout
 

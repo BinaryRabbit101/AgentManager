@@ -292,14 +292,23 @@ export const RESPOND: Responder = (url, init) => {
   }
 };
 
-/** §2.1's ten routes, with the settling text that says the screen is drawn. */
+/**
+ * §2.1's routes, with the settling text that says the screen is drawn.
+ *
+ * `/` is home (§2.4) and `/agents` is the board it used to be — the two entries
+ * are separate here because the audits make claims about *every* screen, and
+ * folding them into one would drop whichever of the two lost the argument.
+ */
 export const ROUTES: readonly { readonly path: string; readonly settled: string | RegExp }[] = [
-  { path: '/', settled: 'Ada' },
+  { path: '/', settled: /Store transcripts/u },
+  { path: '/agents', settled: 'Ada' },
   { path: '/agents/new', settled: /New agent|Describe/u },
   { path: '/agents/ada', settled: 'Sessions' },
   { path: '/projects', settled: 'littlepocketmuseum' },
   { path: '/projects/lpm', settled: 'littlepocketmuseum' },
+  { path: '/sessions', settled: 'Sessions' },
   { path: '/sessions/ses_1', settled: 'Session' },
+  { path: '/assignments', settled: 'Assignments' },
   { path: '/assignments/asg_1', settled: 'Move transcripts off the hot path' },
   { path: '/questions', settled: /Store transcripts/u },
   { path: '/questions/q1', settled: /Store transcripts/u },

@@ -13,6 +13,10 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 
 import './styles.css';
+// §2.4's home screen. A sibling import rather than another `@import` inside
+// `styles.css` only so the two can be edited independently; the cascade is the
+// same, because this still lands after the sheet it builds on.
+import './home.css';
 
 import { App } from './App';
 import { AvatarCache } from './api/avatars';

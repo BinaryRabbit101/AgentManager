@@ -73,7 +73,7 @@ describe('what the app says out loud (§15)', () => {
   });
 
   it('has one polite region for the whole app, and it starts empty', async () => {
-    mountAt('/');
+    mountAt('/agents');
     await waitFor(() => expect(screen.getByRole('link', { name: 'Ada' })).toBeInTheDocument());
     const regions = [...document.querySelectorAll('[data-announcer="true"]')];
     expect(regions).toHaveLength(1);
@@ -82,7 +82,7 @@ describe('what the app says out loud (§15)', () => {
   }, 20_000);
 
   it('speaks when an event arrives, and only then', async () => {
-    const mounted = mountAt('/');
+    const mounted = mountAt('/agents');
     await waitFor(() => expect(screen.getByRole('link', { name: 'Ada' })).toBeInTheDocument());
     const region = (): HTMLElement => document.querySelector('[data-announcer="true"]')!;
 
@@ -104,7 +104,7 @@ describe('what the app says out loud (§15)', () => {
   }, 20_000);
 
   it('uses assertive only for drag events, which are the user’s own gesture', async () => {
-    mountAt('/');
+    mountAt('/agents');
     await waitFor(() => expect(screen.getByRole('link', { name: 'Ada' })).toBeInTheDocument());
     const assertive = [...document.querySelectorAll('[aria-live="assertive"]')];
     // dnd-kit's, and no other: an assertive region interrupts, and nothing else

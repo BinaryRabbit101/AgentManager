@@ -88,13 +88,20 @@ export function plan(frame: EventFrame): InvalidationPlan {
 
   if (SESSION_LIFECYCLE_TYPES.includes(type)) {
     // §3.4: "patch the session record, invalidate the fleet status and the
-    // project timeline". The fleet status is derived client-side until
-    // orchestrator M9 (see board/fleetStatus.ts), so what needs refetching here
-    // is the project list, whose `lastActivityAt` and health both moved.
+    // project timeline". The fleet status is orchestrator's own since ui M6, and
+    // the project list's `lastActivityAt` and health both moved.
+    //
+    // `['sessions']` joined them when home and the sessions index landed: both
+    // *list* sessions by status (§2.4's "Running now" and "Recently finished",
+    // §9.5's tabs), and a session that starts, ends or is orphaned changes which
+    // list it belongs to. Without this the only way those screens could follow a
+    // run would be a poll, which §16 forbids. The prefix covers the detail key
+    // (`['sessions', id]`) too, which is right for the same reason: its `status`
+    // and `exitReason` are exactly what the frame just changed.
     return {
       ...EMPTY,
       sessionLifecycle: true,
-      invalidate: [['projects'], queryKeys.orchestratorStatus],
+      invalidate: [['sessions'], ['projects'], queryKeys.orchestratorStatus],
     };
   }
 

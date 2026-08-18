@@ -1,6 +1,7 @@
 /**
- * The roster board (DESIGN §5.1) — the home screen and the element's centre of
- * gravity.
+ * The roster board (DESIGN §5.1) — `/agents`, and the element's centre of
+ * gravity. It was `/` until §2.4's home screen took that address; the route and
+ * the rail label moved, and nothing on this screen did.
  *
  * A responsive grid of agent cards, the filter chips above, and the sort control
  * defaulting to board order. The projects rail used to be pinned right; projects

@@ -74,7 +74,7 @@ describe('the audit is really running', () => {
   it('reports a violation when one is deliberately introduced', async () => {
     // A test that only ever passes is indistinguishable from one that is not
     // running at all. This proves the harness sees what it claims to see.
-    mountAt('/');
+    mountAt('/agents');
     await waitFor(() => expect(screen.getAllByText('Ada').length).toBeGreaterThan(0));
 
     const broken = document.createElement('button');
