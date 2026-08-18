@@ -337,6 +337,17 @@ remote identity exists, so nothing should stay pre-authorized for one.
   clears it, which is acceptable because an attacker on the tailnet cannot restart our process, and
   because the outer boundary (tailnet membership) has already been passed by anyone who can reach
   the socket at all.
+- **Accepted for v1 (decided 2026-08-17, owner): in proxy mode the per-peer window is effectively a
+  global one.** D5's amendment makes the household proxy host the only entry in
+  `remote.proxy.allowedPeers`, so every remote request arrives from one IP and "block that peer"
+  and "block all remote access" are the same sentence. Ten failed sign-ins from a phone therefore
+  cost fifteen minutes of remote access for everyone, and no second peer exists to route around it.
+  This is accepted rather than mitigated, for two reasons: a per-peer bucket cannot help while there
+  is one peer — it is already per-peer, and the set has size one — and the recovery path is not
+  remote anyway. The owner of a locked-out tailnet is a person who can walk to the Windows box,
+  where `POST /api/remote/restart` (§10.3, LOCAL ONLY) clears an in-memory bucket without a core
+  restart. Revisit if a second `allowedPeers` entry is ever added: at that point per-peer buckets
+  stop being a tautology and start being a feature.
 - **Deliberately not implemented: auto-revoking a token after N failures.** It sounds stronger and is
   weaker — the 6-character prefix is visible in the UI and in logs, so anyone who could brute-force
   could instead cheaply *revoke* every device by failing against known prefixes. Availability loses
