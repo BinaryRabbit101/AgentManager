@@ -871,8 +871,11 @@ links to it. There is no second code path.
 ### 10.4 The pattern create dialog
 
 Driven entirely by `GET /api/patterns` (orchestrator §16.9): seats, allowed roles per seat, defaults,
-`preferredTier`. For each seat the picker lists candidate agents filtered by `capabilities.roles`,
-showing each one's **model tier** and current open-assignment count. Goal, scope paths, artifact path
+`preferredTier`. For each seat the picker lists **every** agent, with those whose
+`capabilities.roles` match the seat ranked first — capabilities are hints, never gates (owner
+decision 2026-08-18: who works together is the user's call; a mismatch is a warning shown before
+start, not a refusal). Each candidate shows its **model tier** and current open-assignment count.
+Goal, scope paths, artifact path
 (required for `pair`), round cap and token budget carry the config defaults. Submitting shows the
 returned `warnings[]` (scope overlap, projected cost, inverted tiers) **before** the assignment starts,
 and a returned `gate` renders as "waiting for your approval" with a link to the card.

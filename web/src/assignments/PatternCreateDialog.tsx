@@ -47,11 +47,14 @@ import { useAppStore, type PairIntent } from '../state/store';
 type SeatChoice = Readonly<Record<string, { readonly agentId: string; readonly role: string }>>;
 
 /**
- * §10.4: "the picker lists candidate agents filtered by `capabilities.roles`".
+ * §10.4: every agent is a candidate for every seat; declared roles **rank**.
  *
- * The server sends `candidates` per seat when it can read the roster; when it
- * cannot, the roster the board already has is filtered by the seat's declared
- * roles — the same rule, applied to the same data, rather than an empty picker.
+ * Owner decision (2026-08-18): capabilities are hints, never gates — who works
+ * together is the user's call, and a picker that hides agents is a gate wearing
+ * a dropdown. The server sends `candidates` per seat when it can read the
+ * roster; when it cannot, the roster the board already has is offered whole,
+ * with the agents that declare a matching role listed first — the same ranking
+ * the server applies, rather than an empty or a narrowed picker.
  */
 export function candidatesFor(
   pattern: PatternSummary,
@@ -62,11 +65,14 @@ export function candidatesFor(
   if (fromServer !== undefined) return fromServer;
   const seat = pattern.seats.find((one) => one.key === seatKey);
   const roles = seat?.roles ?? [];
+  const declares = (agent: AgentView): boolean =>
+    (agent.definition.capabilities?.roles ?? []).some((role) => roles.includes(role));
   return agents
     .filter((agent) => agent.archivedAt === null)
-    .filter((agent) =>
-      (agent.definition.capabilities?.roles ?? []).some((role) => roles.includes(role)),
-    )
+    // A stable partition, not a sort: role-matchers first, roster order kept
+    // inside each half, so nothing here invents an order the server did not.
+    .filter(declares)
+    .concat(agents.filter((agent) => agent.archivedAt === null && !declares(agent)))
     .map((agent) => ({
       agentId: agent.definition.id,
       name: agent.definition.name,
