@@ -137,15 +137,22 @@ try {
     try {
         # Tracked files at HEAD. `git archive` cannot emit an untracked file, so
         # `.env` cannot reach the staging tree by this route even by mistake.
-        $tarball = Join-Path $staging 'tracked.tar'
-        & git archive --format=tar --output=$tarball HEAD
+        #
+        # Zip rather than tar, and .NET rather than an external extractor, because
+        # `tar` is whatever the PATH happens to resolve. Launched from a Git Bash
+        # shell it is GNU tar, which reads the staging path `C:\...` as a remote
+        # `host:path` spec and dies with "Cannot connect to C: resolve failed" -
+        # after the build and the boundary suite have already run. Which shell
+        # started the script is not something the packaging should depend on.
+        $archive = Join-Path $staging 'tracked.zip'
+        & git archive --format=zip --output=$archive HEAD
         if ($LASTEXITCODE -ne 0) { throw "git archive failed with exit code $LASTEXITCODE." }
 
         $payload = Join-Path $staging 'payload'
         New-Item -ItemType Directory -Path $payload | Out-Null
-        & tar -xf $tarball -C $payload
-        if ($LASTEXITCODE -ne 0) { throw "extracting the git archive failed with exit code $LASTEXITCODE." }
-        Remove-Item $tarball -Force
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($archive, $payload)
+        Remove-Item $archive -Force
 
         # The build outputs are git-ignored, so they are copied in deliberately.
         Copy-Item (Join-Path $RepoRoot 'dist') (Join-Path $payload 'dist') -Recurse
