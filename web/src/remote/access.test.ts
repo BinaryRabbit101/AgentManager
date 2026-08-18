@@ -31,13 +31,13 @@ function aStatus(overrides: Partial<RemoteStatus> = {}): RemoteStatus {
     enabled: true,
     boundAddress: { address: '100.64.0.7', port: 7478 },
     port: 7478,
-    magicDnsName: 'workstation.jackal-hippocampus.ts.net',
+    magicDnsName: 'workstation.example-tailnet.ts.net',
     tailscaleState: 'Running',
     lastError: null,
     recentBindFailures: 0,
     detectionSource: 'cli',
     mode: 'tailscale',
-    clientUrl: 'http://workstation.jackal-hippocampus.ts.net:7478',
+    clientUrl: 'http://workstation.example-tailnet.ts.net:7478',
     activeTokenCount: 2,
     deniedRemotely: [
       {
@@ -210,7 +210,7 @@ describe('the listener line (§13.2)', () => {
 
   it('names the address and the MagicDNS name when it is up', () => {
     expect(listenerLine(aStatus())).toContain('100.64.0.7:7478');
-    expect(listenerLine(aStatus())).toContain('workstation.jackal-hippocampus.ts.net');
+    expect(listenerLine(aStatus())).toContain('workstation.example-tailnet.ts.net');
   });
 
   it('carries the last error when it is down', () => {

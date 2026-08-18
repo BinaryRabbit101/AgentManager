@@ -25,13 +25,13 @@ const STATUS = {
   enabled: true,
   boundAddress: { address: '100.64.0.7', port: 7478 },
   port: 7478,
-  magicDnsName: 'workstation.jackal-hippocampus.ts.net',
+  magicDnsName: 'workstation.example-tailnet.ts.net',
   tailscaleState: 'Running',
   lastError: null,
   recentBindFailures: 0,
   detectionSource: 'cli',
   mode: 'tailscale',
-  clientUrl: 'http://workstation.jackal-hippocampus.ts.net:7478',
+  clientUrl: 'http://workstation.example-tailnet.ts.net:7478',
   activeTokenCount: 1,
   deniedRemotely: [
     {
@@ -68,7 +68,7 @@ const MINTED = {
   createdAt: '2026-08-17T12:00:00.000Z',
   expiresAt: '2026-11-15T12:00:00.000Z',
   qrUrl:
-    'http://workstation.jackal-hippocampus.ts.net:7478/#t=oat01-THE-ONLY-TIME-YOU-SEE-THIS-abcdefghijklmnop',
+    'http://workstation.example-tailnet.ts.net:7478/#t=oat01-THE-ONLY-TIME-YOU-SEE-THIS-abcdefghijklmnop',
 };
 
 const GRANTS = {

@@ -131,7 +131,7 @@ describe('minting a device token, and pairing from its QR (§13.2, §3.2)', () =
     if (minted.kind !== 'ok') return;
     expect(minted.value.qrUrl).toBeNull();
 
-    const pairingUrl = `http://workstation.jackal-hippocampus.ts.net:7478/#t=${minted.value.token}`;
+    const pairingUrl = `http://workstation.example-tailnet.ts.net:7478/#t=${minted.value.token}`;
     // The QR encoder takes a real token of a real length without complaint.
     const code = encodeQr(pairingUrl);
     expect(code.version).toBeLessThanOrEqual(10);

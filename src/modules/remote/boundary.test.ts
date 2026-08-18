@@ -95,7 +95,7 @@ function claiming(address: string): TailscaleDetector {
   const detection: Detection = {
     ok: true,
     address,
-    magicDnsName: 'workstation.jackal-hippocampus.ts.net',
+    magicDnsName: 'workstation.example-tailnet.ts.net',
     backendState: 'Running',
     source: 'cli',
   };

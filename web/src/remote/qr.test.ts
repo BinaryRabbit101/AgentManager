@@ -30,7 +30,7 @@ import {
   versionBits,
 } from './qr';
 
-const PAIRING_URL = 'http://workstation.jackal-hippocampus.ts.net:7478/#t=BQZ3xk9Rk2fW7aA0';
+const PAIRING_URL = 'http://workstation.example-tailnet.ts.net:7478/#t=BQZ3xk9Rk2fW7aA0';
 
 describe('the published constants (ISO/IEC 18004)', () => {
   it('builds the generator polynomial for 7 EC codewords', () => {

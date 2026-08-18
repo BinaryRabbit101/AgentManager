@@ -82,6 +82,8 @@ src/
   main.ts    # composition root / CLI entry point
 ```
 
-Current state is foundation milestone M1: skeleton and toolchain only. `main.ts` parses `--version`/`--help` and exits; no service is started.
+Current state: **all seven elements are built** — foundation, roster, projects, runner, orchestrator, remote and ui, every milestone through M11, on a suite of ~3,290 tests. The core starts as a service, serves the web UI, runs real Claude Agent SDK sessions against registered projects, meters their usage, and (home edition) answers over the tailnet.
+
+Installed with `scripts/Install-AgentManager.ps1` and verified with `scripts/Test-AgentManagerHealth.ps1`; see [docs/foundation/IMPLEMENTATION.md](docs/foundation/IMPLEMENTATION.md) §10. Two things are deliberately not done yet: the Electron shell is written but not packaged (use the browser at `http://127.0.0.1:7477`), and remote milestone M9 — the phone end-to-end pass — is the one milestone still open.
 
 All runtime state lives under the data root (`%LOCALAPPDATA%\AgentManager` by default, overridable with `AGENTMANAGER_HOME`), never inside this repository. Secrets are never committed — see [docs/foundation/DESIGN.md](docs/foundation/DESIGN.md) §3.

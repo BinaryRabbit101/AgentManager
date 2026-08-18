@@ -49,7 +49,7 @@ const STATUS_RUNNING = JSON.stringify({
   Self: {
     ID: 'nnnnnnnnnnnn',
     HostName: 'workstation',
-    DNSName: 'workstation.jackal-hippocampus.ts.net.',
+    DNSName: 'workstation.example-tailnet.ts.net.',
     OS: 'windows',
     TailscaleIPs: ['100.101.102.103', 'fd7a:115c:a1e0::1234'],
     Online: true,
@@ -57,7 +57,7 @@ const STATUS_RUNNING = JSON.stringify({
   Peer: {
     'nodekey:aaaa': {
       HostName: 'pixel-9',
-      DNSName: 'pixel-9.jackal-hippocampus.ts.net.',
+      DNSName: 'pixel-9.example-tailnet.ts.net.',
       TailscaleIPs: ['100.88.77.66', 'fd7a:115c:a1e0::4321'],
     },
     'nodekey:bbbb': {
@@ -65,7 +65,7 @@ const STATUS_RUNNING = JSON.stringify({
       TailscaleIPs: ['100.70.60.50'],
     },
   },
-  MagicDNSSuffix: 'jackal-hippocampus.ts.net',
+  MagicDNSSuffix: 'example-tailnet.ts.net',
 });
 
 function statusWithBackendState(state: string): string {
@@ -229,13 +229,13 @@ describe('M2 — the CLI path (§2.2 primary)', () => {
     expect(detection).toEqual({
       ok: true,
       address: '100.101.102.103',
-      magicDnsName: 'workstation.jackal-hippocampus.ts.net',
+      magicDnsName: 'workstation.example-tailnet.ts.net',
       backendState: 'Running',
       source: 'cli',
     });
     // The fixture's DNSName really does end in a dot; nothing else strips it.
     expect(JSON.parse(STATUS_RUNNING)).toMatchObject({
-      Self: { DNSName: 'workstation.jackal-hippocampus.ts.net.' },
+      Self: { DNSName: 'workstation.example-tailnet.ts.net.' },
     });
     expect(stripTrailingDot('a.b.ts.net.')).toBe('a.b.ts.net');
     // The CLI is asked once per detection, with §2.2's 5 s budget.

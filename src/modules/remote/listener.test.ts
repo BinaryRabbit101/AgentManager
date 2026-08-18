@@ -61,7 +61,7 @@ function ok(address = TAILNET_ADDRESS, source: 'cli' | 'interface' = 'cli'): Det
   return {
     ok: true,
     address,
-    magicDnsName: 'workstation.jackal-hippocampus.ts.net',
+    magicDnsName: 'workstation.example-tailnet.ts.net',
     backendState: source === 'cli' ? 'Running' : null,
     source,
   };
@@ -377,7 +377,7 @@ describe('M3 — Tailscale up at boot', () => {
       port: 7478,
       source: 'tailscale-cli',
     });
-    expect(probe.listener.status().magicDnsName).toBe('workstation.jackal-hippocampus.ts.net');
+    expect(probe.listener.status().magicDnsName).toBe('workstation.example-tailnet.ts.net');
     expect(probe.listener.status().tailscaleState).toBe('Running');
   });
 

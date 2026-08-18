@@ -63,7 +63,7 @@ import { createRemoteTokenService, type RemoteTokenService } from '../tokens.js'
 
 /** A tailnet-shaped address, for the `Host` allowlist cases. */
 export const TAILNET_ADDRESS = '100.64.0.7';
-export const MAGIC_DNS = 'workstation.jackal-hippocampus.ts.net';
+export const MAGIC_DNS = 'workstation.example-tailnet.ts.net';
 
 /** `remote.auth.*` defaults, restated so a test can read the arithmetic. */
 export const MAX_FAILURES = 10;

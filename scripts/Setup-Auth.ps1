@@ -165,6 +165,41 @@ if ($listed.ExitCode -ne 0 -or $listed.StdOut -notmatch [regex]::Escape($Key)) {
 Write-Host ""
 Write-Host "Verified: '$Key' is in the store."
 
+# --- 5. Would the core actually USE it? (DESIGN section 3.2) ----------------
+#
+# Storing a token and having it ignored are indistinguishable from here unless
+# this is checked. `auth.mode` decides: only "subscription" makes the runner put
+# this secret into a session's environment. The **work edition sets `env`**
+# (config\edition.work.json), under which the runner sets no auth variables at
+# all and defers to whatever the machine already has - so on a work-edition
+# install this script otherwise succeeds, reports a verified secret, and the
+# token is silently never used. That is the same class of trap as the
+# ANTHROPIC_API_KEY warning above, and it gets the same treatment.
+
+$mode = $null
+$reported = Invoke-AMCli -InstallRoot $resolvedInstallRoot -DataRoot $resolvedDataRoot -Arguments @('health', '--json')
+if ($reported.ExitCode -eq 0) {
+    try { $mode = ($reported.StdOut | ConvertFrom-Json).auth.mode } catch { $mode = $null }
+}
+
+if ($null -eq $mode) {
+    Write-Warning ("Could not read the effective auth.mode from 'agentmanager health --json', so whether " +
+        "the core will use this token is unverified. Check auth.mode in your config.json.")
+}
+elseif ($mode -ne 'subscription') {
+    Write-Warning ("auth.mode is `"$mode`", not `"subscription`" - the runner will NOT use the token you " +
+        "just stored. It is in the store correctly; it is simply not what this install authenticates with. " +
+        "The work edition ships auth.mode `"env`" on purpose (the workplace supplies its own credentials). " +
+        "To use subscription auth here, add this to $($resolvedDataRoot)\config\config.json, which overrides " +
+        "the edition file:")
+    Write-Host ""
+    Write-Host '    { "auth": { "mode": "subscription" } }'
+    Write-Host ""
+}
+else {
+    Write-Host "auth.mode is `"subscription`": the core will use this token."
+}
+
 Write-Host ""
 Write-Host "Done. The token was never shown, never passed as an argument, and never written to a log."
 Write-Host "The core reads it at session start (runner attachAuthEnv, DESIGN 3.2); restart the core if it is running:"
