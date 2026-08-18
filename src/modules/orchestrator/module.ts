@@ -62,6 +62,8 @@ import { createAssignmentRepository, type AssignmentRepository } from './reposit
 import { createAssignmentRoutes } from './routes.js';
 import { createAssignmentService } from './service.js';
 import { createFleetStatusReader } from './status.js';
+import { createWidgetFeedReader } from './widget.js';
+import { createWidgetRoutes } from './widgetRoutes.js';
 import { createToolsetFactory, type ToolsetFactory } from './toolset.js';
 import { createTurnRepository, type TurnRepository } from './turns.js';
 import type { ProjectsPort, RosterPort, RunnerPort } from './ports.js';
@@ -318,6 +320,18 @@ export function createOrchestratorModule(
         roster: () => ctx.require<RosterPort>('roster'),
       });
 
+      // §11.5's projection sits on top of the fleet reader rather than beside
+      // it: one source for the six words, two shapes of it.
+      const widgetFeed = createWidgetFeedReader({
+        fleetStatus,
+        inbox: () => built.inbox,
+        sessions: ctx.store.sessions,
+        members: (assignmentId) => repository.listMembers(assignmentId),
+        roster: () => ctx.require<RosterPort>('roster'),
+        clock: ctx.clock,
+        config: ctx.config.orchestrator.widget,
+      });
+
       const notifier = createNotifier({
         config: ctx.config.orchestrator,
         inbox: () => built.inbox,
@@ -369,6 +383,7 @@ export function createOrchestratorModule(
       ctx.registerRoutes(
         createEngineRoutes({ engine, service, conversation, fleetStatus, logger: ctx.logger }),
       );
+      ctx.registerRoutes(createWidgetRoutes({ widgetFeed, logger: ctx.logger }));
       options.onReady?.({
         repository,
         service,

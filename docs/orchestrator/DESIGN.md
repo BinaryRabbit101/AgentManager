@@ -1124,6 +1124,7 @@ GET    /api/questions/:id
 POST   /api/questions/:id/answer           { optionIds?, text? }        local or remote, `answered_via` recorded
 GET    /api/orchestrator/status            §11.3 — the fleet view
 GET    /api/patterns                       pattern definitions, seats, defaults (drives the create dialog)
+GET    /api/widget                         §11.5 — the glanceable projection: one request, no parameters
 ```
 
 **The `GET /api/questions` list projection is pinned** (ui §19, R5), because the inbox is the one
@@ -1225,6 +1226,64 @@ transcript.
 | `orchestrator.notify.sent` | ✔ | `{ questionId, channel, ok }` |
 
 `assignment.budget.exceeded` is runner's and is consumed, not re-emitted.
+
+### 11.5 The widget feed — what a glance is allowed to cost
+
+`GET /api/widget` answers one question, the only one a lock screen has room for: **is anything
+waiting on me?** It exists because §10 built half of that loop and stopped. ntfy pushes *when a
+question crosses a threshold*; nothing pulls, so a user who dismissed the notification, or whose
+phone was off, has no cheap way back to "how many are open now". A Home Screen widget is the pull
+counterpart, and it is the client that most needs a payload shaped for it: iOS gives a widget a few
+seconds and one network round trip before it renders whatever it has.
+
+```jsonc
+{ "generatedAt": "2026-08-18T09:41:02.114Z",
+  "waiting": [ { "id": "01J…", "kind": "approval_gate",
+                 "agentName": "Sam Skeptic",        // resolved through roster; the id when it cannot be
+                 "prompt": "Run `npm run build` in the workspace?",
+                 "createdAt": "…", "waitingSec": 244,
+                 "contested": false } ],
+  "waitingTotal": 5,                                // ≥ waiting.length — the tail the cap dropped
+  "oldestWaitingSec": 244,
+  "agents": { "working": 3, "queued": 1, "awaitingUser": 2,
+              "paused": 0, "halted": 0, "idle": 4 },
+  "assignments": { "open": 2, "halted": 0, "awaitingUser": 1 } }
+```
+
+**It is a projection, not a fifteenth source of truth.** Every field is read from §11.3's fleet
+status and §6's inbox — the same two readers `GET /api/orchestrator/status` and `GET /api/questions`
+serve. Nothing here re-derives a state, recounts an assignment, or reaches for runner: `agents` is a
+tally of §16-6's six words as the fleet reader already assigned them, so a widget and the board can
+never disagree about whether an agent is working. The feed adds exactly three things the other two
+do not have, and each is here because a phone cannot cheaply compute it:
+
+- **`agentName`** — the inbox card carries `assignmentId` and `sessionId`, not the agent, and never
+  a display name. Rendering "Sam Skeptic" from `/api/questions` alone costs a join to assignment
+  members and a second to roster. Server-side that is two map lookups.
+- **`waitingSec`** — served rather than derived from `createdAt` because the client's clock is a
+  phone's, and "waiting 4m" computed against a skewed clock is the one number on the widget that
+  can go negative.
+- **`waitingTotal`** — `waiting` is capped (`orchestrator.widget.maxWaiting`, default 4, because a
+  small widget fits four rows). A cap that a client cannot see is a cap that reads as "all of them",
+  so the count it was taken from ships beside it and the widget renders "+3 more" honestly. Each
+  `prompt` is likewise clipped to `orchestrator.widget.promptChars` (default 140), so one
+  pathological question cannot dominate a response sized for a lock screen.
+
+`waiting` is **oldest first**, which is the order in which the questions have been costing time —
+an agent parked on a question is doing nothing until it is answered, so age is the ranking a human
+actually wants. Kind and `contested` are carried so a client may *style* rows, never so it has to
+re-sort them.
+
+**No parameters, and no route of its own to keep working.** The endpoint takes no query string:
+every phone gets the same document, the response is cacheable as one blob, and there is no filter
+combination to regression-test. It registers with the default `remote: 'allow'` — reading it over
+the tailnet is the entire point (D5), and it returns no file contents, no secret, no token, and no
+tool input (a `toolName` would be safe; the tool *input* it came with is not, and the card's
+`context` is deliberately not projected here).
+
+**Empty is a first-class answer.** With nothing open the payload is the same shape with
+`waiting: []` and `waitingTotal: 0`, so the widget's "all clear" state costs no special case on
+either side.
 
 ---
 

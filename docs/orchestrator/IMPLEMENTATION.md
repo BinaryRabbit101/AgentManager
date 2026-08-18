@@ -353,10 +353,42 @@ sketch; the review-loop sketch stays deferred.
 
 ---
 
+## M11 — The glanceable projection (**complete**)
+
+`GET /api/widget` (DESIGN §11.5) — the pull counterpart to M8's push. ntfy wakes the user when a
+question crosses a threshold; nothing answered "how many are open *now*" for a phone that missed
+the notification, and a Home Screen widget is the client that can afford exactly one request.
+
+1. `src/modules/orchestrator/widget.ts` — the projection, built **on top of** M9's fleet reader
+   rather than beside it: `agents` is a tally of the six words §16-6 pinned, so the widget and the
+   board cannot disagree about whether an agent is working. Runner is not consulted.
+2. The asker join: session → `agent_id` when the question came from a session, the assignment's lone
+   seat when it did not, `null` when two seats could equally be it. Names come from roster's
+   registry, falling back to the id.
+3. `waitingSec` served from the service clock (a phone subtracting `createdAt` from its own clock is
+   how "waiting 4m" renders negative), floored at 0.
+4. `orchestrator.widget.maxWaiting` / `promptChars` — caps on what is *sent*; `waitingTotal` is taken
+   before the slice.
+5. `src/modules/orchestrator/widgetRoutes.ts`, registered with the default `remote: 'allow'`.
+
+**Acceptance**
+- The tally equals `GET /api/orchestrator/status`'s agent list, state for state, over a live mix of
+  assignments — asserted against the reader, not against a fixture.
+- Eight open questions with `maxWaiting: 4` return four rows and `waitingTotal: 8`.
+- A card raised by a two-seat assignment with no session reports `agentName: null` rather than the
+  first member.
+- A clock that moves backwards yields `waitingSec: 0`, never a negative.
+- No `toolInput` and no tool argument appears anywhere in the serialised payload.
+
+The iPhone client lives outside this repo, in the Scriptables project
+(`widgets/agentmanager.js`); `.claude/skills/agent-widget/` carries the pointer and the contract.
+
+---
+
 ## Not in v1
 
 The `review` pattern, parallel turns within one assignment, per-child review the moment a child
 closes, nesting deeper than one level, declared per-seat model overrides, mail pushed into live
 sessions, semantic question de-duplication, and the remaining notification channels — all with their
-rationale and unblocking conditions in DESIGN §18. Nothing in M1–M10 may be shaped around them beyond
+rationale and unblocking conditions in DESIGN §18. Nothing in M1–M11 may be shaped around them beyond
 the extension points already named (`PatternDef.driver`, `AssignmentContext`, `Notifier.channel`).

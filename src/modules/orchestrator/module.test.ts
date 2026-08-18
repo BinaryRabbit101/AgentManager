@@ -353,8 +353,8 @@ describe('configuration (M0-2)', () => {
   });
 });
 
-describe('routes (M1-7, M2-6, M5-1, M6-6)', () => {
-  it('mounts M1’s six assignment routes, M2’s three question routes and M5/M6/M9’s four', async () => {
+describe('routes (M1-7, M2-6, M5-1, M6-6, M11-1)', () => {
+  it('mounts M1’s six assignment routes, M2’s three question routes, M5/M6/M9’s four and §11.5’s one', async () => {
     const booted = await bootCore();
     const mine = booted.runtime.routes.routes
       .filter((route) => route.moduleId === ORCHESTRATOR_MODULE_ID)
@@ -368,6 +368,7 @@ describe('routes (M1-7, M2-6, M5-1, M6-6)', () => {
       'GET /api/patterns',
       'GET /api/questions',
       'GET /api/questions/:id',
+      'GET /api/widget',
       'PATCH /api/assignments/:id',
       'POST /api/assignments',
       'POST /api/assignments/:id/advance',
@@ -382,6 +383,31 @@ describe('routes (M1-7, M2-6, M5-1, M6-6)', () => {
     const answer = await call<{ assignments: unknown[] }>('GET', '/api/assignments');
     expect(answer.status).toBe(200);
     expect(answer.body.assignments).toEqual([]);
+  });
+
+  it('answers GET /api/widget over the real listener, empty and in shape (§11.5)', async () => {
+    await bootCore();
+    const answer = await call<{
+      waiting: unknown[];
+      waitingTotal: number;
+      oldestWaitingSec: number | null;
+      agents: Record<string, number>;
+    }>('GET', '/api/widget');
+
+    expect(answer.status).toBe(200);
+    expect(answer.body.waiting).toEqual([]);
+    expect(answer.body.waitingTotal).toBe(0);
+    expect(answer.body.oldestWaitingSec).toBeNull();
+    // §16-6's six words, camel-cased, all present even at zero — the widget's
+    // "all clear" state must cost it no special case.
+    expect(Object.keys(answer.body.agents).sort()).toEqual([
+      'awaitingUser',
+      'halted',
+      'idle',
+      'paused',
+      'queued',
+      'working',
+    ]);
   });
 
   it('answers 404 with a typed body for an unknown assignment', async () => {

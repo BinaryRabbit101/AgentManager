@@ -119,6 +119,17 @@ export const orchestratorConfigSchema = z.strictObject({
     /** Resolved through `SecretResolver`; a capability URL, therefore a secret (R5). */
     topicSecretRef: z.string().min(1),
   }),
+  /**
+   * §11.5's glanceable projection. Both keys cap what `GET /api/widget`
+   * *sends*, never what it counts: `waitingTotal` is taken before the slice, so
+   * lowering `maxWaiting` shortens the widget and never hides the number.
+   */
+  widget: z.strictObject({
+    /** How many waiting rows the payload carries. Four is what a small widget fits. */
+    maxWaiting: positiveInt,
+    /** Per-row prompt budget, so one pathological question cannot dominate the response. */
+    promptChars: positiveInt,
+  }),
 });
 
 /** The frozen shape modules read off `ctx.config.orchestrator`. */
@@ -156,4 +167,5 @@ export const ORCHESTRATOR_CONFIG_DEFAULTS: OrchestratorConfig = {
     minLevel: 'blocking',
     topicSecretRef: 'notify.ntfy.topicUrl',
   },
+  widget: { maxWaiting: 4, promptChars: 140 },
 };

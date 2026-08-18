@@ -33,6 +33,7 @@ import { createPatternEngine, type PatternEngine } from '../engine.js';
 import { createMailboxRepository, type MailboxRepository } from '../messages.js';
 import { createNotifier, type Notifier, type NotifyTimers } from '../notify.js';
 import { createFleetStatusReader, type FleetStatus } from '../status.js';
+import { createWidgetFeedReader, type WidgetFeed } from '../widget.js';
 import type {
   ProjectsPort,
   ResolvedAgentPort,
@@ -294,6 +295,8 @@ export interface Harness {
   readonly conversation: (assignmentId: string) => ConversationView;
   /** §11.3's fleet view (M9). */
   readonly fleetStatus: () => FleetStatus;
+  /** §11.5's glanceable projection, over the same fleet reader the module wires. */
+  readonly widgetFeed: () => WidgetFeed;
   /** §7.3's policy (M3). */
   readonly budgets: BudgetPolicy;
   /** §10's channel (M8), wired to {@link Harness.timers} and a fake `fetch`. */
@@ -542,6 +545,16 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     roster: () => roster,
   });
 
+  const widgetFeed = createWidgetFeedReader({
+    fleetStatus,
+    inbox: () => built.inbox,
+    sessions: storage.store.sessions,
+    members: (assignmentId) => repository.listMembers(assignmentId),
+    roster: () => roster,
+    clock,
+    config: config.widget,
+  });
+
   const timers = fakeTimers();
   const posts: { url: string; body: string; headers: Record<string, string> }[] = [];
   const notifier = createNotifier({
@@ -577,6 +590,7 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     toolset,
     conversation,
     fleetStatus,
+    widgetFeed,
     budgets,
     notifier,
     posts,

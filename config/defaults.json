@@ -159,6 +159,10 @@
       "maxPerHour": 6,
       "minLevel": "blocking",
       "topicSecretRef": "notify.ntfy.topicUrl"
+    },
+    "widget": {
+      "maxWaiting": 4,
+      "promptChars": 140
     }
   }
 }
