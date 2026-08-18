@@ -276,9 +276,31 @@ the secret store. Your `config.json` there is the machine layer — it outranks 
 `config\defaults.json` that the archive *does* replace, so the `edition: work` you chose at
 install time survives an update even though the defaults file underneath it changes.
 
-### Two things to check in the new archive first
+### The script that does all of this
 
-- **`package-lock.json`** — if it differs from the one you have, run `npm ci` after
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\Update-AgentManager.ps1 -Source <the new .zip or its unpacked folder>
+```
+
+`Update-AgentManager.ps1` is the whole of this section as one command: it checks the
+source, reports whether `npm ci` and a schema migration are needed, stops the core,
+mirrors the tree while keeping `node_modules`, and starts the core again waiting for
+`/healthz`. Add `-DryRun` to see the plan without changing anything — the comparison runs
+for real and robocopy runs in list-only mode, so the dry run describes the real one.
+
+Run it from **either** copy. From the installed one, `-Source` is all you need. From the
+copy inside the new archive, add `-InstallRoot` pointing at the existing install; the
+script refuses to mirror a folder over itself rather than doing something surprising.
+
+> **The first time, run it from the new archive.** An install predating this script does
+> not have it, which is the one case the `-InstallRoot` form exists for.
+
+The rest of this section is what that script does, for when you would rather do it by
+hand or want to know what it is doing to your machine.
+
+### Two things it checks before touching anything
+
+- **`package-lock.json`** — if it differs from the one you have, `npm ci` is needed after
   unpacking. If it does not, your `node_modules` is still exactly right and `npm ci` is
   wasted minutes. (`node_modules` is not in the archive. That is precisely why unpacking
   *over* an install works and unpacking into an empty folder leaves you with something that
@@ -287,7 +309,7 @@ install time survives an update even though the defaults file underneath it chan
   core applies element-owned migrations at its next start. It is worth knowing so that a
   slower-than-usual first boot reads as expected rather than as a hang.
 
-### The procedure
+### The procedure by hand
 
 ```powershell
 # 1. Stop the core. This edition has no scheduled task (§4), so ask it over HTTP.
@@ -430,7 +452,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\Test-AgentManagerHealth.ps1
 start http://127.0.0.1:7477
 ```
 
-**Update** (§7) — from the existing install root, which is where it already lives:
+**Update** (§7) — one command, from the new archive's folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\Update-AgentManager.ps1 -Source . -InstallRoot <existing install> -DryRun
+powershell -ExecutionPolicy Bypass -File .\scripts\Update-AgentManager.ps1 -Source . -InstallRoot <existing install>
+```
+
+Or by hand, from the existing install root:
 
 ```powershell
 Invoke-RestMethod -Method Post http://127.0.0.1:7477/api/service/shutdown

@@ -123,7 +123,16 @@ describe('the §4.4 script set', () => {
     // comment silently breaks the parse of everything after it. Keeping the
     // files ASCII removes the trap rather than depending on a BOM surviving
     // every editor and every git filter.
-    for (const name of [...SCRIPT_FILES.map(script), launcher]) {
+    // Every `.ps1` in the folder, not just SCRIPT_FILES: the trap belongs to the
+    // file format, so a script outside §4.4's named set (New-TransferPackage,
+    // Update-AgentManager) breaks in exactly the same way and would otherwise be
+    // unguarded.
+    const everyScript = readdirSync(scriptsDir)
+      .filter((name) => name.endsWith('.ps1'))
+      .map(script);
+    expect(everyScript.length).toBeGreaterThanOrEqual(SCRIPT_FILES.length);
+
+    for (const name of [...everyScript, launcher]) {
       const text = readFileSync(name, 'utf8');
       const offenders = [...new Set([...text].filter((c) => c.codePointAt(0)! > 126))];
       expect({ file: name, offenders }).toEqual({ file: name, offenders: [] });
