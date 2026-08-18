@@ -103,6 +103,31 @@ export interface ProbeOptions {
 export const DEFAULT_PROBE_TIMEOUT_MS = 1_000;
 
 /**
+ * Every probe asks for the connection to be closed rather than pooled.
+ *
+ * A probe is one request from a process that is about to exit — a CLI verb, the
+ * Electron shell's readiness wait — so the keep-alive socket `fetch` leaves in
+ * the global dispatcher's pool has nothing left to serve. On Node 25 it is worse
+ * than useless: a pooled socket still open when the process exits aborts the
+ * process during teardown with
+ *
+ * ```
+ * Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76
+ * ```
+ *
+ * exit code 127, **after** the command has printed its output and decided its
+ * exit code. That is how it was found: `agentmanager health` printed a perfect
+ * report and then aborted, which made `Install-AgentManager.ps1`'s "wait for
+ * /healthz" step report failure against a core that was healthy the whole time
+ * (measured 2026-08-17: 3/3 aborts with pooling, 3/3 clean without).
+ *
+ * Closing the connection is the fix rather than a workaround: it removes the
+ * handle instead of racing it, and a diagnostic that runs once has no use for a
+ * pooled connection.
+ */
+export const PROBE_REQUEST_HEADERS: Readonly<Record<string, string>> = { connection: 'close' };
+
+/**
  * `GET /healthz` against a published port — §4.1's readiness probe and §4.2's
  * staleness test, which are the same request.
  *
@@ -125,6 +150,7 @@ export async function probeCore(
   try {
     const response = await request(`http://${host}:${String(port)}/healthz`, {
       signal: controller.signal,
+      headers: { ...PROBE_REQUEST_HEADERS },
     });
     if (!response.ok) return undefined;
     const body: unknown = await response.json();

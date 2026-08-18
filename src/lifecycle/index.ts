@@ -35,6 +35,7 @@ export {
   writePortFile,
   DEFAULT_PROBE_TIMEOUT_MS,
   PORT_FILENAME,
+  PROBE_REQUEST_HEADERS,
   type CoreProbe,
   type PortRecord,
   type ProbeOptions,

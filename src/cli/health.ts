@@ -26,7 +26,12 @@ import { join } from 'node:path';
 
 import { OVERRIDING_ENV_VAR, inspectSecretsDirectory } from '../secrets/index.js';
 import { quickCheckDatabaseFile, newestBackup } from '../storage/index.js';
-import { PORT_FILENAME, probeCore, readPortFile } from '../lifecycle/index.js';
+import {
+  PORT_FILENAME,
+  PROBE_REQUEST_HEADERS,
+  probeCore,
+  readPortFile,
+} from '../lifecycle/index.js';
 
 import { resolveInstall } from './resolve.js';
 import {
@@ -131,7 +136,12 @@ async function collect(input: CommandInput, version: string): Promise<HealthRepo
   let api: unknown;
   if (record !== undefined && probe !== undefined) {
     try {
-      const response = await ctx.fetch(`http://127.0.0.1:${String(record.port)}/api/health`);
+      // `PROBE_REQUEST_HEADERS` for the same reason `probeCore` sends them: this
+      // process exits moments from now, and a pooled socket that outlives the
+      // command aborts the exit on Node 25.
+      const response = await ctx.fetch(`http://127.0.0.1:${String(record.port)}/api/health`, {
+        headers: { ...PROBE_REQUEST_HEADERS },
+      });
       if (response.ok) api = await response.json();
     } catch {
       warnings.push('/healthz answered but /api/health did not; the core may still be starting.');

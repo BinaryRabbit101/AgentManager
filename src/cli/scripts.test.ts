@@ -583,11 +583,19 @@ describe.runIf(built)('Test-AgentManagerHealth.ps1', () => {
   it(
     'emits the same facts as JSON for a support tool to parse',
     () => {
+      // `-TaskName` is not decoration: the scheduled task is *machine* state, not
+      // data-root state, so without it this asserted "no task is registered"
+      // against whatever the developer's own box happens to have. It passed
+      // everywhere until AgentManager was installed on one (2026-08-17), and then
+      // failed for the one reason a test must never fail: the software works.
+      const absentTask = `\\AgentManager\\AgentManager Core (absent, scripts.test.ts)`;
       const json = powershellFile(script('Test-AgentManagerHealth.ps1'), [
         '-InstallRoot',
         repoRoot,
         '-DataRoot',
         dataRoot,
+        '-TaskName',
+        absentTask,
         '-Json',
       ]);
       const parsed = JSON.parse(json) as {
