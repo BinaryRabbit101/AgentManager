@@ -297,6 +297,7 @@ export const ROUTES: readonly { readonly path: string; readonly settled: string 
   { path: '/', settled: 'Ada' },
   { path: '/agents/new', settled: /New agent|Describe/u },
   { path: '/agents/ada', settled: 'Sessions' },
+  { path: '/projects', settled: 'littlepocketmuseum' },
   { path: '/projects/lpm', settled: 'littlepocketmuseum' },
   { path: '/sessions/ses_1', settled: 'Session' },
   { path: '/assignments/asg_1', settled: 'Move transcripts off the hot path' },

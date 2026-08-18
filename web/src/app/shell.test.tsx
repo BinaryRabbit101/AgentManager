@@ -116,14 +116,14 @@ describe('the boot sequence (§3.5, IMPLEMENTATION §1)', () => {
 });
 
 describe('the frame and the debug panel (§2.2, IMPLEMENTATION §1)', () => {
-  it('renders the four destinations as real links inside a nav landmark', async () => {
+  it('renders the five destinations as real links inside a nav landmark', async () => {
     mount(<App />, { respond: EMPTY });
     const nav = screen.getByRole('navigation', { name: 'Main' });
-    for (const label of ['Board', 'Questions', 'Usage', 'Settings']) {
+    for (const label of ['Board', 'Projects', 'Questions', 'Usage', 'Settings']) {
       expect(within(nav).getByRole('link', { name: label })).toBeInTheDocument();
     }
     expect(screen.getByRole('main')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole('complementary')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/No agents yet/u)).toBeInTheDocument());
   });
 
   it('shows the edition, the module list and the event filter', async () => {
@@ -133,7 +133,7 @@ describe('the frame and the debug panel (§2.2, IMPLEMENTATION §1)', () => {
     expect(screen.getByTestId('debug-modules')).toHaveTextContent('orchestrator:ok');
     // The filter is visible because it is what makes the feed cheap (§3.3).
     expect(screen.getByTestId('debug-stream-url')).toHaveTextContent('/api/events?types=');
-    await waitFor(() => expect(screen.getByRole('complementary')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/No agents yet/u)).toBeInTheDocument());
   });
 
   it('displays health warnings persistently, not as a dismissible toast', async () => {
@@ -161,7 +161,7 @@ describe('the frame and the debug panel (§2.2, IMPLEMENTATION §1)', () => {
     );
     // No dismiss control: it is a fact about the machine, not an event.
     expect(within(screen.getByTestId('debug-panel')).queryByRole('button')).toBeNull();
-    await waitFor(() => expect(screen.getByRole('complementary')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/No agents yet/u)).toBeInTheDocument());
   });
 
   it('renders every one of the ten routes rather than a blank frame', () => {
@@ -264,5 +264,22 @@ describe('the theme toggle (§14.2)', () => {
 
     await userEvent.selectOptions(select, 'System');
     expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
+  });
+});
+
+describe('the global New agent affordance (§2.2)', () => {
+  it('offers it from the top bar as a real link, on every screen', () => {
+    mount(<App />, { respond: EMPTY, route: '/usage' });
+    const banner = screen.getByRole('banner');
+    const link = within(banner).getByRole('link', { name: 'New agent' });
+    // A link, not a button: `/agents/new` is a route, and the wizard was
+    // otherwise reachable only by typing the URL.
+    expect(link).toHaveAttribute('href', '/agents/new');
+  });
+
+  it('lands on the wizard when it is followed', async () => {
+    mount(<App />, { respond: EMPTY });
+    await userEvent.click(screen.getByRole('link', { name: 'New agent' }));
+    expect(await screen.findByRole('heading', { name: 'New agent' })).toBeInTheDocument();
   });
 });

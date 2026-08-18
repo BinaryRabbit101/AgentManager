@@ -141,7 +141,7 @@ describe('every dialog traps focus, closes on Escape, and restores it (§15)', (
     },
     {
       name: 'Add project',
-      route: '/',
+      route: '/projects',
       open: async (user: ReturnType<typeof userEvent.setup>) => {
         const trigger = await screen.findByRole('button', { name: /Add project/u });
         await user.click(trigger);

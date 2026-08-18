@@ -141,9 +141,10 @@ MSI/Squirrel, global hotkeys, multiple windows, deep OS integration.
 
 | Route | Screen | Purpose |
 |---|---|---|
-| `/` | **Board** | The roster as a board of agent cards + the projects rail. The home screen and the drag surface. |
+| `/` | **Board** | The roster as a board of agent cards. The home screen and the drag surface. |
 | `/agents/:id` | Agent detail / editor | Definition, persona, permissions, integrations, skills, diagnostics, session history. |
 | `/agents/new` | Agent wizard | Draft-from-description → edit → save (§6). |
+| `/projects` | **Projects** | The project list: status, health, and the agent→project drop target (§5.1). |
 | `/projects/:id` | Project page | Activity timeline, work items, workspaces ("review needed"), defaults, health. |
 | `/sessions/:id` | Session view | Live transcript, controls, usage (§9). |
 | `/assignments/:id` | Assignment view | The pair conversation, phase, rounds, budget (§10). |
@@ -152,22 +153,21 @@ MSI/Squirrel, global hotkeys, multiple windows, deep OS integration.
 | `/usage` | Usage | Plan-window local estimate, queue, per-assignment spend (§12). |
 | `/settings` | Settings | Remote access, capacity, notifications, logs, health, about (§13). |
 
-Ten routes. Every one is deep-linkable and survives a reload, because the ntfy notification and the
+Eleven routes. Every one is deep-linkable and survives a reload, because the ntfy notification and the
 Electron toast both navigate by URL.
 
 ### 2.2 Navigation
 
-**Desktop (≥ 900px)**: a narrow left rail — Board · Questions (badge) · Usage · Settings — plus a
+**Desktop (≥ 900px)**: a narrow left rail — Board · Projects · Questions (badge) · Usage · Settings — plus a
 persistent top bar carrying the connection indicator, the global search-free "New agent" and "Add
 project" buttons, and the theme toggle. Detail screens open as full pages, not modals, so they can be
 linked and shared.
 
-**Phone / narrow (< 640px)**: a bottom tab bar with the same four destinations (thumb-reachable, 48px
+**Phone / narrow (< 640px)**: a bottom tab bar with the same five destinations (thumb-reachable, 48px
 targets), the top bar collapsed to a title and a single overflow menu. Detail screens push; modals
 become **bottom sheets**.
 
-**Tablet (640–900px)**: the desktop rail collapses to icons; the projects rail becomes a horizontal
-strip above the board.
+**Tablet (640–900px)**: the desktop rail collapses to icons.
 
 The badge on Questions comes from `GET /api/orchestrator/status` (`questions.open`) and is kept live
 by `assignment.question.raised` / `.answered`. It is mirrored into the Electron tray and taskbar badge
@@ -180,7 +180,8 @@ component tree; the screens where the difference is more than reflow are called 
 
 | Screen | What actually changes on a phone |
 |---|---|
-| **Board** (§5) | Drag is not the primary path. Cards get an explicit **Launch** button and a `⋯` menu; reorder moves into an explicit "Reorder" mode with move-up/move-down controls. The projects rail becomes a horizontal scroller. |
+| **Board** (§5) | Drag is not the primary path. Cards get an explicit **Launch** button and a `⋯` menu; reorder moves into an explicit "Reorder" mode with move-up/move-down controls. |
+| **Projects** (§5.1) | The card grid collapses to one column. There is no drag at all, so every card's **Launch an agent…** carries the whole gesture. |
 | **Session view** (§9) | The right-hand usage rail collapses under the header; tool blocks default collapsed; steer input docks above the keyboard. |
 | **Assignment view** (§10) | The two-seat side-by-side conversation stacks into one column, seat identity carried by the avatar+name row rather than by column position. |
 | **Question inbox** (§11) | Identical by design — this is the phone's primary surface and must not be a reduced mode (remote §12.8). Option buttons are full-width. |
@@ -226,7 +227,9 @@ Everything else surfaces the server's message verbatim. Backend messages are wri
 Per remote §12.1:
 
 1. The desktop settings screen creates a token (local-only) and renders the returned `qrUrl`
-   (`http://<magicdns>:7478/#t=<token>`) as a QR **and** as copyable text.
+   (`<client URL>/#t=<token>`, where the client URL is `http://<magicdns>:7478` when the phone
+   reaches the listener directly and `remote.publicUrl` when a proxy fronts it) as a QR **and** as
+   copyable text. The screen never assembles that URL itself — only the core knows which it is.
 2. The phone opens that URL. On boot the client reads `location.hash`, extracts `t=`, stores it in
    `localStorage` under one key with the server-returned label, and immediately calls
    `history.replaceState` to strip the fragment — before the first render, so it cannot be
@@ -329,12 +332,21 @@ The home screen and the element's centre of gravity.
 
 ### 5.1 Layout
 
-Desktop: a responsive grid of agent cards (min 260px, 3–5 columns) on the left, a **projects rail**
-(220px) pinned right. Above the grid: filter chips (specialty, "working now", "needs attention",
-archived) and a sort control that defaults to **board order**. Below the rail: "Add project".
+Desktop: a responsive grid of agent cards (min 260px, 3–5 columns), full width. Above the grid:
+filter chips (specialty, "working now", "needs attention", archived) and a sort control that defaults
+to **board order**.
 
-The rail is not decoration — it is the drop target set (§5.3) and it doubles as the projects list, so
-the board answers "who do I have" and "what are they pointed at" on one screen.
+Projects used to ride along here as a 220px rail pinned right. They are their own destination now —
+**`/projects`** (§2.1), a full-width grid of the same project cards with "Add project" above it. The
+board answers "who do I have"; `/projects` answers "what am I pointed at". What each agent is
+*currently* working on still rides on its own card, which is the half of the rail's job the board
+actually needed.
+
+The projects screen keeps everything the rail was load-bearing for. It is still the drop target set
+(§5.3), which is why it carries the same compact strip of draggable agent chips the project page uses
+for its work-item rows (§8.2): a drop target with no drag source on the same screen is not a feature.
+It still reads `status` and `health` from the server and never recomputes them, and it still offers
+each card's **Launch an agent…** as §5.4's pointer-free equivalent.
 
 ### 5.2 Card anatomy
 
@@ -378,13 +390,14 @@ whose `agent_id` no longer resolves renders as "deleted agent" wherever it appea
 tolerance) and `KeyboardSensor`. HTML5 native drag-and-drop is **not** used: it does not fire on
 touch, cannot be driven from the keyboard, and cannot render a custom drag preview reliably.
 
-**One `DndContext`** wraps the board and the rail. The draggable payload is
+**One `DndContext`** wraps each drag surface — the board, the projects screen, a project page. The
+draggable payload is
 `{ type: 'agent', agentId }`; every droppable declares `{ type, … }` and the drop handler dispatches
 on it.
 
 | Drop target | Payload | What happens |
 |---|---|---|
-| **Project card** in the rail, or the project header on `/projects/:id` | `{ type: 'project', projectId }` | Opens the **launch flow** (§6) pre-filled with agent × project. Nothing is started by the drop itself. |
+| **Project card** on `/projects`, or the project header on `/projects/:id` | `{ type: 'project', projectId }` | Opens the **launch flow** (§6) pre-filled with agent × project. Nothing is started by the drop itself. |
 | **Work item row** on a project page | `{ type: 'workItem', workItemId, projectId }` | Launch flow pre-filled with agent × project, the item attached (`workItemIds`), its `title` seeded into the prompt and its `scopePaths` shown as a scope hint. |
 | **Another agent card** | `{ type: 'agent', agentId }` | Opens the **pair create dialog** (§10.4) with the dragged agent in the drafting seat and the target in the critic seat. Lands with the assignment view (M9); until then the target is inert. |
 | **The board grid itself** | sortable context | **Reorder.** Optimistic local reorder, then persist. |
@@ -396,7 +409,7 @@ rather than a per-card patch. It applies optimistically and rolls back with a to
 the roster does not know is a 400 and the previous order stands.
 
 **During a drag**: the source card lifts (shadow + 2° tilt, ≤150ms), valid targets outline in the
-accent colour, invalid ones dim, the rail auto-scrolls near its edges, and a floating label reads
+accent colour, invalid ones dim, a long list auto-scrolls near its edges, and a floating label reads
 *"Launch **Priya** on **littlepocketmuseum**"*. `Esc` cancels. Drop on nothing cancels silently.
 
 A project that cannot be launched against — `provisioning`, `archived`, or health `missing` (projects
@@ -511,7 +524,8 @@ a collaborator rather than a slot machine:
 | Persona | a plain markdown textarea holding `persona` verbatim; the `replace` mode carries the warning roster requires ("this agent will not receive Claude Code's coding guidance") |
 | Model | alias picker (`opus`/`sonnet`/`haiku` + `default`/`best`), optional fallback and effort; a full id is typeable |
 | Permissions | three rule lists (allow/deny/ask) with add/remove, mode picker, and a plain-language note that deny wins and allow is only auto-approval |
-| Roles | checkboxes over the pinned five |
+| Roles | checkboxes over the pinned five — which seats this agent may be given |
+| Role addenda | one markdown textarea per role, holding `roles/<role>.md` verbatim (roster §4) — how it behaves *once it is in* a seat. Not tied to the checkboxes above: a role may carry an addendum without being listed, and vice versa, so every box is always shown and an unlisted one is labelled as such. Emptying a box deletes the file. Drafting never fills these in |
 | Suggested skills | checkboxes; accepting one creates the stub `SKILL.md` on save (roster §12.4). Bodies are not authored here. |
 | Suggested integrations | listed read-only with their `secretRef` placeholders and a "you will need to supply this credential" note; wiring an MCP server is the editor's job, not the wizard's |
 
@@ -571,7 +585,7 @@ as the server's message with the offending path.
 
 **Clone URL.** Paste a URL → `POST /api/projects/inspect { repoUrl }` → proposed target path and
 name → **Clone** calls `POST /api/projects/clone` and returns immediately. The dialog can be
-dismissed: the project appears in the rail at once with a `provisioning` state and an inline progress
+dismissed: the project appears on `/projects` at once with a `provisioning` state and an inline progress
 bar driven by `project.clone.progress`, flipping to `active` on `completed` or disappearing with the
 git stderr shown verbatim on `failed` (projects §2.2). Auth failures show git's own message — the
 credential helper is the user's, and paraphrasing it would hide the fix.

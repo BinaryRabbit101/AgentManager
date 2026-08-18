@@ -376,44 +376,6 @@ describe('filters and sort (§5.1)', () => {
   });
 });
 
-describe('the projects rail (§5.1)', () => {
-  it('lists projects with their server-computed status and health chips', async () => {
-    const fixture = serving({
-      projects: [
-        aProject({ id: 'lpm', name: 'littlepocketmuseum' }),
-        aProject({
-          id: 'nav',
-          name: 'navigation',
-          status: 'provisioning',
-          health: [{ code: 'missing', level: 'error', message: 'C:\\Code\\navigation is gone.' }],
-        }),
-      ],
-    });
-    mount(<App />, { respond: fixture.respond });
-
-    await waitFor(() =>
-      expect(screen.getByRole('link', { name: 'littlepocketmuseum' })).toBeInTheDocument(),
-    );
-    const rail = screen.getByRole('complementary', { name: 'Projects' });
-    expect(within(rail).getByText('active')).toBeInTheDocument();
-    expect(within(rail).getByText('provisioning')).toBeInTheDocument();
-    // Health is read, never derived (§4).
-    const chip = within(rail).getByText('missing');
-    expect(chip).toHaveAttribute('title', 'C:\\Code\\navigation is gone.');
-    expect(chip).toHaveAttribute('data-tone', 'danger');
-  });
-
-  it('has an empty state and an Add project button', async () => {
-    mount(<App />, { respond: serving({}).respond });
-    await waitFor(() =>
-      expect(
-        screen.getByText('No projects yet — point the app at a folder you already work in.'),
-      ).toBeInTheDocument(),
-    );
-    expect(screen.getByRole('button', { name: /Add project/u })).toBeInTheDocument();
-  });
-});
-
 /**
  * IMPLEMENTATION §10: "Per-agent grants show `expiresAt` on **both** the
  * settings screen and the board card, and update live on
@@ -475,6 +437,85 @@ describe('the remote grant badge on the card (§13.2, remote §12.4)', () => {
         mounted.calls.filter((call) => call.startsWith('/api/remote/agents')).length,
       ).toBeGreaterThan(before),
     );
+  });
+
+  /**
+   * §5.2's home-edition menu entry, and §13.2's "the same toggle appears on the
+   * board card". The board is the only surface that can *end* a grant in one
+   * gesture — the launch flow's toggle grants and cannot take it back — so the
+   * revoke direction is what these pin.
+   */
+  const GRANT = {
+    agentId: 'priya',
+    agentName: 'Priya',
+    enabled: true,
+    grantedAt: '2026-08-17T09:00:00.000Z',
+    expiresAt: new Date(Date.now() + 2 * 86_400_000 + 3_600_000).toISOString(),
+    grantedVia: 'local',
+    tokenId: 'tok_1',
+  };
+
+  /** Records what was PUT at the access route, so the direction can be asserted. */
+  function grantsRecording(grants: readonly unknown[]): {
+    readonly respond: Responder;
+    readonly puts: unknown[];
+  } {
+    const puts: unknown[] = [];
+    const base = withGrants(grants);
+    return {
+      puts,
+      respond: (url, init) => {
+        const path = url.split('?')[0] ?? url;
+        if (path === '/api/remote/agents/priya/access' && init.method === 'PUT') {
+          puts.push(typeof init.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined);
+          return json({ ok: true });
+        }
+        return base(url, init);
+      },
+    };
+  }
+
+  async function openMenu(): Promise<HTMLElement> {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Actions for Priya' }));
+    return screen.getByRole('menu', { name: 'Priya actions' });
+  }
+
+  it('revokes a live grant from the card menu, checked to match the badge', async () => {
+    const recorder = grantsRecording([GRANT]);
+    mount(<App />, { respond: recorder.respond, boot: REMOTE_BOOT });
+    await waitFor(() =>
+      expect(document.querySelector('[data-remote-grant="priya"]')).not.toBeNull(),
+    );
+
+    const menu = await openMenu();
+    const toggle = within(menu).getByRole('menuitemcheckbox', { name: /Allow remote starts/u });
+    // The tick and the badge are two readings of one fact; they cannot disagree.
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+
+    await userEvent.setup().click(toggle);
+    await waitFor(() => expect(recorder.puts).toEqual([{ enabled: false }]));
+  });
+
+  it('grants from the card menu when there is none, and shows unchecked first', async () => {
+    const recorder = grantsRecording([]);
+    mount(<App />, { respond: recorder.respond, boot: REMOTE_BOOT });
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Priya' })).toBeInTheDocument());
+
+    const menu = await openMenu();
+    const toggle = within(menu).getByRole('menuitemcheckbox', { name: /Allow remote starts/u });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+
+    await userEvent.setup().click(toggle);
+    await waitFor(() => expect(recorder.puts).toEqual([{ enabled: true }]));
+  });
+
+  it('omits the toggle entirely in the work edition (§13.5)', async () => {
+    mount(<App />, { respond: withGrants([]) });
+    const menu = await openMenu();
+    // Absent, not disabled: the capability does not exist here.
+    expect(within(menu).queryByRole('menuitemcheckbox')).toBeNull();
+    expect(within(menu).getByRole('menuitem', { name: 'Launch on…' })).toBeInTheDocument();
   });
 
   it('asks nothing of the remote module when it is not loaded (§3.5)', async () => {

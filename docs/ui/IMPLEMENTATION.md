@@ -59,7 +59,7 @@ stream, the theme tokens, routing, and the boot sequence.
   window (stubbed) and from a browser, with no build flag distinguishing them.
 - Theme switches with no flash on reload; `prefers-reduced-motion` disables transitions.
 
-## 2. Roster board, projects rail, and minimal project quick-add
+## 2. Roster board, the projects screen, and minimal project quick-add
 
 The home screen, read-first, plus the smallest path to having something to launch against.
 
@@ -71,7 +71,8 @@ The home screen, read-first, plus the smallest path to having something to launc
   from `session.*` events and the session record, and swaps to the endpoint behind one accessor when it
   ships. The rendering, the words and the tests do not change — only where the value is read. This is a
   deliberate degrade, not a fallback for an unresolved contract.
-- Projects rail from `GET /api/projects` with status and health chips.
+- The **projects screen** (`/projects`, DESIGN §5.1) from `GET /api/projects`, with status and health
+  chips. Its own route rather than a rail on the board, and its own entry in the frame's navigation.
 - **Minimal quick-add** (the register-an-existing-folder half of DESIGN §8.1): path field +
   `GET /api/fs/browse` navigator, `POST /api/projects/inspect` → prefilled form with warnings →
   `POST /api/projects`. Clone, the project page, and the native picker come later.
@@ -97,9 +98,9 @@ The home screen, read-first, plus the smallest path to having something to launc
 The north star's central gesture, and the first milestone that starts work.
 
 - One `DndContext` with pointer, touch (250ms long-press) and keyboard sensors. Draggable agent cards;
-  droppables for project cards and the board's sortable context. Drag preview, target highlighting,
-  the floating "Launch X on Y" label, `Esc` cancel, rail auto-scroll, invalid targets dimmed with a
-  reason.
+  droppables for project cards (on `/projects`, beside the agent chips that are their drag source) and
+  the board's sortable context. Drag preview, target highlighting, the floating "Launch X on Y" label,
+  `Esc` cancel, auto-scroll near a long list's edges, invalid targets dimmed with a reason.
 - Reorder persistence via `PUT /api/roster/board-order { order: string[] }` (roster §9.5): the whole
   ordered id list in one request, applied optimistically, rolled back with a toast on failure.
 - Every non-drag equivalent of DESIGN §5.4: card `⋯` → Launch on… / project page → Launch an agent…,
@@ -329,6 +330,9 @@ Thin wrapper, seven responsibilities, nothing else.
   are **visible and disabled with their reasons**, and never produce a raw 403 to the user.
 - Per-agent grants show `expiresAt` on both the settings screen and the board card, and update live on
   `remote.agent.access.*`.
+- The grant can be **ended** from the board, not only from settings: §5.2's `⋯` → **Allow remote starts**
+  is a checkbox item reflecting the live grant, absent in the work edition. The earlier cut shipped the
+  badge without the toggle §13.2 requires, and this line is what that omission passed through.
 - A remote launch of an ungranted agent shows the grant prompt and retries automatically — tested
   against **`POST /api/assignments/solo`**, the path the UI actually uses, which remote §6.2's
   initiate tier now covers; a pattern launch with two ungranted agents prompts **once** from the

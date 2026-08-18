@@ -54,7 +54,8 @@ export function AgentCard({
   // One query for the whole board, shared through the cache: the grant list is
   // small, it is invalidated by `remote.agent.access.*` (§3.4), and asking per
   // card would be N requests for one fact.
-  const grants = useRemoteAgents(client, useHasModule('remote'));
+  const hasRemote = useHasModule('remote');
+  const grants = useRemoteAgents(client, hasRemote);
   const grant = grants.data?.agents.find((one) => one.agentId === definition.id);
   const archived = agent.archivedAt !== null;
   const overseer = definition.capabilities?.overseer === true;
@@ -105,7 +106,13 @@ export function AgentCard({
           </div>
         </div>
         {uiState.pinned ? <Icon name="pin" title="Pinned" /> : null}
-        <AgentCardMenu agentId={definition.id} agentName={definition.name} archived={archived} />
+        <AgentCardMenu
+          agentId={definition.id}
+          agentName={definition.name}
+          archived={archived}
+          remoteAvailable={hasRemote}
+          grant={grant}
+        />
       </div>
 
       {/* §14.1: "Taglines are always shown." One line of the agent's own voice. */}

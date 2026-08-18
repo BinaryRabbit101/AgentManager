@@ -34,6 +34,18 @@
   font-size: 0.85rem;
   font-weight: 600;
   transform: rotate(2deg);
+  /*
+    `DragOverlay` sizes its wrapper to the rect of whatever was picked up, and
+    the row-1 drag source is a name-sized `.chip` (§5.3). Left to inherit that
+    width the label — "Launch Priya on littlepocketmuseum" — wraps to one word
+    per line, so the preview sizes to its own text instead and is allowed to
+    overhang the wrapper.
+  */
+  width: max-content;
+  max-width: min(20rem, 90vw);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .drag-preview[data-refused='true'] {
@@ -124,6 +136,23 @@
 
 .card-menu__list button:hover:not(:disabled) {
   background: var(--surface-sunken);
+}
+
+/*
+  §13.2's grant toggle. The tick sits in a fixed column so the label starts at
+  the same x whether or not it is set — a label that shifts as the grant flips
+  reads as a different item rather than the same one in another state.
+*/
+.card-menu__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.card-menu__mark {
+  flex: none;
+  width: 1em;
+  color: var(--accent);
 }
 
 /* --- toasts (§5.3's rollback, and nothing else) -------------------------- */

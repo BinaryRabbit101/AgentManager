@@ -47,7 +47,9 @@ const DELIVERIES = [
 
 /** The six screens §11 names. */
 const SHARED_SCREENS = ROUTES.filter((route) =>
-  ['/', '/sessions/ses_1', '/questions', '/projects/lpm', '/usage'].includes(route.path),
+  ['/', '/sessions/ses_1', '/questions', '/projects', '/projects/lpm', '/usage'].includes(
+    route.path,
+  ),
 );
 
 afterEach(cleanup);
@@ -120,7 +122,7 @@ describe('§13.4’s differences, each asserted explicitly', () => {
   it('the folder picker: native in Electron, the browse navigator in a browser', async () => {
     // "with the bridge stubbed (browser build) the same dialog falls back to
     // /api/fs/browse **with no code change at the call site**" (§6's criterion).
-    mountAt('/', { bridge: ELECTRON_BRIDGE });
+    mountAt('/projects', { bridge: ELECTRON_BRIDGE });
     let user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /Add project/u }));
     const electronDialog = await screen.findByRole('dialog', { name: 'Add project' });
@@ -133,7 +135,7 @@ describe('§13.4’s differences, each asserted explicitly', () => {
     );
     cleanup();
 
-    const browser = mountAt('/', { token: 'a-device-token' });
+    const browser = mountAt('/projects', { token: 'a-device-token' });
     user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /Add project/u }));
     const browserDialog = await screen.findByRole('dialog', { name: 'Add project' });

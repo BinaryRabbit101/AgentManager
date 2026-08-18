@@ -2,7 +2,7 @@
  * The app frame (DESIGN §2.2, §2.3).
  *
  * One component tree for all three viewports. Desktop gets a narrow left rail
- * plus a persistent top bar; the phone gets the same four destinations as a
+ * plus a persistent top bar; the phone gets the same five destinations as a
  * bottom tab bar with 48px targets. The switch is a media query in `styles.css`,
  * not a branch here — §2.3 says the layout is responsive from a single tree, and
  * a second tree is how the two delivery modes drift apart.
@@ -13,7 +13,7 @@
  */
 
 import type { ReactElement, ReactNode } from 'react';
-import { NavLink } from 'react-router-dom';
+import { Link, NavLink } from 'react-router-dom';
 
 import { Announcer } from '../a11y/Announcer';
 import { Icon, type IconName } from '../icons/Sprite';
@@ -30,6 +30,7 @@ interface Destination {
 
 const DESTINATIONS: readonly Destination[] = [
   { to: '/', label: 'Board', icon: 'board' },
+  { to: '/projects', label: 'Projects', icon: 'folder' },
   { to: '/questions', label: 'Questions', icon: 'questions' },
   { to: '/usage', label: 'Usage', icon: 'usage' },
   { to: '/settings', label: 'Settings', icon: 'settings' },
@@ -47,6 +48,17 @@ export function AppFrame({ children }: AppFrameProps): ReactElement {
     <div className="frame">
       <header className="frame__topbar">
         <h1 className="frame__title">AgentManager</h1>
+        {/*
+          §2.2's global "New agent". A link rather than a button for the reason
+          every rail item is one — `/agents/new` is a route, and a route reached
+          only by a click handler cannot be middle-clicked or bookmarked. Add
+          project is the projects page's own header button, because it opens a
+          dialog rather than navigating.
+        */}
+        <Link className="button" data-variant="primary" to="/agents/new">
+          <Icon name="plus" />
+          <span>New agent</span>
+        </Link>
         <ConnectionIndicator />
         <ThemeToggle />
       </header>

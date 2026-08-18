@@ -52,17 +52,26 @@ async function board(): Promise<void> {
   await waitFor(() => expect(screen.getByRole('link', { name: 'Ada' })).toBeInTheDocument());
 }
 
+/**
+ * This gesture lives on `/projects` now, not on the board.
+ *
+ * The project cards moved to their own route, and a drop target needs a drag
+ * source on the same screen — so the agent chips moved with them, the same way
+ * the project page carries chips for its work-item rows. The criterion is
+ * unchanged: the keyboard path and the pointer-free path both reach the launch
+ * flow, and neither starts anything.
+ */
 describe('agent → project', () => {
-  it('keyboard: lift, arrow to the project, drop into the launch flow', async () => {
-    mountAt('/');
-    await board();
+  it('keyboard: lift an agent chip, arrow to the project, drop into the launch flow', async () => {
+    mountAt('/projects');
     const user = userEvent.setup();
 
-    grip('Ada').focus();
+    const chip = await screen.findByRole('button', { name: 'Launch Ada on a project' });
+    chip.focus();
     await user.keyboard(' ');
     expect(announcement()).toContain('Picked up Ada');
-    // Ring: [Ada, Sam, littlepocketmuseum].
-    await user.keyboard('{ArrowDown}{ArrowDown}');
+    // Ring: [littlepocketmuseum] — the chips are a source and not a target.
+    await user.keyboard('{ArrowDown}');
     expect(announcement()).toContain('Launch Ada on littlepocketmuseum.');
     await user.keyboard(' ');
 
@@ -75,18 +84,22 @@ describe('agent → project', () => {
   it('pointer-free: the card menu’s Launch on…, and the project’s Launch an agent…', async () => {
     mountAt('/');
     await board();
-    const user = userEvent.setup();
+    let user = userEvent.setup();
 
     await user.click(screen.getByRole('button', { name: 'Actions for Ada' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Launch on…' }));
-    let dialog = await screen.findByRole('dialog', { name: 'Launch' });
+    const dialog = await screen.findByRole('dialog', { name: 'Launch' });
     expect(within(dialog).getByLabelText('Agent')).toHaveValue('ada');
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Launch' })).toBeNull());
+    cleanup();
 
-    await user.click(screen.getByRole('button', { name: 'Launch an agent…' }));
-    dialog = await screen.findByRole('dialog', { name: 'Launch' });
-    expect(within(dialog).getByLabelText('Project')).toHaveValue('lpm');
+    // The project-first half of the same pair, on the screen that now owns it.
+    mountAt('/projects');
+    user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Launch an agent…' }));
+    const projectFirst = await screen.findByRole('dialog', { name: 'Launch' });
+    await waitFor(() => expect(within(projectFirst).getByLabelText('Project')).toHaveValue('lpm'));
   }, 20_000);
 });
 

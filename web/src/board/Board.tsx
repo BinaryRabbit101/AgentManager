@@ -2,18 +2,20 @@
  * The roster board (DESIGN §5.1) — the home screen and the element's centre of
  * gravity.
  *
- * A responsive grid of agent cards with the projects rail pinned right, the
- * filter chips above, and the sort control defaulting to board order. The rail
- * is not decoration: it doubles as the projects list, so one screen answers
- * "who do I have" and "what are they pointed at".
+ * A responsive grid of agent cards, the filter chips above, and the sort control
+ * defaulting to board order. The projects rail used to be pinned right; projects
+ * are their own destination now (`ProjectsPage`, §2.1), so this screen answers
+ * "who do I have" and leaves "what am I pointed at" to `/projects`. What each
+ * agent is *currently* on still rides on its own card, which is the half of the
+ * old rail's job the board actually needed.
  *
- * M3 makes it the drag surface. One `DndContext` wraps the grid **and** the rail
- * (§5.3), and every gesture it offers has the non-drag equivalent §5.4 requires:
- * the card `⋯` menu for launching, the rail card's **Launch an agent…**, and an
- * explicit **Reorder** mode with ▲▼ controls that persists **once** when it is
- * left. All of them end in the same two functions — `openLaunch` and
- * `persistBoardOrder` — because "there is no 'mobile launch' and 'desktop
- * launch'".
+ * M3 makes it the drag surface. The project drop target moved to `/projects`
+ * with the cards themselves (§5.3 row 1); what is left here is the pair gesture
+ * and reorder, and every gesture still has the non-drag equivalent §5.4
+ * requires: the card `⋯` menu for launching and pairing, and an explicit
+ * **Reorder** mode with ▲▼ controls that persists **once** when it is left. All
+ * of them end in the same two functions — `openLaunch` and `persistBoardOrder`
+ * — because "there is no 'mobile launch' and 'desktop launch'".
  */
 
 import { useQueryClient } from '@tanstack/react-query';
@@ -23,14 +25,16 @@ import { useServices } from '../app/AppContext';
 import { useProjects, useRoster } from '../api/queries';
 import { SPECIALTIES } from '../api/types';
 import { failureOf } from '../api/result';
-import { ProjectsRail } from '../projects/ProjectsRail';
 import { useAppStore } from '../state/store';
 
 import { AgentCard } from './AgentCard';
 import { applyLocalOrder, moveWithin, orderOf, persistBoardOrder } from './boardOrder';
 import { BoardDndContext } from './BoardDndContext';
-import { agentTarget, projectTarget, type DropOutcome } from './dnd';
+import { agentTarget, type DropOutcome, type DropTarget } from './dnd';
 import { diagnosticsForAgent, filterAgents, sortAgents } from './filters';
+
+/** Stable identity, so the ring is not rebuilt on every render. */
+const NO_PROJECT_TARGETS: readonly DropTarget[] = [];
 
 export function Board(): ReactElement {
   const { client } = useServices();
@@ -68,10 +72,6 @@ export function Board(): ReactElement {
         .filter((agent) => agent.archivedAt === null)
         .map((agent) => agentTarget(agent.definition.id, agent.definition.name)),
     [visible],
-  );
-  const projectTargets = useMemo(
-    () => (projects.data?.projects ?? []).map(projectTarget),
-    [projects.data],
   );
 
   /** The whole live roster in board order — what roster §9.5 wants written. */
@@ -143,7 +143,9 @@ export function Board(): ReactElement {
   return (
     <BoardDndContext
       agentTargets={agentTargets}
-      projectTargets={projectTargets}
+      // Projects live on `/projects` now, so the board has no project drop
+      // target: §5.3 row 1 moved there with them, agent chips and all.
+      projectTargets={NO_PROJECT_TARGETS}
       reordering={reorderMode}
       onDrop={onDrop}
     >
@@ -294,8 +296,6 @@ export function Board(): ReactElement {
             })}
           </ul>
         </section>
-
-        <ProjectsRail />
       </div>
     </BoardDndContext>
   );

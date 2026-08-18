@@ -1,7 +1,7 @@
 /**
  * The app root: routes (§2.1), the frame (§2.2) and the boot gate (§3.5).
  *
- * Ten routes, every one deep-linkable and every one surviving a reload — the
+ * Eleven routes, every one deep-linkable and every one surviving a reload — the
  * ntfy notification and the Electron toast both navigate by URL, and
  * foundation §6.4's history fallback is what makes a cold `GET /questions/abc`
  * arrive here rather than at a 404.
@@ -27,6 +27,7 @@ import { useOpenQuestions } from './app/useOpenQuestions';
 import { Sprite } from './icons/Sprite';
 import { LaunchFlowHost } from './launch/LaunchFlow';
 import { ProjectPage } from './projects/ProjectPage';
+import { ProjectsPage } from './projects/ProjectsPage';
 import { QuestionInbox } from './questions/QuestionInbox';
 import { SessionView } from './session/SessionView';
 
@@ -47,6 +48,7 @@ export function App(): ReactElement {
           <Route path="/" element={<Board />} />
           <Route path="/agents/new" element={<AgentWizard />} />
           <Route path="/agents/:id" element={<AgentDetail />} />
+          <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:id" element={<ProjectPage />} />
           <Route path="/sessions/:id" element={<SessionView />} />
           <Route path="/assignments/:id" element={<AssignmentPage />} />

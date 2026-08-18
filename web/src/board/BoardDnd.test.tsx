@@ -119,8 +119,15 @@ async function ready(): Promise<void> {
   await waitFor(() => expect(screen.getByRole('link', { name: 'Priya' })).toBeInTheDocument());
 }
 
-describe('the keyboard path to the launch flow (§5.4, IMPLEMENTATION §3)', () => {
-  it('lifts with Space, walks to the project with arrows, and drops into the launch flow', async () => {
+/**
+ * The board's ring is agents only now.
+ *
+ * Project cards moved to `/projects` (§2.1), and §5.3 row 1 went with them —
+ * `ProjectsPage.test.tsx` drives that drop, chips and all. What the board still
+ * owns is the lift itself, the wrap, and Escape.
+ */
+describe('the keyboard drag on the board (§5.4, IMPLEMENTATION §3)', () => {
+  it('lifts with Space and announces each target the arrows reach', async () => {
     const fixture = serving({ agents: [PRIYA, SAM], projects: [LPM] });
     mount(<App />, { respond: fixture.respond });
     await ready();
@@ -130,22 +137,10 @@ describe('the keyboard path to the launch flow (§5.4, IMPLEMENTATION §3)', () 
     await user.keyboard(' ');
     expect(announcement()).toContain('Picked up Priya');
 
-    // Ring: [Priya, Sam, littlepocketmuseum]. Two presses reach the project, and
-    // each target change is announced.
+    // Ring: [Priya, Sam]. Outside Reorder mode, passing over another card is
+    // the pair gesture.
     await user.keyboard('{ArrowDown}');
-    // Outside Reorder mode, passing over another card is the pair gesture.
     expect(announcement()).toContain('Start a pair: Priya drafting, Sam reviewing.');
-    await user.keyboard('{ArrowDown}');
-    expect(announcement()).toContain('Launch Priya on littlepocketmuseum.');
-
-    await user.keyboard(' ');
-
-    // "Dropping an agent card on a project opens the launch flow pre-filled with
-    // both, and starts nothing by itself."
-    const dialog = await screen.findByRole('dialog', { name: 'Launch' });
-    await waitFor(() => expect(within(dialog).getByLabelText('Agent')).toHaveValue('priya'));
-    expect(within(dialog).getByLabelText('Project')).toHaveValue('lpm');
-    expect(announcement()).toContain('Nothing has started yet');
   });
 
   it('wraps the ring, so the last arrow press does not strand the drag', async () => {
@@ -157,8 +152,8 @@ describe('the keyboard path to the launch flow (§5.4, IMPLEMENTATION §3)', () 
     grip('Priya').focus();
     await user.keyboard(' ');
     await user.keyboard('{ArrowUp}');
-    // One step back from Priya's own slot is the last entry: the project.
-    expect(announcement()).toContain('Launch Priya on littlepocketmuseum.');
+    // One step back from Priya's own slot is the last entry: Sam.
+    expect(announcement()).toContain('Start a pair: Priya drafting, Sam reviewing.');
   });
 
   it('cancels on Escape and starts nothing', async () => {
@@ -169,63 +164,11 @@ describe('the keyboard path to the launch flow (§5.4, IMPLEMENTATION §3)', () 
     const user = userEvent.setup();
     grip('Priya').focus();
     await user.keyboard(' ');
-    await user.keyboard('{ArrowDown}{ArrowDown}');
+    await user.keyboard('{ArrowDown}');
     await user.keyboard('{Escape}');
 
     expect(announcement()).toContain('stayed where it was');
     expect(screen.queryByRole('dialog', { name: 'Launch' })).toBeNull();
-  });
-});
-
-describe('a project that cannot be launched against (§5.3, IMPLEMENTATION §3)', () => {
-  it('dims, explains why, and refuses the drop', async () => {
-    const missing = aProject({
-      id: 'gone',
-      name: 'navigation',
-      health: [{ code: 'missing', level: 'error', message: 'C:\\Code\\navigation is gone.' }],
-    });
-    const fixture = serving({ agents: [PRIYA], projects: [missing] });
-    mount(<App />, { respond: fixture.respond });
-    await ready();
-
-    const card = document.querySelector('[data-project-id="gone"]');
-    expect(card?.getAttribute('data-drop-refused')).toBe('true');
-    expect(card?.getAttribute('title')).toContain('folder is missing');
-    // The non-drag path is refused for the same reason, in the same words.
-    expect(within(card as HTMLElement).getByText(/Can’t launch/u).textContent).toContain(
-      'folder is missing',
-    );
-    expect(
-      within(card as HTMLElement).queryByRole('button', { name: 'Launch an agent…' }),
-    ).toBeNull();
-
-    const user = userEvent.setup();
-    grip('Priya').focus();
-    await user.keyboard(' ');
-    await user.keyboard('{ArrowDown}');
-    expect(announcement()).toContain("can't be launched on");
-    await user.keyboard(' ');
-
-    // No launch flow, and the refusal is said out loud rather than swallowed.
-    expect(screen.queryByRole('dialog', { name: 'Launch' })).toBeNull();
-    await waitFor(() =>
-      expect(
-        within(screen.getByRole('status', { name: 'Notifications' })).getByText(
-          /Nothing was started/u,
-        ),
-      ).toBeInTheDocument(),
-    );
-  });
-
-  it('refuses a provisioning project too, and says which state it is in', async () => {
-    const fixture = serving({
-      agents: [PRIYA],
-      projects: [aProject({ id: 'clone', name: 'Cloning', status: 'provisioning' })],
-    });
-    mount(<App />, { respond: fixture.respond });
-    await ready();
-    const card = document.querySelector('[data-project-id="clone"]');
-    expect(card?.getAttribute('title')).toContain('still being set up');
   });
 });
 
@@ -375,21 +318,6 @@ describe('the card menu — the non-drag path to the launch flow (§5.4)', () =>
     });
     expect(screen.queryByRole('menuitem')).toBeNull();
     expect(trigger).toHaveFocus();
-  });
-});
-
-describe('the project card’s Launch an agent… (§5.4, §8.2)', () => {
-  it('opens the launch flow project-first, with the agent to pick', async () => {
-    const fixture = serving({ agents: [PRIYA], projects: [LPM] });
-    mount(<App />, { respond: fixture.respond });
-    await ready();
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: 'Launch an agent…' }));
-
-    const dialog = await screen.findByRole('dialog', { name: 'Launch' });
-    expect(within(dialog).getByLabelText('Project')).toHaveValue('lpm');
-    expect(within(dialog).getByLabelText('Agent')).toHaveValue('');
   });
 });
 

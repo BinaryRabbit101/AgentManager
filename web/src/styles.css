@@ -232,15 +232,9 @@ button {
 
 .board {
   display: grid;
-  grid-template-columns: 1fr 14rem;
+  grid-template-columns: 1fr;
   gap: 1rem;
   align-items: start;
-}
-
-@media (width <= 900px) {
-  .board {
-    grid-template-columns: 1fr;
-  }
 }
 
 .board__filters {
@@ -425,30 +419,29 @@ button {
   color: var(--danger);
 }
 
-/* --- projects rail ----------------------------------------------------- */
+/* --- projects page ----------------------------------------------------- */
 
-.rail {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-raised);
-  padding: 0.75rem;
-}
-
-.rail h2 {
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-  margin: 0 0 0.5rem;
-}
-
-.rail ul {
-  list-style: none;
-  margin: 0 0 0.75rem;
-  padding: 0;
+.projects-page__header {
   display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.projects-page__header h2 {
+  margin: 0;
+}
+
+.project-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.75rem;
+  align-items: start;
 }
 
 .project-card {
@@ -469,14 +462,9 @@ button {
   overflow-wrap: anywhere;
 }
 
-@media (width <= 900px) {
-  .rail ul {
-    flex-direction: row;
-    overflow-x: auto;
-  }
-
-  .project-card {
-    min-width: 12rem;
+@media (width <= 640px) {
+  .project-grid {
+    grid-template-columns: 1fr;
   }
 }
 

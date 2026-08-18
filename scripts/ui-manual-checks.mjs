@@ -122,7 +122,7 @@ const CHECKS = [
       'web/src/projects/QuickAddDialog.test.tsx — the full flow in four interactions with no typing, the typed-path flow with no browsing, and that the machine half completes in milliseconds.',
     steps: [
       'Start a stopwatch, click Add project, browse to a folder you already work in, Inspect, Create.',
-      'Stop when the card appears in the projects rail. Record the time.',
+      'Stop when the card appears on the projects screen. Record the time.',
       'Repeat by pasting the absolute path instead of browsing. Record the time.',
       'Repeat both from a phone browser over the tailnet.',
     ],
@@ -160,15 +160,15 @@ const CHECKS = [
   {
     id: 'M3-pointer-and-touch-drag',
     criterion:
-      'The pointer drag and the 250ms touch long-press both lift the card, highlight valid targets, dim invalid ones with a reason, auto-scroll the rail, and cancel on Esc.',
+      'The pointer drag and the 250ms touch long-press both lift the card, highlight valid targets, dim invalid ones with a reason, auto-scroll a long list, and cancel on Esc.',
     reference: 'ui DESIGN §5.3, IMPLEMENTATION §3',
     why: 'jsdom has no layout, no pointer events with real coordinates and no scrolling, so collision detection and auto-scroll cannot be exercised there. The keyboard path — which shares the drop handler — is fully automated.',
     automated:
       'web/src/board/BoardDnd.test.tsx — the real KeyboardSensor through dnd-kit, the live-region announcement on every target change, the refusal of a provisioning/archived/missing project, and the reorder round-trip. web/src/board/dnd.test.ts — every drop outcome and every announcement string.',
     steps: [
-      'Desktop, mouse: press on a card and move 5px. It lifts (shadow + slight tilt) and the floating label reads "Launch <agent> on <project>" as you cross the rail.',
+      'Desktop, mouse: on /projects, press on an agent chip and move 5px. It lifts (shadow + slight tilt) and the floating label reads "Launch <agent> on <project>" as you cross the cards.',
       'Cross an archived or provisioning project: it dims and its tooltip says why. Release on it — nothing starts and a toast says why.',
-      'Drag toward the top and bottom of the projects rail: it auto-scrolls.',
+      'Drag toward the top and bottom of a long projects list: it auto-scrolls.',
       'Press Esc mid-drag: the card returns and nothing opens.',
       'Phone or touch emulation at 390px: press and hold a card for ~250ms — it lifts; a quick swipe scrolls the page instead.',
       'Confirm the same drop opens the launch flow, and that the flow is a bottom sheet rather than a centred dialog.',
@@ -280,7 +280,7 @@ const CHECKS = [
       'web/src/projects/clone.test.ts — the fold over project.clone.progress/completed/failed, that git’s stderr is kept verbatim, and that a completed clone drops the row so the project’s own status is the only claim. web/src/projects/QuickAddDialog.test.tsx — inspect → clone, the 202, and the dialog closing at once.',
     steps: [
       'Add project → Clone URL → paste a repository of a few hundred MB → Inspect → Clone.',
-      'Dismiss the dialog immediately. The rail card shows provisioning with git’s phases and percentages moving.',
+      'Dismiss the dialog immediately. The project card shows provisioning with git’s phases and percentages moving.',
       'Wait for completion: the card flips to active and the progress row disappears.',
       'Repeat with a private repository you have no credentials for: git’s own message is shown verbatim and the row disappears.',
     ],
