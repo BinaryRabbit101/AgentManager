@@ -87,8 +87,11 @@ import {
   isTurnPlan,
   isWait,
   patternFor,
+  planChildSolo,
+  LEAD_SEAT,
   PATTERNS,
   type AssignmentState,
+  type ChildState,
   type HaltReason,
   type PatternDef,
   type PatternSummary,
@@ -301,6 +304,39 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     };
   }
 
+  /**
+   * §3.5's children, resolved for the pattern that has any.
+   *
+   * The child's **last structured report** is read here rather than in
+   * `plan()`, because `plan()` is pure over its state and a child's report lives
+   * in the child's own turn table. Only for a pattern whose `plan()` can act on
+   * them: every advance of every pair would otherwise pay for a query whose
+   * answer is always empty.
+   */
+  function childrenOf(row: AssignmentRow): readonly ChildState[] {
+    if (row.pattern !== 'overseer') return [];
+    return [...repository.listChildren(row.id)].reverse().map((child) => {
+      const reported = turns.list(child.id).filter((turn) => turn.report !== null).at(-1);
+      return {
+        id: child.id,
+        goal: child.goal,
+        pattern: child.pattern,
+        status: child.status,
+        phase: child.phase,
+        closeReason: child.closeReason,
+        haltReason: child.haltReason,
+        artifactPath: child.artifactPath,
+        tokenBudget: child.tokenBudget,
+        tokensUsed: child.tokensUsed,
+        closedAt: child.closedAt,
+        members: repository
+          .listMembers(child.id)
+          .map((member) => ({ agentId: member.agentId, role: member.role })),
+        report: reported?.report ?? null,
+      };
+    });
+  }
+
   function loadState(row: AssignmentRow, resumeRequested = false): AssignmentState {
     const rows = turns.list(row.id);
     const decision = latestDecision(row.id);
@@ -310,6 +346,7 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
       scope: parseScope(row),
       members: members(row.id),
       turns: rows,
+      children: childrenOf(row),
       roundsUsed: row.roundsUsed,
       tokensUsed: row.tokensUsed,
       budget: row.tokenBudget,
@@ -343,8 +380,8 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     const row = repository.get(assignmentId);
     if (row === undefined) throw new AssignmentNotFoundError(assignmentId);
 
-    const pattern = patternFor(row.pattern);
-    if (pattern === undefined || pattern.driver === 'none') {
+    const drive = driverFor(row);
+    if (drive === undefined) {
       // M5-6: solo runs through the engine unchanged. Driver `none` plans
       // nothing, which is the abstraction working rather than a special case.
       return { kind: 'idle', reason: 'no_driver' };
@@ -362,7 +399,11 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     // the table on every pass, so a restart between a crossing and its event
     // cannot lose one (§8.1).
     const trip = evaluateBreakers({
-      assignment: row,
+      // §7.5: a parent is judged on what its **tree** has spent. Runner meters
+      // each child onto the child's own row (§7.1) and orchestrator never
+      // re-derives that arithmetic — it only adds the rows up, so a lead whose
+      // workers burned the budget stops planning instead of delegating again.
+      assignment: { ...row, tokensUsed: row.tokensUsed + repository.childTokens(row.id).used },
       turns: turns.list(row.id),
       config,
       nowMs: options.clock().getTime(),
@@ -374,8 +415,24 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     if (gate !== undefined) return gate;
 
     const state = loadState(repository.get(assignmentId) ?? row, resumeRequested);
-    const result = pattern.plan(state);
+    const result = drive(state);
     return await act(state, result);
+  }
+
+  /**
+   * Which `plan()` drives this row — §3.1's registry, plus §3.5's one exception.
+   *
+   * The exception is a property of the **row**, not of the pattern: a `solo` the
+   * user launched is steered by the user through runner's own actions (§2.3),
+   * while a `solo` an overseer minted has nobody to steer it and a parent
+   * waiting on it to finish. So the driverless pattern gains a driver exactly
+   * when `parent_assignment_id` is set, and never otherwise.
+   */
+  function driverFor(row: AssignmentRow): ((state: AssignmentState) => PlanResult) | undefined {
+    const pattern = patternFor(row.pattern);
+    if (pattern === undefined) return undefined;
+    if (pattern.driver !== 'none') return (state) => pattern.plan(state);
+    return row.parentAssignmentId === null ? undefined : planChildSolo;
   }
 
   /** Which phases the driver may plan from, and which need a manual kick. */
@@ -726,8 +783,16 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     return turn.report.state === 'blocked' ? 'blocked' : 'reported';
   }
 
+  /**
+   * The seat whose report ends a round.
+   *
+   * For the pair it is the critic — the drafter's turn is half a round. For the
+   * overseer it is the lead, because it holds the only seat: one turn *is* one
+   * round there (decompose, then one review per batch of finished children).
+   */
   function isRoundClosingSeat(row: AssignmentRow, turn: TurnRow): boolean {
-    return row.pattern === 'pair' && turn.seat === 'critic';
+    if (row.pattern === 'pair') return turn.seat === 'critic';
+    return row.pattern === 'overseer' && turn.seat === LEAD_SEAT;
   }
 
   function emitTurnEnded(
@@ -835,9 +900,23 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     );
   }
 
+  /**
+   * The ceiling the round-cap card may raise a cap to, per pattern (§3.3, §3.5).
+   *
+   * Read from the pattern's own config key rather than from the pair's, because
+   * "how many rounds may this kind of collaboration run" is a property of the
+   * collaboration — an overseer's rounds are review passes and a pair's are
+   * draft-and-critique, and one number for both would bound the wrong thing.
+   */
+  function maxRoundCapFor(pattern: string): number {
+    return pattern === 'overseer'
+      ? config.patterns.overseer.maxRoundCap
+      : config.patterns.pair.maxRoundCap;
+  }
+
   function raiseRoundCapCard(row: AssignmentRow, summary: string): Promise<string> {
     const cap = row.roundCap ?? 0;
-    const max = config.patterns.pair.maxRoundCap;
+    const max = maxRoundCapFor(row.pattern);
     return raiseCard(row, {
       kind: 'question',
       prompt:
@@ -936,7 +1015,7 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     if (chose.includes('more_rounds')) {
       const row = repository.get(assignmentId);
       if (row === undefined) return;
-      const max = config.patterns.pair.maxRoundCap;
+      const max = maxRoundCapFor(row.pattern);
       const wanted = (row.roundCap ?? 0) + 1;
       if (wanted > max) {
         // Neither agent can extend the cap and neither can the card past its
@@ -981,6 +1060,17 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
           log('warn', 'the engine could not react to an answer', { error: String(error) });
         });
       }),
+      // §3.5's review cadence: a child finishing is the parent's trigger. It is
+      // the *close* rather than the child's last `session.ended`, because a
+      // child may take several sessions and only its close says the outcome is
+      // final — which is the thing the lead is asked to verify.
+      bus.subscribe(['assignment.closed'], (event) => {
+        const assignmentId = event.ids.assignmentId;
+        if (assignmentId === undefined) return;
+        const parentId = repository.get(assignmentId)?.parentAssignmentId;
+        if (parentId === undefined || parentId === null) return;
+        void advance(parentId).catch(() => undefined);
+      }),
       bus.subscribe(['assignment.budget.exceeded'], (event) => {
         const assignmentId = event.ids.assignmentId;
         if (assignmentId === undefined) return;
@@ -1006,10 +1096,16 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
   /**
    * §16-9's candidate ranking, per seat.
    *
-   * Eligibility is the seat's declared roles ∩ the agent's — the same rule §9-5
-   * refuses on, so the dialog cannot offer a choice the validator would reject.
-   * Order is available first, then fewest open assignments, then name: the
-   * agent most able to take the work, at the top.
+   * **Owner decision, 2026-08-18: this ranks, it does not filter.** Every agent
+   * the roster projection returns is a candidate for every seat, because "any
+   * agent may work in any pair or group" and the seating choice is the user's.
+   * A dialog that hid the agents which did not declare the seat's role would be
+   * the capability gate the decision removed, moved into the UI.
+   *
+   * The order is the suggestion, in four keys: agents that declare one of the
+   * seat's roles first (`declaresRole`, which the dialog also labels), then the
+   * available before the loaded, then fewest open assignments, then name. The
+   * agent most likely to be wanted is at the top and nobody is missing.
    */
   function candidatesFor(
     pattern: PatternDef,
@@ -1019,9 +1115,6 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     const bySeat: Record<string, readonly SeatCandidate[]> = {};
     for (const seat of pattern.seats) {
       bySeat[seat.key] = entries
-        .filter((entry) =>
-          entry.capabilities.roles.some((role) => (seat.roles as readonly string[]).includes(role)),
-        )
         .map((entry) => {
           const openAssignments = repository.countOpenForAgent(entry.id);
           return {
@@ -1030,9 +1123,13 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
             roles: entry.capabilities.roles,
             openAssignments,
             available: openAssignments < limit,
+            declaresRole: entry.capabilities.roles.some((role) =>
+              (seat.roles as readonly string[]).includes(role),
+            ),
           };
         })
         .sort((a, b) => {
+          if (a.declaresRole !== b.declaresRole) return a.declaresRole ? -1 : 1;
           if (a.available !== b.available) return a.available ? -1 : 1;
           if (a.openAssignments !== b.openAssignments) return a.openAssignments - b.openAssignments;
           return a.agentId.localeCompare(b.agentId);
@@ -1159,8 +1256,7 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     const resumed: string[] = [];
 
     for (const row of repository.list({ status: 'open' })) {
-      const pattern = patternFor(row.pattern);
-      if (pattern === undefined || pattern.driver === 'none') continue;
+      if (driverFor(row) === undefined) continue;
 
       const active = turns.active(row.id);
       if (active !== undefined) {
@@ -1204,6 +1300,7 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
 
       return PATTERNS.map((pattern): PatternSummary => {
         const pair = pattern.id === 'pair';
+        const overseer = pattern.id === 'overseer';
         return {
           id: pattern.id,
           driver: pattern.driver,
@@ -1214,10 +1311,21 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
             tokenBudget: pattern.requires?.tokenBudget ?? false,
           },
           defaults: {
-            roundCap: pair ? config.patterns.pair.roundCap : null,
+            roundCap: pair
+              ? config.patterns.pair.roundCap
+              : overseer
+                ? config.patterns.overseer.roundCap
+                : null,
+            // §7.2: the overseer's budget has **no** default, and the dialog is
+            // told so with a `null` it must make the user fill in — a default
+            // cap on work that creates more work is a number nobody agreed to.
             tokenBudget: pair ? config.budgets.defaultPairTokens : null,
           },
-          maxRoundCap: pair ? config.patterns.pair.maxRoundCap : null,
+          maxRoundCap: pair
+            ? config.patterns.pair.maxRoundCap
+            : overseer
+              ? config.patterns.overseer.maxRoundCap
+              : null,
           cardSeatOrder: cardSeatOrder(pattern.id),
           ...(entries === undefined ? {} : { candidates: candidatesFor(pattern, entries) }),
         };
@@ -1294,5 +1402,11 @@ export function haltPrompt(
       return 'This assignment has not made a turn transition in a long time. Continue anyway, or close the assignment?';
     case 'question_expired':
       return 'A question this assignment was waiting on expired unanswered. Continue anyway, or close the assignment?';
+    case 'review_unresolved':
+      return (
+        'The overseer finished a review round without accepting the work: it either asked for ' +
+        'revisions it did not delegate, or reported no verdict at all. Continue anyway to give ' +
+        'it one more round to delegate the follow-up, or close the assignment?'
+      );
   }
 }

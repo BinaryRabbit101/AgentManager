@@ -124,8 +124,8 @@ export const REFUSAL_CODES = [
   /** §9-3 */ 'nesting_depth',
   /** §9-4 */ 'unsupported_pattern',
   /** §9-5 */ 'invalid_role',
-  /** §9-5 */ 'role_not_declared',
-  /** §9-6 */ 'lead_not_overseer',
+  /** §9-6, §3.5 — a seat the pattern does not have (the overseer's lone lead). */
+  'seat_not_in_pattern',
   /** §9-7 */ 'agent_not_found',
   /** §9-7 */ 'member_archived',
   /** §9-7 */ 'member_at_capacity',
@@ -152,6 +152,18 @@ export type RefusalCode = (typeof REFUSAL_CODES)[number];
 export const WARNING_CODES = [
   /** §7.2 / §9-9, for a user-created assignment. */ 'projection_exceeds_budget',
   /** §2.6 */ 'scope_overlap',
+  /**
+   * §9-5, **owner decision 2026-08-18**: an agent seated in a role it does not
+   * declare. Once a refusal, now a warning — capabilities rank candidates, they
+   * do not gate the user's seating choice. The cost is one persona addendum.
+   */
+  'role_not_declared',
+  /**
+   * §9-6, same decision: the lead of an overseer assignment does not declare
+   * `capabilities.overseer`. It leads anyway, and the coordinator tools follow
+   * the seat.
+   */
+  'lead_not_overseer',
 ] as const;
 
 export type WarningCode = (typeof WARNING_CODES)[number];

@@ -105,16 +105,18 @@ async function makePair(wired: Wired, autoStart = true): Promise<string> {
 }
 
 describe('GET /api/patterns (M5-1)', () => {
-  it('serves both patterns with their seats, defaults and allowed roles', async () => {
+  it('serves every pattern with its seats, defaults and allowed roles', async () => {
     const wired = wire();
     const answer = await wired.call('GET', '/api/patterns');
     expect(answer.status).toBe(200);
     const patterns = answer.body['patterns'] as { id: string; seats: { roles: string[] }[] }[];
-    expect(patterns.map((pattern) => pattern.id)).toEqual(['solo', 'pair']);
+    expect(patterns.map((pattern) => pattern.id)).toEqual(['solo', 'pair', 'overseer']);
     expect(patterns[1]?.seats.map((seat) => seat.roles)).toEqual([
       ['architect', 'implementer'],
       ['skeptic'],
     ]);
+    // §3.5: one seat, and only an overseer may fill it.
+    expect(patterns[2]?.seats.map((seat) => seat.roles)).toEqual([['overseer']]);
   });
 });
 

@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { AssignmentRefusedError, RunnerUnavailableError } from './errors.js';
+import { RunnerUnavailableError } from './errors.js';
 import { fakeRunner, makeHarness, PROJECT_ID, type Harness } from './__tests__/helpers.js';
 
 let harness: Harness | undefined;
@@ -126,20 +126,19 @@ describe('createSolo — the drag-and-drop-equivalent launch (M1 acceptance 1)',
       expect(h.runner.started[0]?.role).toBe('architect');
     });
 
-    it('falls back to implementer, which §9-5 then refuses for an agent declaring nothing', async () => {
-      // §2.3's final fallback is `implementer`, and §9-5 refuses any role absent
-      // from `capabilities.roles`. For an agent that declares **no** roles the
-      // two meet: the fallback picks `implementer`, the rule refuses it by name,
-      // and the launch is a named refusal rather than a session with a seat the
-      // agent never claimed. Raised in the M1 report; §9-5 wins because it is a
-      // rule and §2.3's fallback is a default.
+    it('falls back to implementer for an agent declaring nothing, and warns (2026-08-18)', async () => {
+      // §2.3's final fallback is `implementer`. §9-5 used to refuse any role
+      // absent from `capabilities.roles`, which made this launch impossible;
+      // the owner decision of 2026-08-18 made that a **warning**, so the agent
+      // works the seat and the caller is told it has no role addendum.
       const h = open({ agents: [{ id: 'ada', roles: [] }] });
-      await expect(
-        h.service.createSolo({ projectId: PROJECT_ID, agentId: 'ada', prompt: 'go' }),
-      ).rejects.toBeInstanceOf(AssignmentRefusedError);
-      await expect(
-        h.service.createSolo({ projectId: PROJECT_ID, agentId: 'ada', prompt: 'go' }),
-      ).rejects.toMatchObject({ code: 'role_not_declared' });
+      const result = await h.service.createSolo({
+        projectId: PROJECT_ID,
+        agentId: 'ada',
+        prompt: 'go',
+      });
+      expect(h.runner.started[0]?.role).toBe('implementer');
+      expect(result.warnings.map((warning) => warning.code)).toEqual(['role_not_declared']);
     });
 
     it('honours an explicit role the agent declares', async () => {
@@ -194,14 +193,11 @@ describe('createSolo — the drag-and-drop-equivalent launch (M1 acceptance 1)',
 
   it('goes through the same §9 validator as every other path', async () => {
     const h = open({ agents: [{ id: 'ada', roles: ['skeptic'] }] });
+    // An archived agent is a real invariant rather than a capability hint, so
+    // it is still a refusal after the owner decision of 2026-08-18.
     await expect(
-      h.service.createSolo({
-        projectId: PROJECT_ID,
-        agentId: 'ada',
-        prompt: 'go',
-        role: 'implementer',
-      }),
-    ).rejects.toMatchObject({ code: 'role_not_declared' });
+      h.service.createSolo({ projectId: PROJECT_ID, agentId: 'ghost', prompt: 'go' }),
+    ).rejects.toMatchObject({ code: 'agent_not_found' });
   });
 });
 

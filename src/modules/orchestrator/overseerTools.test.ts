@@ -180,8 +180,10 @@ describe('create_assignment (§4.3, §9)', () => {
     const codes = (payload['detail'] as { refusals: { code: string }[] }).refusals.map(
       (one) => one.code,
     );
-    expect(codes).toContain('role_not_declared');
+    // Sam being seated as an architect is only a *warning* since the owner
+    // decision of 2026-08-18 (§9-5); `ghost` not existing is still a rule.
     expect(codes).toContain('agent_not_found');
+    expect(codes).not.toContain('role_not_declared');
   });
 
   it('refuses a budget bigger than the parent’s remainder (§9-8)', async () => {

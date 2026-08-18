@@ -27,8 +27,9 @@ import { AssignmentNotFoundError } from './errors.js';
 import type { Delivery, MailboxRepository, MessageView } from './messages.js';
 import { sliceUtf8 } from './prompt.js';
 import type { QuestionCard, QuestionInbox, RecommendationView } from './questions.js';
-import type { AssignmentRepository } from './repository.js';
+import { childViewsOf, type AssignmentRepository } from './repository.js';
 import type { TurnReport, TurnRepository, TurnStatus } from './turns.js';
+import type { AssignmentChildView } from './types.js';
 
 export interface ConversationTurnEntry {
   readonly type: 'turn';
@@ -99,6 +100,17 @@ export interface ConversationView {
   readonly closeReason: string | null;
   readonly haltReason: string | null;
   readonly rounds: readonly ConversationRound[];
+  /**
+   * §3.5's team, on the same read as the transcript.
+   *
+   * An overseer assignment's conversation is only half the story without them:
+   * the lead's turns say what it decided and the children say what was actually
+   * done. Empty for every assignment nobody decomposed, and identical in shape
+   * to `GET /api/assignments/:id`'s `children`, so the UI parses one type.
+   */
+  readonly children: readonly AssignmentChildView[];
+  /** Σ of the children's `tokens_used` — the tree half of §16.8's budget (§7.5). */
+  readonly childTokensUsed: number;
 }
 
 export interface ConversationReaderOptions {
@@ -191,6 +203,8 @@ export function createConversationReader(
       tokenBudget: row.tokenBudget,
       closeReason: row.closeReason,
       haltReason: row.haltReason,
+      children: childViewsOf(repository, row.id),
+      childTokensUsed: repository.childTokens(row.id).used,
       rounds: [...rounds.entries()]
         .sort(([a], [b]) => a - b)
         .map(([round, entries]) => ({ round, entries: [...entries].sort(byTime) })),

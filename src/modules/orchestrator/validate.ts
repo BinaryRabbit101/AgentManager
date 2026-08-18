@@ -61,6 +61,17 @@ export interface ParentFacts {
   readonly tokensUsed: number;
   /** Σ of the `token_budget`s of this parent's still-open children (§9-8). */
   readonly openChildBudgets: number;
+  /**
+   * Σ of what this parent's **closed** children actually spent (§7.5).
+   *
+   * Without it the remainder heals every time a child closes: the child's
+   * reservation leaves `openChildBudgets`, its spend was never added to the
+   * parent's own `tokens_used` (runner meters onto the child's row, §7.1), and
+   * the lead could hand the same tokens out again. Optional so a caller that
+   * has not resolved it is not lying about it — absent reads as zero, which is
+   * the correct value for an assignment with no closed children.
+   */
+  readonly closedChildTokensUsed?: number | undefined;
 }
 
 /** One work item named by `workItemIds`, for the §2.3 cross-project check. */
@@ -235,15 +246,20 @@ export function validateCreateAssignment(input: ValidationInput): ValidationResu
       });
     }
 
-    // §9-5: the role must appear in `capabilities.roles` — otherwise the agent
-    // has no addendum and never declared itself able to fill the seat.
+    // §9-5, **owner decision 2026-08-18**: `capabilities.roles` is a *ranking
+    // hint*, not a gate. "Any agent may work in any pair or group" — the user's
+    // seating choice is authoritative, and a role the agent did not declare
+    // costs it only that role's persona addendum (roster's `roles/<role>.md`
+    // lookup is optional and appends nothing when the file is absent, so the
+    // session still compiles). So this is a warning the create dialog shows
+    // before the user confirms (§16-9), not a refusal that overrules them.
     if (!agent.roles.includes(member.role)) {
-      refusals.push({
+      warnings.push({
         code: 'role_not_declared',
         message:
-          `Agent ${member.agentId} (${agent.name}) does not declare the role "${member.role}". ` +
-          `It declares: ${agent.roles.length === 0 ? 'none' : agent.roles.join(', ')}.`,
-        details: { agentId: member.agentId, role: member.role, declared: [...agent.roles] },
+          `Agent ${member.agentId} (${agent.name}) does not declare the role "${member.role}", ` +
+          `so it works the seat without that role's persona addendum. It declares: ` +
+          `${agent.roles.length === 0 ? 'none' : agent.roles.join(', ')}.`,
       });
     }
 
@@ -264,20 +280,39 @@ export function validateCreateAssignment(input: ValidationInput): ValidationResu
   }
 
   // --- §9-6: the lead seat ------------------------------------------------
-  // For `overseer` the lead must be `capabilities.overseer`; for `pair` the
-  // drafting seat leads. `overseer` is refused by §9-4 in this build, so the
-  // check below is the one that survives it — stated in full so the rule lives
-  // here and not in the pattern definition that lands in M6.
+  // **Owner decision, 2026-08-18**: `capabilities.overseer` is a ranking hint
+  // for *suggesting* leads, not a gate on who may hold the seat. So a lead that
+  // does not declare it gets a warning and the assignment runs — and the
+  // coordinator's two tools follow the **seat**, mounted for whoever holds it
+  // (`toolset.ts`), because a lead that cannot create a child assignment is a
+  // lead in name only.
+  //
+  // The lead is the member holding the `overseer` role, falling back to the
+  // first seat: seat order is the pattern's, and a request that names a worker
+  // first must not be able to point the rule at the wrong agent.
   if (request.pattern === 'overseer') {
-    const lead = request.members[0];
+    const lead =
+      request.members.find((member) => member.role === 'overseer') ?? request.members[0];
     const agent = lead === undefined ? undefined : input.agents.get(lead.agentId);
     if (agent !== undefined && !agent.overseer) {
-      refusals.push({
+      warnings.push({
         code: 'lead_not_overseer',
         message:
-          `Agent ${agent.id} leads an "overseer" assignment but does not declare ` +
-          'capabilities.overseer.',
-        details: { agentId: agent.id },
+          `Agent ${agent.id} (${agent.name}) leads this overseer assignment without declaring ` +
+          'capabilities.overseer. It gets the coordinator tools because it holds the lead seat; ' +
+          'the capability only ranks suggested leads.',
+      });
+    }
+    // §3.5's seat vocabulary: one seat. The workers hold seats in the child
+    // assignments the lead mints, and a second seat here would give one
+    // assignment two turn loops — which `assignment_turns_active` forbids.
+    if (request.members.length > 1) {
+      refusals.push({
+        code: 'seat_not_in_pattern',
+        message:
+          'The overseer pattern has exactly one seat, the lead. Its workers join through the ' +
+          'child assignments the lead creates, not through seats on this assignment.',
+        details: { members: request.members.length },
       });
     }
   }
@@ -293,17 +328,34 @@ export function validateCreateAssignment(input: ValidationInput): ValidationResu
     });
   }
 
+  // §7.2's other half of the same rule: the *parent* of machine-created work is
+  // budgeted too. Every child's budget is debited from this one's remainder, so
+  // an uncapped overseer assignment is an unbounded tree — and unlike a pair it
+  // gets no config default, because a number the user did not choose is not a
+  // cap they agreed to on work that spawns more work.
+  if (!machine && request.pattern === 'overseer' && tokenBudget === null) {
+    refusals.push({
+      code: 'budget_required',
+      message:
+        'An "overseer" assignment must carry a token budget: every child assignment its lead ' +
+        'creates is debited from this one’s remainder, so an uncapped overseer is an unbounded ' +
+        'tree.',
+    });
+  }
+
   if (tokenBudget !== null && input.parent !== undefined) {
     const remaining =
       (input.parent.tokenBudget ?? Number.POSITIVE_INFINITY) -
       input.parent.tokensUsed -
-      input.parent.openChildBudgets;
+      input.parent.openChildBudgets -
+      (input.parent.closedChildTokensUsed ?? 0);
     if (tokenBudget > remaining) {
       refusals.push({
         code: 'budget_exceeds_parent',
         message:
           `A budget of ${String(tokenBudget)} tokens exceeds the parent's remaining ` +
-          `${String(Math.max(0, remaining))} (budget − used − open children's budgets).`,
+          `${String(Math.max(0, remaining))} (budget − used − open children's budgets − what ` +
+          'its closed children spent).',
         details: { tokenBudget, remaining },
       });
     }

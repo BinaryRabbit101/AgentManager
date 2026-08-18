@@ -140,13 +140,27 @@ describe('POST /api/assignments/solo', () => {
 
   it('translates a §9 refusal into its own code and status, with no stack', async () => {
     const w = wire();
+    // An id the roster does not know: a real invariant, unlike the capability
+    // hints the owner decision of 2026-08-18 turned into warnings (§9-5/§9-6).
+    const answer = await w.call('POST', '/api/assignments/solo', {
+      body: { projectId: PROJECT_ID, agentId: 'ghost', prompt: 'go' },
+    });
+    // The refusal's own status, from `statusFor` — not a blanket 400.
+    expect(answer.status).toBe(404);
+    expect(answer.body['error']).toBe('agent_not_found');
+    expect(JSON.stringify(answer.body)).not.toContain('at Object');
+    expect(answer.body['refusals']).toHaveLength(1);
+  });
+
+  it('launches an agent seated in a role it does not declare, and says so (2026-08-18)', async () => {
+    const w = wire();
     const answer = await w.call('POST', '/api/assignments/solo', {
       body: { projectId: PROJECT_ID, agentId: 'ada', prompt: 'go', role: 'skeptic' },
     });
-    expect(answer.status).toBe(400);
-    expect(answer.body['error']).toBe('role_not_declared');
-    expect(JSON.stringify(answer.body)).not.toContain('at Object');
-    expect(answer.body['refusals']).toHaveLength(1);
+    expect(answer.status).toBe(201);
+    expect(
+      (answer.body['warnings'] as { code: string }[]).map((warning) => warning.code),
+    ).toContain('role_not_declared');
   });
 
   it('cannot claim createdBy — an HTTP caller may not choose which rules apply', async () => {

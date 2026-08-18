@@ -74,6 +74,7 @@ import {
   overseerModelDiagnostic,
   OVERSEER_DEFAULT_MAX_BUDGET_USD,
   OVERSEER_DEFAULT_MAX_TURNS,
+  OVERSEER_ONLY_TOOL_NAMES,
 } from './overseer.js';
 import { composePersona } from './persona.js';
 import type { PersonaComposition } from './persona.js';
@@ -179,16 +180,30 @@ export async function compileSession(input: CompileSessionInput): Promise<Compil
   // The toolset instance is asked for **once**, here, and never cached: it is
   // single-use, and a reused one produces a session that believes it has the
   // tools and gets no answers (orchestrator SDK-NOTES G2).
-  const overseer = isOverseer(definition);
+  const declaresOverseer = isOverseer(definition);
   let toolsetHandle: SessionToolsetHandle | undefined;
   if (input.toolset !== undefined) {
     toolsetHandle = input.toolset({
       assignmentId: assignment.id,
       agentId: definition.id,
       ...(assignment.role === undefined ? {} : { role: assignment.role }),
-      isOverseer: overseer,
+      isOverseer: declaresOverseer,
     });
   }
+
+  // **Owner decision, 2026-08-18**: capabilities are ranking hints, never gates
+  // (orchestrator DESIGN §9-6). The coordinator's surface is granted by the
+  // *seat* — whoever holds the lead seat of an overseer assignment — and the
+  // element that knows who holds it is orchestrator, which answers by mounting
+  // the two tools. So the grant follows the **mount**: what the instance
+  // actually exposes decides which rules are compiled, and
+  // `capabilities.overseer` is only the fallback for a launch with no toolset
+  // to ask. Roster stays the sole composer of rules; it simply stops being the
+  // sole decider of who is a coordinator.
+  const overseer =
+    toolsetHandle === undefined
+      ? declaresOverseer
+      : OVERSEER_ONLY_TOOL_NAMES.every((name) => toolsetHandle?.toolNames?.includes(name) ?? false);
 
   const orchestration = applyOrchestrationGrant(compiled, {
     agentId: definition.id,

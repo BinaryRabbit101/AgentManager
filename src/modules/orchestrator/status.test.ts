@@ -287,21 +287,41 @@ describe('GET /api/patterns drives the create dialog (§16-9, M9-4)', () => {
       tokenBudget: harness.config.budgets.defaultPairTokens,
     });
 
-    // Eligibility is the same rule §9-5 refuses on, so the dialog cannot offer a
-    // choice the validator would reject.
-    expect(pair?.candidates?.['critic']?.map((one) => one.agentId)).toEqual(['sam']);
-    expect(pair?.candidates?.['drafter']?.map((one) => one.agentId)).toEqual(['ada', 'kim']);
-    expect(pair?.candidates?.['drafter']?.[0]).toMatchObject({ name: 'Ada', available: true });
+    // **Owner decision, 2026-08-18**: the dialog *ranks*, it does not filter.
+    // Every agent is offered for every seat; the ones that declare the seat's
+    // role come first and are labelled, and the user's choice is authoritative.
+    expect(pair?.candidates?.['critic']?.map((one) => one.agentId)).toEqual([
+      'sam',
+      'ada',
+      'kim',
+    ]);
+    expect(pair?.candidates?.['critic']?.map((one) => one.declaresRole)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    expect(pair?.candidates?.['drafter']?.map((one) => one.agentId)).toEqual([
+      'ada',
+      'kim',
+      'sam',
+    ]);
+    expect(pair?.candidates?.['drafter']?.[0]).toMatchObject({
+      name: 'Ada',
+      available: true,
+      declaresRole: true,
+    });
   });
 
-  it('ranks an agent at its cap last, rather than hiding it', async () => {
+  it('ranks an agent at its cap after the free ones, rather than hiding it', async () => {
     await makePair();
     await harness.service.createSolo({ projectId: PROJECT_ID, agentId: 'ada', prompt: 'more' });
 
     const pair = harness.engine.patterns().find((pattern) => pattern.id === 'pair');
     const drafters = pair?.candidates?.['drafter'] ?? [];
-    expect(drafters.map((one) => one.agentId)).toEqual(['kim', 'ada']);
-    expect(drafters.at(-1)).toMatchObject({ agentId: 'ada', available: false });
+    // Ada declares the seat's role but is at the cap; Kim declares it and is
+    // free, so Kim leads. Sam declares neither and sorts last, still offered.
+    expect(drafters.map((one) => one.agentId)).toEqual(['kim', 'ada', 'sam']);
+    expect(drafters[1]).toMatchObject({ agentId: 'ada', available: false, declaresRole: true });
   });
 });
 

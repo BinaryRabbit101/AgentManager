@@ -293,10 +293,70 @@ Plus:
 
 ---
 
+## M10 — The overseer pattern (**complete**)
+
+Three or more agents on one goal, on one project: an `overseer`-led assignment whose lead decomposes
+the goal into child assignments and verifies what they produce (DESIGN §3.5). Promoted from §3.4's
+sketch; the review-loop sketch stays deferred.
+
+1. `OVERSEER_PATTERN` in `patterns.ts`, registered in `PATTERNS`: one `lead` seat (`write: false`),
+   `requires: { roundCap, tokenBudget }`, and §3.5's turn table — decompose, wait while any child is
+   open, review each batch of finished children, converge on a structured `accept`, halt
+   `review_unresolved` on a revision nobody was given. §3.3's three seat-agnostic rows (blocked,
+   unstructured, failed) refactored into one implementation both sequential patterns call.
+2. Creation: `POST /api/assignments` with `pattern: 'overseer'` validates (`SUPPORTED_PATTERNS`
+   widened); a non-null `tokenBudget` is required (§7.2) and the round cap defaults from
+   `patterns.overseer.roundCap`; a second seat is refused `seat_not_in_pattern`.
+3. The child of an overseer: `create_assignment` still mints only `solo | pair`, the child's budget
+   is debited from the parent's remainder, `parent_assignment_id` is set, and a `write: true` child
+   is parked at `phase: planned` behind §8.2-1's gate. A machine-created **`solo`** is driven as
+   exactly one turn (`planChildSolo`) — launch, wait, close — because nothing else starts it, gives
+   it a turn row to report against, or closes it for the parent to review.
+4. Cadence: `assignment.closed` on a child advances its parent; the review prompt carries each
+   finished child's report **and** artifact path with the instruction to read the file before
+   accepting. Children run concurrently (each is its own assignment with its own loop, bounded by
+   runner's cap of 2); the parent reviews them in batches — one lead turn per wave.
+5. The budget tree (DESIGN §7.5): reservations bound *creation* (open children's budgets **plus what
+   closed children spent**, so a remainder never heals), actual spend bounds *running* (the parent's
+   `budget` breaker reads `tokens_used + Σ children`). Runner stays the only writer of any
+   `tokens_used`.
+6. Projections: `children` (id, goal, pattern, status, phase, closeReason, haltReason, artifactPath,
+   write, budget, tokens, members) and `childTokensUsed` on `GET /api/assignments/:id` **and** on the
+   conversation view, oldest first.
+7. **Owner decision, 2026-08-18** — capabilities are ranking hints, never gates: `role_not_declared`
+   and `lead_not_overseer` became warnings, `GET /api/patterns`'s candidate list ranks instead of
+   filtering (`declaresRole` per candidate), and the coordinator toolset is granted by the **lead
+   seat**, with roster compiling its allow rules from the names the instance mounted.
+
+**Acceptance**
+- A user creates an `overseer` assignment with a lead and a budget; the engine plans the lead's
+  decomposition turn, and the composed prompt names `create_assignment` and `list_roster`.
+- The lead mints two children through the real toolset; both carry `parent_assignment_id`,
+  `created_by: overseer:<id>` and their own budgets, and a `solo` child's single turn starts.
+- A child's budget larger than the parent's remainder is refused `budget_exceeds_parent` — before and
+  after an earlier child closed, so a closed child's spend still counts.
+- A `write: true` child holds no session and no turn row until the gate is approved; denying it
+  closes the child `gate_denied` and leaves the parent open.
+- When every child has closed, the parent's next turn is a review round whose prompt carries each
+  child's id, report headline and artifact path; the lead's `accept` with an empty blocking list
+  closes the assignment `converged` with `phase: converged`.
+- A `revise` verdict with no follow-up child halts `review_unresolved` with exactly one card and one
+  `assignment.halted` event; *Continue anyway* runs one more review round, bounded by the cap.
+- A child exhausting its own budget parks the **child** at `awaiting_user` and the parent keeps
+  planning; the parent parks only when `tokens_used + Σ children` crosses its own budget.
+- `GET /api/assignments/:id` carries the children and `childTokensUsed`; it is empty for a solo.
+- Closing the parent closes its still-open children `user_closed` (never `converged`).
+- A lead with no `capabilities.overseer` is created with a warning, runs, and is mounted all six
+  tools; the same agent in a worker seat is mounted four.
+- `GET /api/patterns` offers every agent for every seat, role-declaring ones first, each labelled
+  `declaresRole`.
+
+---
+
 ## Not in v1
 
-The `overseer` and `review` patterns, parallel turns within a pattern, declared per-seat model
-overrides, mail pushed into live sessions, semantic question de-duplication, and the remaining
-notification channels — all with their rationale and unblocking conditions in DESIGN §18. Nothing in
-M1–M9 may be shaped around them beyond the extension points already named (`PatternDef.driver`,
-`AssignmentContext`, `Notifier.channel`).
+The `review` pattern, parallel turns within one assignment, per-child review the moment a child
+closes, nesting deeper than one level, declared per-seat model overrides, mail pushed into live
+sessions, semantic question de-duplication, and the remaining notification channels — all with their
+rationale and unblocking conditions in DESIGN §18. Nothing in M1–M10 may be shaped around them beyond
+the extension points already named (`PatternDef.driver`, `AssignmentContext`, `Notifier.channel`).

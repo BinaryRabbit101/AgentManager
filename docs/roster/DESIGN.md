@@ -652,8 +652,29 @@ agents; agents do not spawn their own hidden sub-hierarchies. So the overseer fl
 | Read access to the roster (names, specialties, tags, capabilities — never permissions or integrations) | It cannot delegate to people it cannot see. It has no business knowing their credentials. |
 | A higher default `maxTurns` and `maxBudgetUsd` | Coordination is turn-expensive and produces little output per turn. |
 | A model floor (validator warns below `sonnet`) | Decomposition and convergence judgement are the tasks least tolerant of a weak model. |
-| Permission to be an assignment **lead** | Orchestrator refuses to start a pattern whose lead slot is filled by a non-overseer agent. |
+| A ranking as a suggested assignment **lead** | ~~Orchestrator refuses to start a pattern whose lead slot is filled by a non-overseer agent.~~ See the owner decision below. |
 | A required `roles` entry containing `overseer` | Keeps role matching uniform rather than special-casing the flag. |
+
+> **Owner decision, 2026-08-18 — capabilities are ranking hints, never gates.**
+> *Any agent may work in any pair or group.* `capabilities.roles` and `capabilities.overseer` rank
+> candidates in the create dialog and label them; they do not decide who may hold a seat. The user's
+> seating choice is authoritative, and a mismatch surfaces as a **warning** on the create call
+> (orchestrator §9-5, §9-6, §16-9) rather than a refusal.
+>
+> Two consequences land in this element:
+>
+> 1. **The orchestration grant follows the mount, not the flag.** `compileSession` asks
+>    orchestrator's `getSessionToolset` for the instance, and compiles allow rules for the tool names
+>    that instance actually exposes; `capabilities.overseer` is only the fallback when no toolset is
+>    mounted. Orchestrator mounts the two coordinator tools for whoever holds the **lead seat** of an
+>    `overseer` assignment (orchestrator §3.5) — a lead that cannot call `create_assignment` is a lead
+>    in name only. A worker's launch mounts four and is granted four, exactly as before.
+> 2. **A missing `roles/<role>.md` addendum is the whole cost** of seating an agent in a role it did
+>    not declare. The lookup is already optional and appends nothing when the file is absent, so the
+>    session compiles either way.
+>
+> Everything else in this section stands: the flag still grants the roster projection, the higher
+> defaults, the model floor, and never the subagent tool.
 
 What it explicitly does **not** get: the `Agent`/subagent tool, write access to other agents'
 definitions, the ability to raise its own or anyone else's permission ceiling, or the ability to

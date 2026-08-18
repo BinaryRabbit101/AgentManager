@@ -34,7 +34,12 @@ import type {
 } from '../../storage/index.js';
 import { isoTimestamp } from '../../storage/index.js';
 
-import type { AssignmentPhase, AssignmentScope, CreatedBy } from './types.js';
+import type {
+  AssignmentChildView,
+  AssignmentPhase,
+  AssignmentScope,
+  CreatedBy,
+} from './types.js';
 
 /** One row, base columns and orchestrator's own, flattened. */
 export interface AssignmentRow {
@@ -110,6 +115,27 @@ export interface AssignmentRepository {
   countOpenForAgent(agentId: string): number;
   /** Σ of the `token_budget`s of a parent's still-open children (§9-8). */
   openChildBudgetTotal(parentAssignmentId: string): number;
+  /**
+   * §7.5's budget tree, in one read.
+   *
+   * Two numbers because the tree is bounded in two different ways and confusing
+   * them is how a budget lies:
+   *
+   * - `openReserved` is what the open children still *hold* — their whole
+   *   budget, spent or not. It bounds **creation**: an overseer may not promise
+   *   the same tokens twice (§9-8).
+   * - `used` is what every child, open or closed, has actually spent. It bounds
+   *   **running**: the parent halts when the tree has consumed its budget.
+   *
+   * Reserving against the halt as well would stop a lead the moment it finished
+   * delegating — it would have no room left to *review* the work it just paid
+   * for, which is the one thing it exists to do.
+   */
+  childTokens(parentAssignmentId: string): {
+    readonly used: number;
+    readonly openReserved: number;
+    readonly closedUsed: number;
+  };
   /** A parent's children, newest first — §4.2's `scopeOf` for an overseer. */
   listChildren(parentAssignmentId: string): readonly AssignmentRow[];
   /** Sets `phase`, and `halt_reason` when one is given. */
@@ -175,6 +201,39 @@ export interface AssignmentRepositoryOptions {
   readonly clock: Clock;
 }
 
+/**
+ * §3.5's children, as both read models serve them.
+ *
+ * One projection rather than one per endpoint: `GET /api/assignments/:id` and
+ * the conversation view both render the same team, and two mappings of the same
+ * rows is how two endpoints come to disagree about what a child is. Oldest
+ * first — {@link AssignmentRepository.listChildren} answers newest-first because
+ * §4.2's `scopeOf` reads it that way, and a decomposition reads forwards.
+ */
+export function childViewsOf(
+  repository: AssignmentRepository,
+  parentAssignmentId: string,
+): readonly AssignmentChildView[] {
+  return [...repository.listChildren(parentAssignmentId)].reverse().map((child) => ({
+    id: child.id,
+    goal: child.goal,
+    pattern: child.pattern,
+    status: child.status,
+    phase: child.phase,
+    closeReason: child.closeReason,
+    haltReason: child.haltReason,
+    artifactPath: child.artifactPath,
+    write: child.write,
+    tokenBudget: child.tokenBudget,
+    tokensUsed: child.tokensUsed,
+    createdAt: child.createdAt,
+    closedAt: child.closedAt,
+    members: repository
+      .listMembers(child.id)
+      .map((member) => ({ agentId: member.agentId, role: member.role })),
+  }));
+}
+
 export function createAssignmentRepository(
   options: AssignmentRepositoryOptions,
 ): AssignmentRepository {
@@ -216,6 +275,15 @@ export function createAssignmentRepository(
   const childTotal = db.prepare<[string], { total: number | null }>(
     'SELECT SUM(token_budget) AS total FROM assignments ' +
       "WHERE parent_assignment_id = ? AND status = 'open'",
+  );
+  const childTokenTotals = db.prepare<
+    [string],
+    { used: number | null; open_reserved: number | null; closed_used: number | null }
+  >(
+    'SELECT SUM(tokens_used) AS used, ' +
+      "SUM(CASE WHEN status = 'open' THEN COALESCE(token_budget, 0) ELSE 0 END) AS open_reserved, " +
+      "SUM(CASE WHEN status = 'closed' THEN tokens_used ELSE 0 END) AS closed_used " +
+      'FROM assignments WHERE parent_assignment_id = ?',
   );
   const childIds = db.prepare<[string], { id: string }>(
     'SELECT id FROM assignments WHERE parent_assignment_id = ? ORDER BY created_at DESC, id DESC',
@@ -342,6 +410,17 @@ export function createAssignmentRepository(
     countOpenForAgent: (agentId) => countOpen.get(agentId)?.n ?? 0,
 
     openChildBudgetTotal: (parentAssignmentId) => childTotal.get(parentAssignmentId)?.total ?? 0,
+
+    childTokens(parentAssignmentId) {
+      // SQLite's SUM over no rows is NULL, which is the honest answer to "what
+      // have this assignment's children spent" only if it is read as zero.
+      const row = childTokenTotals.get(parentAssignmentId);
+      return {
+        used: row?.used ?? 0,
+        openReserved: row?.open_reserved ?? 0,
+        closedUsed: row?.closed_used ?? 0,
+      };
+    },
 
     listChildren: (parentAssignmentId) =>
       childIds.all(parentAssignmentId).map((row) => hydrate(row.id)),

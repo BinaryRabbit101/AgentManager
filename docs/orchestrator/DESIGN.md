@@ -182,6 +182,11 @@ Continue/Resume actions. **The solo pattern has no driver** — no turn loop, no
 round accounting. That is what makes solo genuinely trivial rather than a special case threaded
 through the engine.
 
+**One exception, and it is about the row rather than the pattern (§3.5):** a solo with a
+`parent_assignment_id` — one an overseer minted — *is* driven, as exactly one turn, because nothing
+else starts it, nothing else gives it a turn row to report against, and its parent is waiting for it
+to close. A user's solo never acquires a driver by this, because a user's solo has no parent.
+
 **2. Pattern (user-initiated).** `POST /api/assignments` with a pattern id, members, scope, goal,
 budget and round cap. Returns the assignment with `warnings[]` (scope overlap, projected cost,
 missing role addendum, an agent already at its concurrent-assignment cap). `autoStart: true` plans
@@ -208,13 +213,16 @@ cross-project id is a named refusal at create, not a silent drop. Passing no ids
 `assignment_members(assignment_id, agent_id, role, seat_order)`. Rules, all deterministic and all
 enforced at creation:
 
-- `role` ∈ the pinned five. A member's role **must** appear in the agent's `capabilities.roles`
-  (roster §3) — otherwise the agent has no addendum and never declared itself able to fill the seat.
-  Refusal names the agent and the role.
+- `role` ∈ the pinned five. Whether it appears in the agent's `capabilities.roles` (roster §3) is a
+  **warning**, not a refusal — owner decision, 2026-08-18 (§9-5): any agent may work in any pair or
+  group, and the only cost of a role the agent did not declare is that role's persona addendum. The
+  warning names the agent, the role, and what it declares instead.
 - One agent may hold at most one seat in an assignment. Two seats may not be the same agent — an
   adversarial pair where both sides are the same identity is theatre, not review.
-- The `lead_agent_id` seat owns the outcome. For pattern `overseer` the lead must be
-  `capabilities.overseer` (roster §11); for `pair` the lead is the drafting seat.
+- The `lead_agent_id` seat owns the outcome. For pattern `overseer` the lead is the member holding
+  the `overseer` role (falling back to the first seat), and `capabilities.overseer` is a ranking hint
+  rather than a requirement (§9-6); for `pair` the lead is the drafting seat. The lead **seat** is
+  what grants the coordinator tools (§3.5).
 - A member is refused if the agent is archived, or already holds seats in
   `orchestrator.assignment.maxConcurrentPerAgent` (default 2) other open assignments.
 - Seat order is fixed by the pattern definition, not by insertion order.
@@ -437,14 +445,13 @@ its budget"), not a downgrade.
 
 ### 3.4 v2 sketches — not built in v1
 
-**Overseer + workers.** An `overseer`-led assignment whose lead decomposes a goal into work items
-(projects §1.5) and calls `create_assignment` to mint one child assignment per item, each with a
-budget debited from the parent's remainder. The overseer's own turns are driven by `sequential` on a
-"review the children" cadence; children are independent assignments with their own drivers. Needs
-three things v1 does not have: parallel drivers (the engine's mutex is per assignment, which is
-already right, but the breaker and budget rollup become a tree), a completion-verification story
-(the overseer must read the child's artifact, not trust its report), and the write-capable approval
-gate (§8) actually exercised. Sketch only.
+**Overseer + workers** was the first sketch here. It is **built** — §3.5 is what shipped, and the
+three things it named as missing are answered there: the budget rollup became a tree (§7.5), the
+completion-verification story is "the review turn gets the report *and* the artifact path, and the
+prompt says a report is a claim" (§3.5), and the write-capable approval gate is exercised on every
+`write: true` child (§8.2-1). What is *not* built is the sketch's "parallel drivers" phrasing —
+children run concurrently because each is its own assignment with its own loop, and §3.5 records why
+the parent still reviews them in batches.
 
 **Review loop.** `implementer` → `reviewer` → implementer, terminating on the reviewer's `accept`
 — structurally the pair with a different seat vocabulary and a different prompt set, plus one real
@@ -452,6 +459,95 @@ addition: the reviewer runs against a **diff**, not a file, which needs a git-di
 projects would own. It is deliberately *not* shipped in v1 despite being nearly free, because it is
 the first pattern that edits code concurrently and therefore the first that needs worktrees, scope
 enforcement and the write gate all working together.
+
+### 3.5 `overseer` — a lead that decomposes, and children that do the work
+
+**Shape.** **One** seat: `lead`. The workers are not seats here — they hold seats in the *child*
+assignments the lead mints, each an independent assignment with its own driver, budget, turn table
+and outcome. Modelling the workers as seats of the parent would give one assignment two turn loops,
+and `assignment_turns_active` (§2.1) says an assignment has at most one turn in flight.
+
+```jsonc
+// pattern_config_json for `overseer` — nothing pattern-specific in v1
+{ }
+// requires: { roundCap: true, tokenBudget: true }   // no artifactPath: the artifacts are the children's
+```
+
+The lead's seat is `write: false`. It writes nothing: it reads its children's artifacts and decides.
+Reads are never scoped (§2.5), so a read-only lead can open every file its workers produced — which
+is exactly what the completion rule below asks of it.
+
+**Turn order and `plan()`, exactly.** Round 1 decomposes; every later round reviews a batch of
+finished children.
+
+| State | Plan |
+|---|---|
+| No turns | Round 1, `lead`, `startSession`. Prompt: the goal, plus "create one child assignment per work item with `create_assignment`; use `list_roster` to choose who fills each seat; then end your turn". |
+| Last turn `planned`/`running` | Wait. |
+| Last turn `blocked`, `unstructured` or `failed` | Exactly §3.3's rows, in one shared implementation: wait for the answer then re-plan the seat; retry an unreported turn once then halt `no_report`; retry a failed turn once then halt `turn_failures`. A retried review turn carries the same children the failed one was given. |
+| Last turn reported, **any child still `open`** | **Wait** (`children_running`). A `halted` or `awaiting_user` child is still `open`, and its own card is already in the inbox — a second card here would ask one person the same question twice. |
+| Last turn reported, children finished since the last **reported** turn began | Round + 1, `lead`, `continueFrom`. Prompt carries each finished child: id, goal, outcome, who worked it, tokens, **its last `report_status` payload and its artifact path**. |
+| Last turn reported, nothing running, nothing new to review, verdict `accept` with an empty blocking list | **Terminate** `converged`. |
+| …and the next round would exceed the round cap | **Terminate** `round_cap` (§3.3's three-option card, bounded by `patterns.overseer.maxRoundCap`). |
+| …anything else — `revise`, a blocking list, or no verdict at all | **Halt** `review_unresolved`. |
+
+**Which children a review round is for** is derived, never stored: the cutoff is the start of the
+last turn that *reported*, so a child that finished before the lead's last successful turn began was
+in that turn's prompt and has been judged. Same discipline as §8.1's counters — a restart recomputes
+it and cannot lose it — and a review turn that *failed* re-presents its children rather than skipping
+them.
+
+**Completion verification (v1).** The review turn receives each finished child's structured report
+**and** the artifact path from the child's scope, and the prompt says, in the same breath: *"A report
+is a claim; the artifact is the evidence. Open each file below and read it before you accept
+anything."* The engine cannot prove the lead read the file — nothing short of tool-call inspection
+could — so what it *does* enforce is the same structural rule the pair converges on: `accept` with an
+empty blocking list, or it is not accepted. Prose does not close an assignment.
+
+**`revise` with no follow-up is a halt, not a close.** The lead has `create_assignment` during its
+review turn, so the honest way to ask for a revision is to delegate it — and a new child puts the
+assignment straight back into `children_running`. A lead that reports `revise` and delegates nothing
+has produced work nobody is doing, so the engine halts `review_unresolved` and raises one card:
+*Continue anyway* gives it exactly one more review round to delegate the follow-up (bounded by the
+same cap, which neither the agent nor the card may extend), *Close* ends it. This is the smaller
+honest slice: the engine never invents a follow-up assignment the lead did not ask for, and the gap
+reaches the human instead of disappearing.
+
+**Sequential or concurrent children — what was chosen and why.** Children run **concurrently**, and
+that needed no new machinery: the engine's mutex is per assignment (§3.1), so each child drives its
+own loop, and runner's concurrency cap (2, D2) is what actually decides how many run at once. The
+*parent*, though, reviews in **batches** and plans nothing while any child is open. Reviewing each
+child the moment it closed would mean one lead turn per child — the most expensive way to spend an
+overseer's tokens — and would race the partial unique index, since two children closing in the same
+tick would both try to plan the parent's next turn. Batching costs latency on the first child and
+buys one review turn per wave.
+
+**The child of an overseer, when that child is `solo`.** §2.3 is right that the user's solo has no
+driver: the user starts it through `createSolo` and continues it by hand. A solo the *overseer* minted
+has neither — nothing starts it, nothing reports against it (`report_status` needs a turn row, §4.3),
+and nothing closes it, so the parent would wait on it forever. So a `solo` **with a
+`parent_assignment_id`** is driven as exactly one turn: launch, wait, close. The condition is a
+property of the row rather than of the pattern, so no user solo silently acquires a driver. A child
+never *halts*: two unreported or two failed turns **close it `failed`**, because a child that cannot
+report is a child the overseer cannot verify, and handing that outcome to the lead's review is the
+loop working — while a halt card on a child no human launched is a question with no useful answer.
+
+**Who gets the coordinator's tools: the seat.** Whoever holds the lead seat of an `overseer`
+assignment is mounted `list_roster` and `create_assignment` (§4.1), whether or not the agent declares
+`capabilities.overseer` — see the owner decision in §9-6. Roster compiles its allow rules from what
+the instance actually mounted (roster §11), so the grant and the mount cannot disagree. Workers are
+untouched: a member of a child assignment holds no lead seat and gets the four.
+
+**Closing a parent closes its open children** (`user_closed`, or `project_archived` when that is the
+parent's own reason). A child left running would spend a budget debited from a finished assignment.
+The reason is not propagated: a child stopped because its parent stopped did not converge, and
+writing `converged` on it would set §2.2's completion phase on work nobody accepted.
+
+**Cost shape, stated honestly.** The projection check of §7.2 measures the lead's *own* turns
+(`roundCap × 1 seat × turnEstimateTokens`) and therefore understates an overseer badly — the real
+spend is the children's budgets. That is deliberate rather than overlooked: each child's budget is
+checked against the parent's remainder at the moment it is created (§9-8), which is arithmetic
+instead of a planning constant, and §7.5 is what keeps the remainder honest across the tree.
 
 ---
 
@@ -475,7 +571,7 @@ the correct behaviour. This needs one row in roster §13's mapping table — rai
 **Which agents get which tools.** Roster compiles the allow rules; the server exposes the tools it is
 told to. The split:
 
-| Tool | Overseer (`capabilities.overseer`) | Worker |
+| Tool | Overseer (the lead seat of an `overseer` assignment, **or** `capabilities.overseer`) | Worker |
 |---|---|---|
 | `list_roster` | ✔ | ✖ |
 | `create_assignment` | ✔ | ✖ |
@@ -483,6 +579,13 @@ told to. The split:
 | `read_mailbox` | ✔ | ✔ (own assignment) |
 | `report_status` | ✔ | ✔ |
 | `request_user_decision` | ✔ | ✔ |
+
+Since the owner decision of 2026-08-18 (§9-6) the left column is a statement about the **seat**:
+whoever holds the lead seat of an `overseer` assignment gets all six, because decomposing a goal into
+child assignments is that seat's entire job. `capabilities.overseer` still gets them too — a
+coordinator launched into a solo assignment is how the M4 slice worked and still works — and roster
+compiles its allow rules from the names the mounted instance exposes rather than from the flag
+(roster §11), so a grant and a mount cannot disagree.
 
 Roster §11 currently grants a worker "at most `send_to_agent` and `read_mailbox`". A worker also needs
 `report_status` (it is the structured completion channel the pattern's convergence rule reads) and
@@ -829,6 +932,26 @@ chosen by a human at creation time, surfaced in the create dialog (each candidat
 and warned about when the seat tiers are inverted. Nothing downgrades a model at runtime. The
 declared per-seat override is deferred (§18, R2).
 
+### 7.5 The budget tree (§3.5)
+
+A parent and its children are one budget in two representations, and confusing them is how a budget
+lies. So the tree is bounded in **two different ways**, and neither is the other:
+
+| Question | Answer | Why that one |
+|---|---|---|
+| May the lead create this child? | `token_budget − tokens_used − Σ(open children's budgets) − Σ(closed children' spend)` ≥ the child's budget (§9-8) | **Reservation.** An open child holds its whole budget whether or not it has spent it, or the lead would promise the same tokens twice. A *closed* child's reservation is released, so what it actually spent takes its place — otherwise the remainder heals every time a child finishes and the same tokens are handed out again. |
+| Must this assignment stop planning? | `tokens_used + Σ(all children's spend) ≥ token_budget` (§8.1's `budget` breaker) | **Actual spend.** Counting reservations here would halt a lead the instant it finished delegating — leaving it no room to *review* the work it just paid for, which is the one thing it exists to do. |
+
+`assignments.tokens_used` is still runner's alone: runner meters each session onto its own
+assignment's row in the same transaction as the usage write (§7.1), and orchestrator only **adds the
+rows up**. It re-derives no arithmetic and writes no total. A child exhausting its own budget halts
+the **child** — its own `budget_halt` card, its own raise (§7.3) — and never the tree; the parent
+halts only when the tree has consumed the parent's own budget.
+
+For the UI, §16.8's contract is unchanged and gains one number: the projection carries `tokensUsed`
+(this row, runner's) and `childTokensUsed` (Σ the children), and a parent's budget bar is their sum
+over `tokenBudget`. Two numbers rather than one, so the page can also say where the spend went.
+
 ---
 
 ## 8. Guardrails
@@ -849,6 +972,12 @@ All are **deterministic counters over persisted state**, evaluated by the engine
 | `tool_flood` | Per-session MCP call caps exceeded (§4.2) | Refuse the call, halt `tool_flood`, and `RunnerService.stop` that session. |
 | `stale` | An `open` assignment with no turn transition for `assignment.maxAgeHours` (24) | Halt `stale`, card offering *Continue* / *Close*. Catches wedges nothing else notices. |
 
+One halt reason is not a breaker and is listed separately for that reason: **`review_unresolved`**
+(§3.5) fires when an overseer's lead finishes a review round without accepting the work and without
+delegating the follow-up it asked for. It is not a counter over turns — it is the pattern's own
+terminal state when there is nothing left to drive and nothing that says the work is done. Its card
+offers *Continue anyway* (one more review round) / *Close*, like the breaker halts.
+
 A halt sets `phase: halted` and `halt_reason`, plans no further turns, emits `assignment.halted`, and
 raises exactly one card. **Running sessions are not killed by a halt** except `tool_flood` — the work
 in flight is usually worth finishing, and killing it mid-tool-call is the harm runner §6.3 refuses to
@@ -866,10 +995,11 @@ carrying whatever recommendations exist. It never auto-approves; expiry is denia
 What requires one in v1 — a deliberately short list, because a gate that fires constantly gets
 clicked through:
 
-1. An overseer calling `create_assignment` with `write: true`. (v1's headline slice is a *user*-created
-   pair — it is `write: true`, but scoped to a docs path — and v1 ships no overseer pattern, so this
-   gate does not fire in the v1 slice at all. It is the thing that makes v2's code-editing patterns
-   safe to switch on.)
+1. An overseer calling `create_assignment` with `write: true`. **Now exercised** (§3.5): the child is
+   created at `phase: planned`, holds no session and no turn row until a human answers, starts on
+   *Approve*, and closes `gate_denied` on anything else — a denial, a free-text answer, or an expiry
+   (§6.5). Nothing the lead says widens this: the gate is decided by §9-10 in the validator, not by
+   the request.
 2. Any circuit-breaker halt that offers a "continue" option (§8.1).
 3. A budget raise beyond `budgets.raiseMaxFactor` × the original.
 4. Starting a **write-capable** assignment whose scope overlaps another **write-capable** open
@@ -896,16 +1026,45 @@ The complete v1 rule set, applied in order:
 1. The module is enabled and the project is `active` (not `provisioning`, not `archived`).
 2. The target project equals the caller's project. An overseer cannot reach across projects.
 3. `parent.parent_assignment_id IS NULL` — nesting depth ≤ 1. No overseer minting overseers.
-4. The pattern is one this build ships with a driver (`solo`, `pair`).
-5. Every member's role ∈ the pinned five **and** ∈ that agent's `capabilities.roles`.
-6. The lead seat is `capabilities.overseer` for pattern `overseer`; the drafting seat leads a pair.
+4. The pattern is one this build ships with a driver (`solo`, `pair`, `overseer`). A **machine**
+   caller is narrower still: `create_assignment`'s own schema accepts only `solo | pair`, so an
+   overseer cannot mint another overseer however this list grows.
+5. Every member's role ∈ the pinned five. Whether the agent *declares* that role is a **warning**,
+   not a refusal — see the owner decision below.
+6. The lead seat: for `overseer` the lead is the member holding the `overseer` role, falling back to
+   the first seat; for `pair` the drafting seat leads. A lead that does not declare
+   `capabilities.overseer` is a **warning**, not a refusal. An `overseer` assignment with more than
+   one seat *is* refused (`seat_not_in_pattern`, §3.5) — that is a fact about the state machine, not
+   a capability gate.
 7. No member is archived; no member exceeds `assignment.maxConcurrentPerAgent`; no agent fills two
    seats.
-8. `tokenBudget` is non-null and ≤ the parent's `token_budget − tokens_used − Σ(open children's
-   budgets)`.
+8. `tokenBudget` is non-null and ≤ the parent's remainder as §7.5 computes it (`token_budget −
+   tokens_used − Σ(open children's budgets) − Σ(closed children's spend)`). A **user-created
+   `overseer` assignment** must also carry a non-null budget and gets no config default: it is the
+   parent of machine-created work, so an uncapped one is an unbounded tree.
 9. The projection check of §7.2 passes.
 10. `write: true` ⇒ the assignment is created `phase: planned` behind an approval gate.
 11. Scope paths are repo-relative, contain no `..`, and resolve inside the project.
+
+> **Owner decision, 2026-08-18 — capabilities are ranking hints, never gates.**
+> *Any agent may work in any pair or group.* The owner explicitly rejected locking collaboration to
+> declared specialties, so rules 5 and 6 lost their capability half:
+>
+> - **§9-5** — an agent seated in a role it does not declare is **allowed**. The create call returns
+>   a `role_not_declared` **warning** saying what it costs: that role's persona addendum, and nothing
+>   else (roster's `roles/<role>.md` lookup is optional and appends nothing when the file is absent,
+>   so the session compiles either way).
+> - **§9-6** — a lead that does not declare `capabilities.overseer` **leads anyway**, with a
+>   `lead_not_overseer` warning. And the coordinator's two tools follow the **seat**: whoever holds
+>   the lead seat of an `overseer` assignment is mounted `list_roster` and `create_assignment`
+>   (§3.5, §4.1), because a lead that cannot create a child assignment is a lead in name only.
+>   `capabilities.overseer` survives as a ranking hint for *suggested* leads.
+> - **§16-9** — the create dialog's candidate list stops filtering (see §16-9).
+>
+> What did **not** change: `duplicate_member`, `member_archived`, `agent_not_found`,
+> `member_at_capacity` and every budget rule are real invariants rather than specialty gates, and
+> stay refusals. The split of this section is untouched — the model still proposes and the validator
+> still enforces; the validator simply enforces fewer things about *who* a human may seat.
 
 Why not rules-only: decomposing a fuzzy goal into scoped work is exactly the judgement an LLM is for,
 and a rules-only router would need the user to do that decomposition, which is the work the
@@ -955,7 +1114,7 @@ once `tailscale serve` gives the UI real TLS — it needs no third party at all)
 POST   /api/assignments                    create from a pattern → { id, warnings, gate? }
 POST   /api/assignments/solo               { projectId, agentId, prompt, role?, write?, workItemIds? } → { assignmentId, sessionId }
 GET    /api/assignments                    ?projectId=&status=&phase=&agentId=&limit=&before=
-GET    /api/assignments/:id                record + members + turns + budget + open questions
+GET    /api/assignments/:id                record + members + children + budget + open questions
 PATCH  /api/assignments/:id                tokenBudget, roundCap, goal   (never members or pattern)
 POST   /api/assignments/:id/advance        plan the next turn now (manual kick after a halt)
 POST   /api/assignments/:id/close          { reason }
@@ -979,6 +1138,25 @@ screen a phone loads cold and it must cost exactly one request. Each item carrie
                          "stance": "disk", "strength": "strong", "rationale": "…" } ],
   "disagreement": true, "contested": false, "answeredVia": null }
 ```
+
+**`GET /api/assignments/:id` carries the team** (§3.5, M10). Alongside `members`, the record has:
+
+```jsonc
+{ "tokensUsed": 5000,            // this row's own, metered by runner (§7.1)
+  "childTokensUsed": 40000,      // Σ the children's — the tree half of §16.8's budget (§7.5)
+  "children": [ { "id": "01J…", "goal": "Draft the migration plan", "pattern": "pair",
+                  "status": "closed", "phase": "converged", "closeReason": "converged",
+                  "haltReason": null, "artifactPath": "docs/billing/plan.md", "write": false,
+                  "tokenBudget": 100000, "tokensUsed": 40000,
+                  "createdAt": "…", "closedAt": "…",
+                  "members": [ { "agentId": "ada", "role": "architect" } ] } ] }
+```
+
+Oldest first — the order the lead created them in, which is the order the decomposition reads in.
+Empty for every assignment nobody decomposed, so the UI needs no second code path. The conversation
+view (§11.2) carries the identical `children` and `childTokensUsed`, because an overseer's
+conversation is only half the story without them: the lead's turns say what it decided and the
+children say what was done.
 
 That is the same card §16.1 defines — a `questions` row plus its recommendations — with the
 assignment, project and session ids denormalised onto it. Embedding the recommendations and the ids
@@ -1059,7 +1237,11 @@ foundation §2.3 already put it and is not duplicated here. Runner's `question.h
 ```jsonc
 "orchestrator": {
   "patterns": {
-    "pair": { "roundCap": 3, "maxRoundCap": 6, "stanceSolicitation": true, "requireArtifact": true }
+    "pair": { "roundCap": 3, "maxRoundCap": 6, "stanceSolicitation": true, "requireArtifact": true },
+    // §3.5: round 1 decomposes, every later round reviews. No `tokenBudget` default — §9-8
+    // requires the user to choose one, because a default cap on work that creates more work
+    // is a number nobody agreed to.
+    "overseer": { "roundCap": 3, "maxRoundCap": 6 }
   },
   "budgets": { "defaultPairTokens": 400000, "turnEstimateTokens": 25000,
                "overdraftTokens": 25000, "raiseMaxFactor": 2 },
@@ -1145,7 +1327,11 @@ File-based hives lose ordering and delivery state the moment two assignments run
 **`report_status` with a structured `verdict`, verified against an artifact, never against prose
 (§4.3, §3.3).** The engine converges only on `decision: 'accept'` with an empty blocking list; a turn
 with no report is `unstructured` and is a breaker input. Verification is reading the file the report
-points at — which is why the pair pattern requires an `artifactPath`.
+points at — which is why the pair pattern requires an `artifactPath`. **With §3.5 shipped this is
+literal for the overseer too:** the review turn is handed each finished child's report *and* its
+artifact path, and told that the report is the claim and the file is the evidence. The engine cannot
+prove the file was read; what it enforces is that nothing but a structured `accept` with an empty
+blocking list closes the assignment.
 
 **4. What exactly triggers a circuit breaker or an approval gate in v1?**
 **Eight breakers and five gates, all deterministic (§8).** Breakers: budget, round cap, two
@@ -1237,10 +1423,22 @@ consumers being lied to.
    never needs two code paths for "one agent" and "a collaboration".
 8. **Budgets display in tokens.** `tokens_used / token_budget` with rounds beside it. Dollar figures
    are runner's `cost_usd` estimate and carry runner's §15.2-13 labelling rules; a budget is never
-   shown as money.
+   shown as money. For an assignment with children the bar is `tokensUsed + childTokensUsed` over
+   `tokenBudget` (§7.5) — both numbers are on the projection, and the page may show the split.
 9. **The create dialog** is driven by `GET /api/patterns`: seats, allowed roles per seat, defaults,
    and `preferredTier`. It shows each candidate agent's model tier and surfaces the `warnings[]` from
-   the create call (scope overlap, projected cost, inverted tiers) before the user confirms.
+   the create call (scope overlap, projected cost, inverted tiers, `role_not_declared`,
+   `lead_not_overseer`) before the user confirms.
+   **Owner decision, 2026-08-18: the candidate list ranks, it never filters.** Every non-archived
+   agent is offered for every seat, ordered by `declaresRole` (agents declaring one of the seat's
+   roles first — the field the UI labels the suggestion with), then availability, then fewest open
+   assignments, then name. A dialog that hid the agents which did not declare the seat's role would
+   be the capability gate the decision removed, moved into the UI. The user's choice is
+   authoritative; a mismatch is a warning on the create call, never a refusal.
+11. **An overseer assignment renders its team from the assignment record.** `children` and
+   `childTokensUsed` are on `GET /api/assignments/:id` and on the conversation view (§11.1), oldest
+   first, and are empty for everything else. The lead is `leadAgentId`; the workers are the
+   children's `members`, never seats of the parent.
 10. **Live updates** come from the `assignment.*` events of §11.4; the persisted ones replay through
     `/api/events?since=`. `assignment.message` is not persisted — the conversation endpoint is its
     record.
@@ -1338,8 +1536,10 @@ exactly `open | closed` and that the richer lifecycle lives in orchestrator's ow
 
 | Deferred | Why / what unblocks it |
 |---|---|
-| **Overseer + workers** and **review loop** patterns (§3.4) | Both need parallel drivers, budget rollup across a tree, and the write gate actually exercised. The pair proves the machinery first. |
-| Parallel turns within one pattern | The engine's per-assignment mutex and the `assignment_turns_active` index assume sequential seats. Parallelism also collides with runner's cap of 2. |
+| ~~**Overseer + workers**~~ — **shipped**, §3.5 | The budget rollup is §7.5, the verification story is the review turn's artifact list, and the write gate fires on every `write: true` child. The **review loop** is still deferred: it needs the git-diff capture projects owns. |
+| Parallel turns within one *assignment* | The engine's per-assignment mutex and the `assignment_turns_active` index assume sequential seats. §3.5 sidesteps this rather than solving it: the overseer's children run concurrently because each is its own assignment with its own loop, and the parent still takes one turn at a time. |
+| A parent that reviews each child the moment it closes | §3.5 reviews in batches — one lead turn per wave rather than one per child, and no two children racing to plan the parent's next turn. Per-child review needs a turn model that admits more than one in flight. |
+| Nesting deeper than one level | §9-3. A child that could mint children makes the budget tree a graph and the approval gate a chain nobody reads. |
 | Declared per-seat model overrides | Needs R2 plus roster honouring an assignment-level model. v1 achieves the same outcome by *who fills the seat*, which is a human decision and cannot be a silent downgrade. |
 | Pushing mail into a live session via `steer` | Breaks round accounting and budget attribution (§5.1). Solve the accounting first. |
 | Agent-authored work items | Projects §6 already defers agent-created items; the overseer decomposes into child assignments instead. |

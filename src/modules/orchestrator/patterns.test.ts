@@ -13,15 +13,22 @@ import { describe, expect, it } from 'vitest';
 import {
   isConverged,
   cardSeatOrder,
+  childrenAwaitingReview,
+  leadOf,
   patternFor,
+  planChildSolo,
   seatsOf,
   CRITIC_SEAT,
   DRAFTER_SEAT,
+  LEAD_SEAT,
   NO_BREAKERS,
+  OVERSEER_PATTERN,
   PAIR_PATTERN,
   PATTERNS,
   SOLO_PATTERN,
+  SOLO_SEAT,
   type AssignmentState,
+  type ChildState,
   type PlanResult,
   type StateMember,
 } from './patterns.js';
@@ -110,6 +117,7 @@ function state(
     scope: { paths: ['docs/x/'], artifactPath: 'docs/x/DESIGN.md' },
     members: MEMBERS,
     turns,
+    children: [],
     roundsUsed: 0,
     tokensUsed: 0,
     budget: 400_000,
@@ -126,13 +134,14 @@ function plan(turns: readonly TurnRow[], overrides: Partial<AssignmentState> = {
 // ---------------------------------------------------------------------------
 
 describe('the pattern registry (M5-1)', () => {
-  it('ships exactly the two patterns with a driver, and names their drivers', () => {
+  it('ships exactly the three patterns it has drivers for, and names their drivers', () => {
     expect(PATTERNS.map((pattern) => [pattern.id, pattern.driver])).toEqual([
       ['solo', 'none'],
       ['pair', 'sequential'],
+      ['overseer', 'sequential'],
     ]);
+    // `review` is still v2 (§3.4): it needs a git-diff capture projects owns.
     expect(patternFor('review')).toBeUndefined();
-    expect(patternFor('overseer')).toBeUndefined();
   });
 
   it('declares what a pair requires: an artifact, a round cap and a budget', () => {
@@ -476,6 +485,330 @@ describe('a blocked seat waits for the user, then resumes (§3.3, §4.4)', () =>
         },
       }),
     ).toEqual({ wait: true, reason: 'awaiting_answer' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `overseer` — §3.5, M10
+// ---------------------------------------------------------------------------
+
+const IRIS: StateMember = { agentId: 'iris', role: 'overseer', seatOrder: 0 };
+
+function child(overrides: Partial<ChildState> & { id: string }): ChildState {
+  return {
+    goal: 'Draft the migration plan',
+    pattern: 'pair',
+    status: 'closed',
+    phase: 'converged',
+    closeReason: 'converged',
+    haltReason: null,
+    artifactPath: 'docs/billing/plan.md',
+    tokenBudget: 100_000,
+    tokensUsed: 40_000,
+    closedAt: '2026-08-16T11:00:00.000Z',
+    members: [{ agentId: 'ada', role: 'architect' }],
+    report: report({ headline: 'Plan written' }),
+    ...overrides,
+  };
+}
+
+function leadState(
+  turns: readonly TurnRow[],
+  overrides: Partial<AssignmentState> = {},
+): AssignmentState {
+  return state(turns, {
+    assignment: row({ pattern: 'overseer', leadAgentId: 'iris', artifactPath: null }),
+    members: [IRIS],
+    scope: null,
+    ...overrides,
+  });
+}
+
+function leadPlan(
+  turns: readonly TurnRow[],
+  overrides: Partial<AssignmentState> = {},
+): PlanResult {
+  return OVERSEER_PATTERN.plan(leadState(turns, overrides));
+}
+
+/** A lead turn. The overseer has one seat, so every turn is that seat's. */
+function leadTurn(overrides: Partial<TurnRow> & { status: TurnStatus }): TurnRow {
+  return turn({ seat: LEAD_SEAT, agentId: 'iris', ...overrides });
+}
+
+describe('the overseer pattern’s shape (M10-1, §3.5)', () => {
+  it('has one seat, only an overseer may fill it, and it writes nothing itself', () => {
+    expect(OVERSEER_PATTERN.seats).toEqual([
+      { key: LEAD_SEAT, roles: ['overseer'], required: true, preferredTier: 'max', write: false },
+    ]);
+    expect(cardSeatOrder('overseer')).toEqual([LEAD_SEAT]);
+  });
+
+  it('requires a budget and a round cap, and no artifact of its own', () => {
+    // The artifacts belong to the children; demanding one here would make the
+    // lead write a file to prove it coordinated (§3.5).
+    expect(OVERSEER_PATTERN.requires).toEqual({ roundCap: true, tokenBudget: true });
+  });
+
+  it('refuses an empty lead seat, and a second seat the pattern does not have', () => {
+    expect(OVERSEER_PATTERN.validate({}, [])).toEqual([
+      expect.objectContaining({ level: 'error', code: 'seat_unfilled' }),
+    ]);
+    expect(
+      OVERSEER_PATTERN.validate({}, [IRIS, { agentId: 'sam', role: 'skeptic', seatOrder: 1 }]).map(
+        (diagnostic) => diagnostic.code,
+      ),
+    ).toEqual(['seat_not_in_pattern']);
+    expect(OVERSEER_PATTERN.validate({}, [IRIS])).toEqual([]);
+  });
+
+  it('finds the lead by role, and falls back to the first seat (owner decision 2026-08-18)', () => {
+    expect(leadOf([{ agentId: 'ada', role: 'architect', seatOrder: 1 }, IRIS])).toEqual(IRIS);
+    // Roles are ranking hints, so an implementer the user seated as the lead
+    // *is* the lead — answering `undefined` here would be a capability gate
+    // wearing a state machine's clothes.
+    const seated: StateMember = { agentId: 'ada', role: 'architect', seatOrder: 0 };
+    expect(leadOf([seated])).toEqual(seated);
+    expect(leadOf([])).toBeUndefined();
+  });
+
+  it('warns, and does not error, when the lead seat is held by another role', () => {
+    const seated: StateMember = { agentId: 'ada', role: 'architect', seatOrder: 0 };
+    expect(OVERSEER_PATTERN.validate({}, [seated])).toEqual([
+      expect.objectContaining({ level: 'warn', code: 'lead_not_overseer' }),
+    ]);
+    expect(OVERSEER_PATTERN.plan(leadState([], { members: [seated] }))).toMatchObject({
+      seat: LEAD_SEAT,
+      agentId: 'ada',
+      prompt: { intent: 'decompose' },
+    });
+  });
+});
+
+describe('the overseer’s cadence (M10-2, §3.5)', () => {
+  it('opens with the lead decomposing the goal', () => {
+    expect(leadPlan([])).toEqual({
+      seat: LEAD_SEAT,
+      agentId: 'iris',
+      round: 1,
+      prompt: { intent: 'decompose', seat: LEAD_SEAT, round: 1 },
+      priority: 'normal',
+    });
+  });
+
+  it('waits while any child is still open — including a halted one', () => {
+    const decomposed = [leadTurn({ status: 'reported', report: report() })];
+    expect(
+      leadPlan(decomposed, { children: [child({ id: 'c1', status: 'open', phase: 'running' })] }),
+    ).toEqual({ wait: true, reason: 'children_running' });
+    // A halted child is still `open`, and its own card is already in the inbox.
+    expect(
+      leadPlan(decomposed, {
+        children: [child({ id: 'c1', status: 'open', phase: 'halted', haltReason: 'no_report' })],
+      }),
+    ).toEqual({ wait: true, reason: 'children_running' });
+  });
+
+  it('plans a review round carrying every child that finished, and continues the lead’s session', () => {
+    const decomposed = [
+      leadTurn({ status: 'reported', report: report(), sessionId: 'lead-1' }),
+    ];
+    const finished = child({ id: 'c1' });
+    const next = leadPlan(decomposed, { children: [finished] });
+    expect(next).toMatchObject({
+      seat: LEAD_SEAT,
+      agentId: 'iris',
+      round: 2,
+      prompt: { intent: 'review', children: [finished] },
+      continueFromSessionId: 'lead-1',
+    });
+  });
+
+  it('never re-presents a child an earlier review already looked at', () => {
+    const turns = [
+      leadTurn({ status: 'reported', report: report(), startedAt: '2026-08-16T10:00:00.000Z' }),
+      leadTurn({
+        round: 2,
+        status: 'reported',
+        report: report({ verdict: verdict({ decision: 'revise' }) }),
+        startedAt: '2026-08-16T12:00:00.000Z',
+      }),
+    ];
+    // Closed at 11:00 — before the round-2 review started, so it was in that
+    // prompt and has been judged.
+    const reviewed = child({ id: 'c1', closedAt: '2026-08-16T11:00:00.000Z' });
+    const fresh = child({ id: 'c2', closedAt: '2026-08-16T13:00:00.000Z' });
+
+    expect(childrenAwaitingReview(leadState(turns, { children: [reviewed] }))).toEqual([]);
+    expect(
+      childrenAwaitingReview(leadState(turns, { children: [reviewed, fresh] })),
+    ).toEqual([fresh]);
+    expect(leadPlan(turns, { children: [reviewed, fresh] })).toMatchObject({
+      round: 3,
+      prompt: { intent: 'review', children: [fresh] },
+    });
+  });
+
+  it('re-presents the same children when a review turn failed rather than skipping them', () => {
+    const fresh = child({ id: 'c1', closedAt: '2026-08-16T11:00:00.000Z' });
+    const turns = [
+      leadTurn({ status: 'reported', report: report(), startedAt: '2026-08-16T10:00:00.000Z' }),
+      leadTurn({ round: 2, status: 'failed', startedAt: '2026-08-16T12:00:00.000Z' }),
+    ];
+    expect(leadPlan(turns, { children: [fresh] })).toMatchObject({
+      round: 2,
+      prompt: { intent: 'retry', children: [fresh] },
+    });
+  });
+
+  it('converges only on an accept with an empty blocking list', () => {
+    const accepted = [
+      leadTurn({ status: 'reported', report: report(), startedAt: '2026-08-16T10:00:00.000Z' }),
+      leadTurn({
+        round: 2,
+        status: 'reported',
+        startedAt: '2026-08-16T12:00:00.000Z',
+        report: report({ verdict: verdict({ decision: 'accept' }) }),
+      }),
+    ];
+    const reviewed = child({ id: 'c1', closedAt: '2026-08-16T11:00:00.000Z' });
+    expect(leadPlan(accepted, { children: [reviewed] })).toMatchObject({
+      done: true,
+      closeReason: 'converged',
+    });
+  });
+
+  it('halts review_unresolved when the lead asks for revisions it did not delegate', () => {
+    const turns = [
+      leadTurn({ status: 'reported', report: report(), startedAt: '2026-08-16T10:00:00.000Z' }),
+      leadTurn({
+        round: 2,
+        status: 'reported',
+        startedAt: '2026-08-16T12:00:00.000Z',
+        report: report({
+          verdict: verdict({
+            decision: 'revise',
+            blocking: [{ severity: 'high', summary: 'c1 never wrote the rollback section' }],
+          }),
+        }),
+      }),
+    ];
+    const reviewed = child({ id: 'c1', closedAt: '2026-08-16T11:00:00.000Z' });
+    expect(leadPlan(turns, { children: [reviewed] })).toEqual({
+      halt: true,
+      haltReason: 'review_unresolved',
+    });
+    // "Continue anyway" is one more review round, bounded by the same cap.
+    expect(leadPlan(turns, { children: [reviewed], resumeRequested: true })).toMatchObject({
+      round: 3,
+      prompt: { intent: 'review', children: [] },
+    });
+    expect(
+      leadPlan(turns, { children: [reviewed], resumeRequested: true, roundCap: 2 }),
+    ).toEqual({ halt: true, haltReason: 'review_unresolved' });
+  });
+
+  it('halts review_unresolved when the lead reports no verdict at all', () => {
+    const turns = [leadTurn({ status: 'reported', report: report() })];
+    // Round 1 reported, nothing was delegated, and no structured decision was
+    // made: the engine has nothing to converge on and nothing to wait for.
+    expect(leadPlan(turns, { children: [] })).toEqual({
+      halt: true,
+      haltReason: 'review_unresolved',
+    });
+  });
+
+  it('terminates round_cap when another review round would exceed the cap', () => {
+    const turns = [
+      leadTurn({ status: 'reported', report: report(), startedAt: '2026-08-16T10:00:00.000Z' }),
+      leadTurn({
+        round: 2,
+        status: 'reported',
+        startedAt: '2026-08-16T11:00:00.000Z',
+        report: report({ verdict: verdict({ decision: 'revise' }) }),
+      }),
+    ];
+    const fresh = child({ id: 'c2', closedAt: '2026-08-16T12:00:00.000Z' });
+    expect(leadPlan(turns, { children: [fresh], roundCap: 2 })).toMatchObject({
+      done: true,
+      closeReason: 'round_cap',
+    });
+    expect(leadPlan(turns, { children: [fresh], roundCap: 3 })).toMatchObject({ round: 3 });
+  });
+
+  it('waits for an answer when the lead blocked, exactly as a pair seat does', () => {
+    const blocked = leadTurn({
+      status: 'blocked',
+      report: report({ state: 'blocked', headline: 'waiting' }),
+    });
+    expect(leadPlan([blocked])).toEqual({ wait: true, reason: 'awaiting_answer' });
+    expect(
+      leadPlan([blocked], {
+        openQuestion: {
+          id: 'q1',
+          seat: LEAD_SEAT,
+          prompt: 'Split it in two or three?',
+          answerText: 'two',
+          answeredAt: '2026-08-16T10:06:00.000Z',
+        },
+      }),
+    ).toMatchObject({ prompt: { intent: 'answered', answer: { text: 'two' } } });
+  });
+});
+
+describe('a child solo is driven as exactly one turn (M10-3, §3.5)', () => {
+  const worker: StateMember = { agentId: 'ada', role: 'implementer', seatOrder: 0 };
+
+  function childState(turns: readonly TurnRow[]): AssignmentState {
+    return state(turns, {
+      assignment: row({ pattern: 'solo', parentAssignmentId: 'parent-1' }),
+      members: [worker],
+    });
+  }
+
+  it('launches its one turn, then waits while it runs', () => {
+    expect(planChildSolo(childState([]))).toEqual({
+      seat: SOLO_SEAT,
+      agentId: 'ada',
+      round: 1,
+      prompt: { intent: 'work', seat: SOLO_SEAT, round: 1 },
+      priority: 'normal',
+    });
+    expect(planChildSolo(childState([turn({ seat: SOLO_SEAT, status: 'running' })]))).toEqual({
+      wait: true,
+      reason: 'turn_in_flight',
+    });
+  });
+
+  it('closes converged on a reported turn, so the parent has something to review', () => {
+    expect(
+      planChildSolo(
+        childState([
+          turn({ seat: SOLO_SEAT, status: 'reported', report: report({ headline: 'Done' }) }),
+        ]),
+      ),
+    ).toMatchObject({ done: true, closeReason: 'converged', summary: 'Done' });
+  });
+
+  it('closes failed rather than halting, because a halted child wedges its parent', () => {
+    const unstructured = [
+      turn({ seat: SOLO_SEAT, status: 'unstructured' }),
+      turn({ seat: SOLO_SEAT, status: 'unstructured' }),
+    ];
+    expect(planChildSolo(childState(unstructured))).toMatchObject({
+      done: true,
+      closeReason: 'failed',
+    });
+    // One unreported turn is still retried once, exactly as a pair seat is.
+    expect(planChildSolo(childState(unstructured.slice(0, 1)))).toMatchObject({
+      prompt: { intent: 'retry' },
+    });
+
+    const failed = [
+      turn({ seat: SOLO_SEAT, status: 'failed' }),
+      turn({ seat: SOLO_SEAT, status: 'failed' }),
+    ];
+    expect(planChildSolo(childState(failed))).toMatchObject({ done: true, closeReason: 'failed' });
   });
 });
 

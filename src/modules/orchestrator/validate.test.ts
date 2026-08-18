@@ -36,6 +36,10 @@ function agent(overrides: Partial<AgentFacts> & { id: string }): AgentFacts {
 
 const ADA = agent({ id: 'ada', roles: ['architect', 'implementer'] });
 const SAM = agent({ id: 'sam', roles: ['skeptic'] });
+/** §3.5's lead: the role **and** roster §11's capability, which are two facts. */
+const IRIS = agent({ id: 'iris', roles: ['overseer'], overseer: true });
+/** Declares the role and not the capability — the case §9-6 exists to catch. */
+const OLLIE = agent({ id: 'ollie', roles: ['overseer'], overseer: false });
 
 function input(
   request: Partial<CreateAssignmentRequest> = {},
@@ -54,6 +58,8 @@ function input(
     agents: new Map([
       ['ada', ADA],
       ['sam', SAM],
+      ['iris', IRIS],
+      ['ollie', OLLIE],
     ]),
     config: ORCHESTRATOR_CONFIG_DEFAULTS,
     ...overrides,
@@ -147,9 +153,20 @@ describe('§9 rule 3 — nesting depth', () => {
 });
 
 describe('§9 rule 4 — the pattern ships with a driver', () => {
-  it.each(['review', 'overseer'] as const)('refuses unsupported_pattern for %s', (pattern) => {
-    const result = validateCreateAssignment(input({ pattern }));
+  it('refuses unsupported_pattern for review, which is still v2 (§3.4)', () => {
+    const result = validateCreateAssignment(input({ pattern: 'review' }));
     expect(codes(result)).toContain('unsupported_pattern');
+  });
+
+  it('no longer refuses overseer, which shipped with its own driver (§3.5)', () => {
+    const result = validateCreateAssignment(
+      input({
+        pattern: 'overseer',
+        members: [{ agentId: 'iris', role: 'overseer' }],
+        tokenBudget: 500_000,
+      }),
+    );
+    expect(codes(result)).not.toContain('unsupported_pattern');
   });
 
   it.each(['solo', 'pair'] as const)('accepts %s', (pattern) => {
@@ -177,32 +194,59 @@ describe('§9 rule 5 — every member\u2019s role is one of the five and is decl
     expect(codes(result)).toContain('invalid_role');
   });
 
-  it('refuses role_not_declared and names what the agent does declare', () => {
+  /**
+   * **Owner decision, 2026-08-18.** `capabilities.roles` ranks candidates; it
+   * does not gate the seating. An agent seated in a role it never declared is
+   * allowed, and the create dialog is told what it costs.
+   */
+  it('warns rather than refusing when a member does not declare its seat’s role', () => {
     const result = validateCreateAssignment(
       input({ members: [{ agentId: 'sam', role: 'implementer' }] }),
     );
-    expect(codes(result)).toContain('role_not_declared');
-    const refusal = result.refusals.find((r) => r.code === 'role_not_declared');
-    expect(refusal?.message).toContain('skeptic');
-    expect(refusal?.details).toMatchObject({ agentId: 'sam', role: 'implementer' });
+    expect(codes(result)).not.toContain('role_not_declared');
+    expect(result.refusals).toEqual([]);
+    const warning = result.warnings.find((one) => one.code === 'role_not_declared');
+    expect(warning?.message).toContain('skeptic'); // what it does declare
+    expect(warning?.message).toContain('addendum'); // and what the mismatch costs
+  });
+
+  it('says nothing at all when the seated role is one the agent declares', () => {
+    const result = validateCreateAssignment(
+      input({ members: [{ agentId: 'sam', role: 'skeptic' }] }),
+    );
+    expect(result.warnings).toEqual([]);
   });
 });
 
-describe('§9 rule 6 — the lead seat', () => {
-  it('refuses lead_not_overseer when an overseer pattern is led by a non-overseer', () => {
+describe('§9 rule 6 — the lead seat (owner decision, 2026-08-18)', () => {
+  const warningCodes = (result: ReturnType<typeof validateCreateAssignment>): readonly string[] =>
+    result.warnings.map((warning) => warning.code);
+
+  it('warns rather than refusing when an overseer assignment is led by a non-overseer', () => {
+    // The capability ranks suggested leads; it does not decide who may hold the
+    // seat. The assignment runs, and the coordinator tools follow the seat.
     const result = validateCreateAssignment(
       input({
         pattern: 'overseer',
         members: [{ agentId: 'ada', role: 'implementer' }],
+        tokenBudget: 500_000,
       }),
     );
-    expect(codes(result)).toContain('lead_not_overseer');
+    expect(result.refusals).toEqual([]);
+    expect(warningCodes(result)).toContain('lead_not_overseer');
+    expect(result.warnings.find((one) => one.code === 'lead_not_overseer')?.message).toContain(
+      'holds the lead seat',
+    );
   });
 
-  it('does not raise it when the lead declares capabilities.overseer', () => {
+  it('says nothing when the lead declares capabilities.overseer', () => {
     const result = validateCreateAssignment(
       input(
-        { pattern: 'overseer', members: [{ agentId: 'ove', role: 'overseer' }] },
+        {
+          pattern: 'overseer',
+          members: [{ agentId: 'ove', role: 'overseer' }],
+          tokenBudget: 500_000,
+        },
         {
           agents: new Map([
             ['ove', agent({ id: 'ove', overseer: true, roles: ['overseer', 'implementer'] })],
@@ -210,7 +254,63 @@ describe('§9 rule 6 — the lead seat', () => {
         },
       ),
     );
-    expect(codes(result)).not.toContain('lead_not_overseer');
+    expect(warningCodes(result)).not.toContain('lead_not_overseer');
+  });
+
+  it('warns when the lead holds the role but not the capability', () => {
+    const result = validateCreateAssignment(
+      input({
+        pattern: 'overseer',
+        members: [{ agentId: 'ollie', role: 'overseer' }],
+        tokenBudget: 500_000,
+      }),
+    );
+    expect(result.refusals).toEqual([]);
+    expect(warningCodes(result)).toContain('lead_not_overseer');
+  });
+
+  it('checks the member holding the overseer role, not simply the first one listed', () => {
+    // Seat order is the pattern's (§2.4), so a request that lists a worker
+    // first must not be able to point the rule at the wrong agent.
+    const result = validateCreateAssignment(
+      input({
+        pattern: 'overseer',
+        members: [
+          { agentId: 'ada', role: 'implementer' },
+          { agentId: 'iris', role: 'overseer' },
+        ],
+        tokenBudget: 500_000,
+      }),
+    );
+    expect(warningCodes(result)).not.toContain('lead_not_overseer');
+    // …but the second seat is still refused: §3.5's pattern has exactly one,
+    // which is a fact about the state machine and not a capability gate.
+    expect(codes(result)).toContain('seat_not_in_pattern');
+  });
+
+  it('refuses seat_not_in_pattern for an overseer assignment with a second seat', () => {
+    const result = validateCreateAssignment(
+      input({
+        pattern: 'overseer',
+        members: [
+          { agentId: 'iris', role: 'overseer' },
+          { agentId: 'sam', role: 'skeptic' },
+        ],
+        tokenBudget: 500_000,
+      }),
+    );
+    expect(codes(result)).toContain('seat_not_in_pattern');
+  });
+
+  it('accepts a one-seat overseer assignment led by a capable agent', () => {
+    const result = validateCreateAssignment(
+      input({
+        pattern: 'overseer',
+        members: [{ agentId: 'iris', role: 'overseer' }],
+        tokenBudget: 500_000,
+      }),
+    );
+    expect(result.refusals).toEqual([]);
   });
 });
 
@@ -269,6 +369,56 @@ describe('§9 rule 8 — the budget', () => {
     expect(codes(validateCreateAssignment(input({ createdBy: 'user' })))).not.toContain(
       'budget_required',
     );
+  });
+
+  it('refuses budget_required for a user-created overseer assignment (§7.2, §3.5)', () => {
+    // The asymmetry of §7.2 has one exception: an overseer assignment is the
+    // *parent* of machine-created work, so an uncapped one is an unbounded tree
+    // however carefully the human is watching this one row.
+    const uncapped = validateCreateAssignment(
+      input({ pattern: 'overseer', members: [{ agentId: 'iris', role: 'overseer' }] }),
+    );
+    expect(codes(uncapped)).toContain('budget_required');
+
+    const capped = validateCreateAssignment(
+      input({
+        pattern: 'overseer',
+        members: [{ agentId: 'iris', role: 'overseer' }],
+        tokenBudget: 500_000,
+      }),
+    );
+    expect(codes(capped)).not.toContain('budget_required');
+  });
+
+  it('counts what a parent’s closed children spent, so the remainder never heals (§7.5)', () => {
+    const parent = {
+      id: 'parent',
+      projectId: 'proj-1',
+      status: 'open',
+      parentAssignmentId: null,
+      tokenBudget: 100_000,
+      tokensUsed: 10_000,
+      // One child finished, having spent 60 000 of its budget; nothing is open.
+      openChildBudgets: 0,
+      closedChildTokensUsed: 60_000,
+    };
+    // Remaining is 30 000 — not the 90 000 the parent's own `tokens_used` alone
+    // would suggest, because runner meters a child onto the child's row (§7.1).
+    const over = validateCreateAssignment(
+      input(
+        { createdBy: 'overseer:iris', tokenBudget: 30_001, parentAssignmentId: 'parent' },
+        { parent },
+      ),
+    );
+    expect(codes(over)).toContain('budget_exceeds_parent');
+
+    const fits = validateCreateAssignment(
+      input(
+        { createdBy: 'overseer:iris', tokenBudget: 30_000, parentAssignmentId: 'parent' },
+        { parent },
+      ),
+    );
+    expect(codes(fits)).not.toContain('budget_exceeds_parent');
   });
 
   it('refuses budget_exceeds_parent using budget − used − open children', () => {
@@ -452,13 +602,11 @@ describe('refusals are collected, not thrown one at a time', () => {
       ),
     );
     expect([...codes(result)].sort()).toEqual(
-      [
-        'project_not_active',
-        'role_not_declared',
-        'scope_path_invalid',
-        'unsupported_pattern',
-      ].sort(),
+      ['project_not_active', 'scope_path_invalid', 'unsupported_pattern'].sort(),
     );
+    // …and the capability mismatch rides alongside as a warning rather than
+    // being lost (owner decision, 2026-08-18).
+    expect(result.warnings.map((warning) => warning.code)).toContain('role_not_declared');
   });
 });
 

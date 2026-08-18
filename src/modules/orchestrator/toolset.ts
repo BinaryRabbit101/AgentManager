@@ -18,11 +18,17 @@
  * | `request_user_decision` | ✔ | ✔ |
  *
  * The split is enforced **twice, on purpose**: roster compiles allow rules for
- * exactly the names a capability earns (roster §11), and the server built for a
+ * exactly the names this instance mounts (roster §11), and the server built for a
  * worker launch does not construct the two overseer tools at all. Neither is
  * redundant — a rule is a statement about a tool that exists, and a tool absent
  * from an instance cannot be called even by a launch whose rules were composed
  * wrongly.
+ *
+ * **Who is an overseer is a question about the seat** (owner decision,
+ * 2026-08-18; §3.5, §9-6). The two coordinator tools go to a launch that
+ * declares `capabilities.overseer` **or** holds the lead seat of an `overseer`
+ * assignment, because that seat's job is to create the children. Capabilities
+ * rank candidates in the create dialog; they do not decide who may hold a seat.
  *
  * ## The caps are the breaker's teeth, not its bookkeeping
  *
@@ -287,11 +293,39 @@ const CREATE_ASSIGNMENT_SHAPE = {
 export function createToolsetFactory(options: ToolsetOptions): ToolsetFactory {
   const { assignments, turns, mailbox, bus, config } = options;
 
+  /**
+   * §3.5, and the **owner decision of 2026-08-18**: the coordinator's two tools
+   * are granted by the **seat**, not by a roster flag.
+   *
+   * Whoever holds the lead seat of an `overseer` assignment needs
+   * `list_roster` and `create_assignment` — that seat's entire job is to
+   * decompose a goal into child assignments, and a lead that cannot create one
+   * is a lead in name only. `capabilities.overseer` remains what it now is
+   * everywhere: a ranking hint for *suggesting* leads, never a gate on the
+   * user's seating choice.
+   *
+   * Workers are untouched by this: a member of a child assignment, or a seat in
+   * a pair, holds no lead seat of an overseer assignment and gets the four
+   * (§4.1's table). Roster's compiled allow rules follow the mount, so the
+   * grant and the mount cannot disagree.
+   */
+  function leadsAnOverseerAssignment(launch: LaunchIdentity): boolean {
+    const row = assignments.get(launch.assignmentId);
+    if (row === undefined || row.pattern !== 'overseer') return false;
+    if (row.leadAgentId !== null) return row.leadAgentId === launch.agentId;
+    // No lead recorded (a row from before the column was written): the seat
+    // order the pattern fixed is the fallback, never "any member".
+    const first = [...assignments.listMembers(launch.assignmentId)].sort(
+      (a, b) => a.seatOrder - b.seatOrder,
+    )[0];
+    return first?.agentId === launch.agentId;
+  }
+
   return function getSessionToolset(launch: LaunchIdentity): SessionToolset {
     // Per-launch counters — §4.2's caps. In-process on purpose: they bound one
     // *session*, and a session does not outlive the process that runs it.
     const used = { sends: 0, decisions: 0, creates: 0 };
-    const overseer = launch.isOverseer === true;
+    const overseer = launch.isOverseer === true || leadsAnOverseerAssignment(launch);
 
     function ok(payload: unknown): ToolResult {
       return { content: [{ type: 'text', text: JSON.stringify(payload) }] };

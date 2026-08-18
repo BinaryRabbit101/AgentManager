@@ -115,6 +115,10 @@
         "maxRoundCap": 6,
         "stanceSolicitation": true,
         "requireArtifact": true
+      },
+      "overseer": {
+        "roundCap": 3,
+        "maxRoundCap": 6
       }
     },
     "budgets": {

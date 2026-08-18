@@ -25,7 +25,7 @@
  * truncating mid-sentence at 16 KB would cut the *required close* off the end,
  * which is the one line the convergence rule depends on.
  */
-import type { PromptSpec } from './patterns.js';
+import type { ChildState, PromptSpec } from './patterns.js';
 import type { InlinedMail } from './messages.js';
 import type { AssignmentScope } from './types.js';
 
@@ -33,6 +33,9 @@ import type { AssignmentScope } from './types.js';
 export const REPORT_STATUS_TOOL = 'mcp__agentmanager__report_status';
 export const READ_MAILBOX_TOOL = 'mcp__agentmanager__read_mailbox';
 export const REQUEST_DECISION_TOOL = 'mcp__agentmanager__request_user_decision';
+/** The two an overseer launch also mounts (§4.1's table, §3.5's decompose turn). */
+export const CREATE_ASSIGNMENT_TOOL = 'mcp__agentmanager__create_assignment';
+export const LIST_ROSTER_TOOL = 'mcp__agentmanager__list_roster';
 
 export interface PromptBudgets {
   readonly maxBytes: number;
@@ -134,16 +137,31 @@ function build(
 
   // --- 3. The handoff -----------------------------------------------------
   const handoff = input.spec.handoff;
-  if (handoff !== undefined) {
-    const lines = [
-      `The ${handoff.seat} seat (${handoff.agentId}) reported: ${handoff.headline ?? '(no structured headline — it did not call report_status.)'}`,
-    ];
-    if (handoff.excerpt !== null && handoff.excerpt.trim() !== '') {
+  const children = input.spec.children ?? [];
+  if (handoff !== undefined || children.length > 0) {
+    const lines: string[] = [];
+    if (children.length > 0) {
+      // §3.5's completion verification, in the one place it can be enforced: the
+      // lead is given the child's *claim* and the path the claim is about, and
+      // is told in the same breath that the claim is not the evidence.
       lines.push(
-        degrade.excerpt
-          ? `Its last message, excerpted:\n${indent(sliceUtf8(handoff.excerpt, input.budgets.excerptBytes))}`
-          : '(Its message was too long to inline; open the session transcript for the full text.)',
+        `${String(children.length)} child assignment(s) you created have finished. A report is ` +
+          'a claim; the artifact is the evidence. Open each file below and read it before you ' +
+          'accept anything.',
       );
+      for (const child of children) lines.push(...childLines(child));
+    }
+    if (handoff !== undefined) {
+      lines.push(
+        `The ${handoff.seat} seat (${handoff.agentId}) reported: ${handoff.headline ?? '(no structured headline — it did not call report_status.)'}`,
+      );
+      if (handoff.excerpt !== null && handoff.excerpt.trim() !== '') {
+        lines.push(
+          degrade.excerpt
+            ? `Its last message, excerpted:\n${indent(sliceUtf8(handoff.excerpt, input.budgets.excerptBytes))}`
+            : '(Its message was too long to inline; open the session transcript for the full text.)',
+        );
+      }
     }
     const blocking = input.spec.blocking ?? [];
     if (blocking.length > 0) {
@@ -210,11 +228,20 @@ function build(
 }
 
 function seatSentence(input: ComposePromptInput): string {
-  if (input.patternId !== 'pair') {
-    return `You are the ${input.role} on this assignment.`;
-  }
   const of = input.roundCap === null ? '' : ` of ${String(input.roundCap)}`;
-  return `You are the ${input.spec.seat} (role: ${input.role}) in an adversarial pair. Round ${String(input.spec.round)}${of}.`;
+  if (input.patternId === 'pair') {
+    return `You are the ${input.spec.seat} (role: ${input.role}) in an adversarial pair. Round ${String(input.spec.round)}${of}.`;
+  }
+  if (input.patternId === 'overseer') {
+    // §3.5: the lead is told it is a lead, and told what the other seats are —
+    // there are none here, and every worker sits in a child assignment.
+    return (
+      `You are the lead (role: ${input.role}) of an overseer assignment: you decompose this goal ` +
+      'into child assignments and verify what they produce. You do not do the work yourself. ' +
+      `Round ${String(input.spec.round)}${of}.`
+    );
+  }
+  return `You are the ${input.role} on this assignment.`;
 }
 
 function intentSentence(spec: PromptSpec): string {
@@ -229,7 +256,45 @@ function intentSentence(spec: PromptSpec): string {
       return `Your previous turn ended without a structured report. Do the work, then you MUST call ${REPORT_STATUS_TOOL} before you finish.`;
     case 'answered':
       return 'You stopped waiting for a user decision. It has arrived — continue from it.';
+    case 'decompose':
+      return (
+        'Break this goal into independent work items and create one child assignment per item ' +
+        `with ${CREATE_ASSIGNMENT_TOOL}. Use ${LIST_ROSTER_TOOL} to see who can fill each seat ` +
+        'and how loaded they already are. Then end your turn: the children run on their own and ' +
+        'you are given another turn when they finish.'
+      );
+    case 'review':
+      return (
+        'Verify the finished child assignments below, then decide. Delegate any follow-up work ' +
+        `with ${CREATE_ASSIGNMENT_TOOL} in this same turn — a revision you do not delegate is ` +
+        'work nobody is doing.'
+      );
+    case 'work':
+      return 'Do the work this assignment describes, inside its scope.';
   }
+}
+
+/** One finished child, as §3.5's review turn is given it. */
+function childLines(child: ChildState): readonly string[] {
+  const outcome =
+    child.closeReason === null ? `${child.phase} (not closed)` : child.closeReason;
+  const who = child.members.map((member) => `${member.agentId} as ${member.role}`).join(', ');
+  const lines = [
+    `- ${child.id} [${child.pattern}] — ${child.goal ?? '(no goal recorded)'}`,
+    `    outcome: ${outcome}; worked by ${who === '' ? '(nobody)' : who}; ` +
+      `${String(child.tokensUsed)} of ${child.tokenBudget === null ? 'no' : String(child.tokenBudget)} tokens used`,
+    `    artifact: ${child.artifactPath ?? '(none declared — judge it on what it reported and on the files it names)'}`,
+  ];
+  if (child.report !== null) {
+    lines.push(`    it reported: ${child.report.state} — ${child.report.headline}`);
+    const artifacts = child.report.artifacts.map((artifact) => artifact.path);
+    if (artifacts.length > 0) lines.push(`    files it claims to have touched: ${artifacts.join(', ')}`);
+    const blocking = child.report.verdict?.blocking ?? [];
+    for (const issue of blocking) lines.push(`    it flagged: [${issue.severity}] ${issue.summary}`);
+  } else {
+    lines.push('    it reported nothing structured, so there is no claim to check — only the file.');
+  }
+  return lines;
 }
 
 function terminationLines(input: ComposePromptInput): readonly string[] {
@@ -255,10 +320,31 @@ function terminationLines(input: ComposePromptInput): readonly string[] {
         'empty blocking list. An "accept, but these are blocking" report counts as "revise".',
     );
   }
+  if (input.patternId === 'overseer') {
+    lines.push(
+      'Convergence: this assignment finishes when you report decision "accept" with an empty ' +
+        'blocking list and no child assignment of yours is still open. An "accept, but these are ' +
+        'blocking" report counts as "revise".',
+      // §7.2/§9-8, stated to the model because it is the rule its next
+      // `create_assignment` call is refused by — and a refusal it understands is
+      // a refusal it does not retry (§4.2).
+      'Budget: every child budget you set is taken from what is left of this assignment’s own. ' +
+        'A child with no budget, or one larger than the remainder, is refused. A child with ' +
+        'write: true is created but starts nothing until a human approves it — do not wait on it.',
+    );
+  }
   return lines;
 }
 
 function requiredCloseLine(input: ComposePromptInput): string {
+  if (input.patternId === 'overseer') {
+    return (
+      `Before you finish, call ${REPORT_STATUS_TOOL}. On a review turn the verdict is what the ` +
+      'engine reads: decision "accept" only for work you have actually read, and one blocking ' +
+      'issue per child you are not accepting, naming the child. The engine reads the structure, ' +
+      'not the prose.'
+    );
+  }
   const verdictSeat = input.patternId === 'pair' && input.spec.seat === 'critic';
   return verdictSeat
     ? `Before you finish, call ${REPORT_STATUS_TOOL} with your verdict — decision "accept" or ` +

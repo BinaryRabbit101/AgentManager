@@ -27,8 +27,15 @@ export function isAssignmentRole(value: unknown): value is AssignmentRole {
   return typeof value === 'string' && (ASSIGNMENT_ROLES as readonly string[]).includes(value);
 }
 
-/** The patterns this build ships with a driver (§9-4). `review`/`overseer` are v2. */
-export const SUPPORTED_PATTERNS: readonly AssignmentPattern[] = ['solo', 'pair'];
+/**
+ * The patterns this build ships with a driver (§9-4). `review` is still v2.
+ *
+ * `overseer` joined them in M10 (§3.5). What did **not** change is what a
+ * machine may create: `create_assignment`'s own schema still accepts only
+ * `solo | pair`, so an overseer cannot mint another overseer however this list
+ * grows (§9-3 refuses the nesting as well, which is the second lock).
+ */
+export const SUPPORTED_PATTERNS: readonly AssignmentPattern[] = ['solo', 'pair', 'overseer'];
 
 export function isAssignmentPattern(value: unknown): value is AssignmentPattern {
   return value === 'solo' || value === 'pair' || value === 'review' || value === 'overseer';
@@ -238,6 +245,45 @@ export interface AssignmentView {
     readonly role: AssignmentRole;
     readonly seatOrder: number;
     readonly joinedAt: string | null;
+  }[];
+  /**
+   * §3.5: the child assignments this one is the parent of, oldest first.
+   *
+   * Empty for everything a lead has not decomposed. It is on the *assignment*
+   * view rather than behind a second endpoint because the team is what an
+   * overseer assignment **is** — a page that had to fetch the children
+   * separately would render a lead with no workers for one paint.
+   */
+  readonly children: readonly AssignmentChildView[];
+  /**
+   * Σ of the children's `tokens_used` — the tree half of §16.8's budget (§7.5).
+   *
+   * `tokensUsed` stays exactly what runner metered onto *this* row, because
+   * runner is its only writer (§7.1) and a second writer would race it. The
+   * rollup a parent's budget bar shows is `tokensUsed + childTokensUsed`, and
+   * it is served as two numbers so the UI can also show where the spend went.
+   */
+  readonly childTokensUsed: number;
+}
+
+/** One child on {@link AssignmentView} — enough to render the team, no more. */
+export interface AssignmentChildView {
+  readonly id: string;
+  readonly goal: string | null;
+  readonly pattern: AssignmentPattern;
+  readonly status: AssignmentStatus;
+  readonly phase: AssignmentPhase;
+  readonly closeReason: string | null;
+  readonly haltReason: string | null;
+  readonly artifactPath: string | null;
+  readonly write: boolean;
+  readonly tokenBudget: number | null;
+  readonly tokensUsed: number;
+  readonly createdAt: string;
+  readonly closedAt: string | null;
+  readonly members: readonly {
+    readonly agentId: string;
+    readonly role: AssignmentRole;
   }[];
 }
 

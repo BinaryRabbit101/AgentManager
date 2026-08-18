@@ -40,6 +40,17 @@ export const orchestratorConfigSchema = z.strictObject({
       /** A critique of a chat message is a conversation; of a file, a review (§3.3). */
       requireArtifact: z.boolean(),
     }),
+    /** §3.5's lead-and-children pattern. */
+    overseer: z.strictObject({
+      /**
+       * Round 1 decomposes; every later round reviews what finished (§3.5). So
+       * the default of 3 is "decompose, review, review once more" — and the cap
+       * is what stops a lead that keeps re-delegating from running forever.
+       */
+      roundCap: positiveInt,
+      /** The ceiling the round-cap card may raise it to, as the pair has (§3.3). */
+      maxRoundCap: positiveInt,
+    }),
   }),
   budgets: z.strictObject({
     /** §7.2's default for a user-created pair. `solo` defaults to `null` — uncapped. */
@@ -117,6 +128,7 @@ export type OrchestratorConfig = z.infer<typeof orchestratorConfigSchema>;
 export const ORCHESTRATOR_CONFIG_DEFAULTS: OrchestratorConfig = {
   patterns: {
     pair: { roundCap: 3, maxRoundCap: 6, stanceSolicitation: true, requireArtifact: true },
+    overseer: { roundCap: 3, maxRoundCap: 6 },
   },
   budgets: {
     defaultPairTokens: 400_000,

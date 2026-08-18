@@ -48,7 +48,7 @@ import {
   type RunnerPort,
 } from './ports.js';
 import type { QuestionInbox } from './questions.js';
-import type { AssignmentRepository, AssignmentRow } from './repository.js';
+import { childViewsOf, type AssignmentRepository, type AssignmentRow } from './repository.js';
 import { emitScopeRules } from './scopeRules.js';
 import type { SessionToolset, ToolsetFactory } from './toolset.js';
 import {
@@ -174,6 +174,10 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
     if (parentAssignmentId === undefined) return undefined;
     const parent = repository.get(parentAssignmentId);
     if (parent === undefined) throw new AssignmentNotFoundError(parentAssignmentId);
+    // §7.5: both halves of the tree, from one read — what the open children
+    // still hold in reserve, and what the closed ones already spent. The second
+    // is what stops the remainder healing every time a child finishes.
+    const children = repository.childTokens(parent.id);
     return {
       id: parent.id,
       projectId: parent.projectId,
@@ -181,7 +185,8 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       parentAssignmentId: parent.parentAssignmentId,
       tokenBudget: parent.tokenBudget,
       tokensUsed: parent.tokensUsed,
-      openChildBudgets: repository.openChildBudgetTotal(parent.id),
+      openChildBudgets: children.openReserved,
+      closedChildTokensUsed: children.closedUsed,
     };
   }
 
@@ -562,6 +567,19 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
 
     unlinkWorkItems(id);
 
+    // §3.5: a parent that closed has nobody left to review its children, and a
+    // child left running would keep spending a budget that was debited from a
+    // finished assignment. The reason is **not** propagated: a child that was
+    // stopped because its parent stopped did not converge, and writing
+    // `converged` on it would set §2.2's completion phase on work nobody
+    // accepted. `project_archived` is the one exception — that reason is a fact
+    // about the project and is equally true of every assignment on it.
+    // Nesting is capped at one level (§9-3), so this recurses no further.
+    for (const child of repository.listChildren(id)) {
+      if (child.status !== 'open') continue;
+      await closeAssignment(child.id, reason === 'project_archived' ? reason : 'user_closed');
+    }
+
     // Runner **requires** this event to release the workspace lease
     // (runner §15.1-5), so it is emitted last, after every state change the
     // listeners might read is already committed.
@@ -630,6 +648,11 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
         seatOrder: member.seatOrder,
         joinedAt: member.joinedAt,
       })),
+      // §3.5: the team, on the assignment that owns it. Oldest first, because
+      // that is the order the lead created them in and therefore the order a
+      // reader can follow the decomposition in.
+      children: childViewsOf(repository, row.id),
+      childTokensUsed: repository.childTokens(row.id).used,
     };
   }
 
@@ -688,14 +711,24 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
     }
   }
 
-  /** §7.2's per-path budget defaults. `solo` is uncapped; `pair` is not. */
+  /**
+   * §7.2's per-path budget defaults. `solo` is uncapped; `pair` is not.
+   *
+   * `overseer` gets **no** default either: §9's `budget_required` has already
+   * refused a null one, because a default cap on work that creates more work is
+   * a number nobody agreed to.
+   */
   function defaultBudget(request: CreateAssignmentRequest): number | null {
     if (isMachineCreated(request.createdBy)) return null; // §9-8 already refused a null
     return request.pattern === 'pair' ? config.budgets.defaultPairTokens : null;
   }
 
   function defaultRoundCap(request: CreateAssignmentRequest): number | null {
-    return request.pattern === 'pair' ? config.patterns.pair.roundCap : null;
+    if (request.pattern === 'pair') return config.patterns.pair.roundCap;
+    // §3.5: round 1 decomposes and every later round reviews, so an overseer
+    // without a cap is a lead that can keep re-delegating forever.
+    if (request.pattern === 'overseer') return config.patterns.overseer.roundCap;
+    return null;
   }
 
   return {

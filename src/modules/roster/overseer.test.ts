@@ -65,7 +65,11 @@ const SOLO: AssignmentContext = { id: 'assignment-1', write: true };
 function realToolsetProvider(): { provider: SessionToolsetProvider; calls: number } {
   const clock: Clock = () => new Date('2026-08-17T00:00:00.000Z');
   const factory = createToolsetFactory({
-    assignments: {},
+    // The two reads the factory makes before it builds anything: orchestrator
+    // grants the coordinator tools to whoever holds the **lead seat** of an
+    // overseer assignment (owner decision 2026-08-18, orchestrator §9-6), so it
+    // asks the repository who that is. There is no such assignment here.
+    assignments: { get: () => undefined, listMembers: () => [] },
     turns: {},
     mailbox: {},
     bus: { emit: () => undefined },
