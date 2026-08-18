@@ -14,7 +14,6 @@ import { AgentDetail } from './agents/AgentDetail';
 import { AgentWizard } from './agents/AgentWizard';
 import { AssignmentPage } from './assignments/AssignmentPage';
 import { AssignmentsPage } from './assignments/AssignmentsPage';
-import { PatternCreateHost } from './assignments/PatternCreateDialog';
 import { Board } from './board/Board';
 import { AppFrame } from './app/AppFrame';
 import { DebugPanel } from './app/DebugPanel';
@@ -27,12 +26,12 @@ import { useEventStream } from './app/useEventStream';
 import { useOpenQuestions } from './app/useOpenQuestions';
 import { Home } from './home/Home';
 import { Sprite } from './icons/Sprite';
-import { LaunchFlowHost } from './launch/LaunchFlow';
 import { ProjectPage } from './projects/ProjectPage';
 import { ProjectsPage } from './projects/ProjectsPage';
 import { QuestionInbox } from './questions/QuestionInbox';
 import { SessionsPage } from './session/SessionsPage';
 import { SessionView } from './session/SessionView';
+import { StartWorkHost } from './startwork/StartWork';
 
 export function App(): ReactElement {
   const { client, events, avatars } = useServices();
@@ -88,15 +87,16 @@ export function App(): ReactElement {
         </Routes>
         <DebugPanel />
         {/*
-          Mounted above every route, because the launch flow is reached from
-          three different screens and must survive the navigation that opening it
-          from a project card would otherwise cause (§5.4, §6).
+          §6's one flow, mounted above every route — it is reached from home,
+          the board, a card menu, a project card, a project page, a work-item
+          row and every drop, and must survive the navigation that opening it
+          from any of them would otherwise cause (§5.4, §6).
+
+          One host, because there is one flow: the separate launch and pair
+          dialogs that used to sit here are what made "start some work" a
+          question about which dialog to open.
         */}
-        <LaunchFlowHost />
-        {/* §10.4's dialog, mounted beside the launch flow and for the same
-            reason: it is opened from the board and from a card menu, and must
-            survive the navigation either would otherwise cause. */}
-        <PatternCreateHost />
+        <StartWorkHost />
         <Toasts />
       </AppFrame>
     </>

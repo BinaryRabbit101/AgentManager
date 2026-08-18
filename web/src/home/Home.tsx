@@ -100,7 +100,7 @@ function SessionRow({
 export function Home(): ReactElement {
   const { client } = useServices();
   const queryClient = useQueryClient();
-  const openLaunch = useAppStore((store) => store.openLaunch);
+  const openStartWork = useAppStore((store) => store.openStartWork);
 
   /*
     Seven queries, one per thing on screen, and every one of them a key another
@@ -225,14 +225,16 @@ export function Home(): ReactElement {
           {/*
             §5.4's rule reaches home too: starting work is one flow, reached
             from several screens. This is another way in, not another flow —
-            with neither seat filled, because home knows neither.
+            and the only one that names neither an agent nor a project, because
+            home knows neither. It opens §6's Start work with everything still
+            to pick, which is exactly the screen this button promises.
           */}
           <button
             type="button"
             className="button"
             data-variant="primary"
             onClick={() => {
-              openLaunch({ agentId: null, projectId: null, origin: 'home' });
+              openStartWork({ agentIds: [], projectId: null, origin: 'home' });
             }}
           >
             <Icon name="plus" />

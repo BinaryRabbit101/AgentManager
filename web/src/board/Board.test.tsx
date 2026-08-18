@@ -523,7 +523,7 @@ describe('the remote grant badge on the card (§13.2, remote §12.4)', () => {
     const menu = await openMenu();
     // Absent, not disabled: the capability does not exist here.
     expect(within(menu).queryByRole('menuitemcheckbox')).toBeNull();
-    expect(within(menu).getByRole('menuitem', { name: 'Launch on…' })).toBeInTheDocument();
+    expect(within(menu).getByRole('menuitem', { name: 'Start work…' })).toBeInTheDocument();
   });
 
   it('asks nothing of the remote module when it is not loaded (§3.5)', async () => {

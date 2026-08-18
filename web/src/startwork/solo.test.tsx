@@ -1,14 +1,17 @@
 /**
- * The launch flow, rendered (DESIGN §6; IMPLEMENTATION §3).
+ * Start work with **one** agent — the solo path (DESIGN §6; IMPLEMENTATION §3).
  *
- * The fast path is the criterion: **type, Enter**. Everything else in §6 is a
- * rule about what must be visible before that happens — the elevation and its
- * reason, the work-edition refusal, and a queue-full refusal that reads as an
- * explanation rather than a stack trace.
+ * These are the launch flow's own assertions, moved to the geography of the one
+ * flow rather than rewritten: the fast path is still **type, Enter**, the
+ * elevation banner is still never collapsed, the work-edition refusal still
+ * renders disabled with its reason, a `429` still reads as an explanation rather
+ * than a stack trace, and a `409` is still a question with an automatic retry.
+ * The dialog they are asserted against is the only thing that changed.
  *
- * The whole app is mounted rather than the component: the pickers read the roster
- * and the project list through the real query layer, and the submit goes through
- * the real `ApiClient` so `429` arrives as the typed outcome §3.1 defines.
+ * The whole app is mounted rather than the component: the pickers read the
+ * roster and the project list through the real query layer, and the submit goes
+ * through the real `ApiClient` so `429` arrives as the typed outcome §3.1
+ * defines.
  */
 
 import { screen, waitFor, within } from '@testing-library/react';
@@ -18,9 +21,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { anAgent, aProject, BOOT_FACTS, json, mount, type Responder } from '../../test/harness';
 import { App } from '../App';
 import type { AgentView, EffectiveConfig, Project } from '../api/types';
-import { useAppStore } from '../state/store';
+import { PATTERNS } from '../assignments/fixtures';
+import { useAppStore, type StartWorkIntent } from '../state/store';
 
-import { defaultRole, preselectedAgentId } from './LaunchFlow';
+import { defaultRole, preselectedAgentIds } from './model';
 
 const PRIYA = anAgent({ id: 'priya', name: 'Priya' });
 const LPM = aProject({ id: 'lpm', name: 'littlepocketmuseum' });
@@ -48,6 +52,9 @@ function serving(options: Options = {}): {
     if (init.method === 'POST' || init.method === 'PUT') posts.push(path);
     if (path === '/api/roster/agents') return json({ agents, diagnostics: [] });
     if (path === '/api/projects') return json({ projects });
+    if (path === '/api/patterns') return json(PATTERNS);
+    // §10.4's open-assignment count, from the list the app already reads.
+    if (path === '/api/assignments' && init.method !== 'POST') return json({ assignments: [] });
     if (path === '/api/assignments/solo') {
       bodies.push(typeof init.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined);
       const answer = options.solo ?? {
@@ -81,28 +88,28 @@ function serving(options: Options = {}): {
   return { respond, posts, bodies };
 }
 
-function openFlow(
-  intent: Parameters<ReturnType<typeof useAppStore.getState>['openLaunch']>[0],
-): void {
-  useAppStore.getState().openLaunch(intent);
+function openFlow(intent: StartWorkIntent): void {
+  useAppStore.getState().openStartWork(intent);
 }
 
 beforeEach(() => {
-  useAppStore.getState().closeLaunch();
+  useAppStore.getState().closeStartWork();
 });
 
 async function flow(): Promise<HTMLElement> {
-  return screen.findByRole('dialog', { name: 'Launch' });
+  return screen.findByRole('dialog', { name: 'Start work' });
 }
 
 /**
- * The prompt, by role rather than by its label.
+ * The task box, by role rather than by its label.
  *
- * §6's label names the agent ("What should **Priya** do?"), so it reads "the
- * agent" for the instant before the roster query answers — and a test that
- * queried the finished wording would be asserting a race rather than the flow.
+ * §6's label names the agent ("What should **Priya** do?"), so it reads "they"
+ * for the instant before the roster query answers — and a test that queried the
+ * finished wording would be asserting a race rather than the flow. It is the
+ * only textbox on the solo path; the pattern fields belong to two agents or
+ * more.
  */
-function promptOf(dialog: HTMLElement): HTMLElement {
+function taskOf(dialog: HTMLElement): HTMLElement {
   return within(dialog).getByRole('textbox');
 }
 
@@ -124,35 +131,53 @@ describe('the pre-fill rules (§6)', () => {
     expect(defaultRole(noImplementer)).toBe('skeptic');
   });
 
-  it('pre-selects the project’s first default agent when the flow opens project-first', () => {
-    const fromDrag = { agentId: 'priya', projectId: 'lpm', origin: 'drag' as const };
-    expect(preselectedAgentId(fromDrag, ['sam'])).toBe('priya');
-    const fromProject = { agentId: null, projectId: 'lpm', origin: 'project' as const };
-    expect(preselectedAgentId(fromProject, ['sam', 'ada'])).toBe('sam');
-    expect(preselectedAgentId(fromProject, undefined)).toBeNull();
+  it('pre-selects the project’s default agents when the flow opens project-first', () => {
+    const fromDrag = { agentIds: ['priya'], projectId: 'lpm', origin: 'drag' as const };
+    expect(preselectedAgentIds(fromDrag, ['sam'])).toEqual(['priya']);
+    const fromProject = { agentIds: [], projectId: 'lpm', origin: 'project' as const };
+    // **All** of them, not `agentIds[0]`: the flow can seat every agent the
+    // project nominates, so dropping the rest would narrow what it asked for.
+    expect(preselectedAgentIds(fromProject, ['sam', 'ada'])).toEqual(['sam', 'ada']);
+    expect(preselectedAgentIds(fromProject, undefined)).toEqual([]);
   });
 
-  it('reads defaults.agentIds from the project and fills the picker', async () => {
+  it('reads defaults.agentIds from the project and ticks them', async () => {
     const fixture = serving({
       agents: [PRIYA, anAgent({ id: 'sam', name: 'Sam' })],
       defaults: { agentIds: ['sam'] },
     });
     mount(<App />, { respond: fixture.respond });
-    openFlow({ agentId: null, projectId: 'lpm', origin: 'project' });
+    openFlow({ agentIds: [], projectId: 'lpm', origin: 'project' });
     const dialog = await flow();
-    await waitFor(() => expect(within(dialog).getByLabelText('Agent')).toHaveValue('sam'));
+    await waitFor(() =>
+      expect(within(dialog).getByRole('checkbox', { name: /^Sam/u })).toBeChecked(),
+    );
+    expect(within(dialog).getByRole('checkbox', { name: /^Priya/u })).not.toBeChecked();
+  });
+
+  it('skips the project step when the gesture carried one, and still lets it change', async () => {
+    const fixture = serving();
+    mount(<App />, { respond: fixture.respond });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
+    const dialog = await flow();
+
+    // No picker: the question is already answered (§6).
+    expect(within(dialog).queryByLabelText('Project')).toBeNull();
+    await waitFor(() => expect(within(dialog).getByText('littlepocketmuseum')).toBeInTheDocument());
+    await userEvent.setup().click(within(dialog).getByRole('button', { name: 'Change project' }));
+    expect(within(dialog).getByLabelText('Project')).toBeInTheDocument();
   });
 });
 
 describe('the fast path: type, Enter (§6)', () => {
-  it('autofocuses the prompt and submits POST /api/assignments/solo on Enter', async () => {
+  it('autofocuses the task and submits POST /api/assignments/solo on Enter', async () => {
     const fixture = serving();
     mount(<App />, { respond: fixture.respond });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
 
-    const prompt = promptOf(dialog);
-    await waitFor(() => expect(prompt).toHaveFocus());
+    const task = taskOf(dialog);
+    await waitFor(() => expect(task).toHaveFocus());
 
     const user = userEvent.setup();
     await user.keyboard('reproduce the 500 on /invoices{Enter}');
@@ -163,7 +188,7 @@ describe('the fast path: type, Enter (§6)', () => {
       { projectId: 'lpm', agentId: 'priya', prompt: 'reproduce the 500 on /invoices' },
     ]);
     // The flow closes and the app navigates to the session it started (§6).
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Launch' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Start work' })).toBeNull());
     await waitFor(() =>
       expect(screen.getByRole('heading', { name: 'Session' })).toBeInTheDocument(),
     );
@@ -172,36 +197,42 @@ describe('the fast path: type, Enter (§6)', () => {
   it('leaves Shift+Enter as a newline, because a multi-line brief is normal', async () => {
     const fixture = serving();
     mount(<App />, { respond: fixture.respond });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
-    const prompt = promptOf(dialog);
-    await waitFor(() => expect(prompt).toHaveFocus());
+    const task = taskOf(dialog);
+    await waitFor(() => expect(task).toHaveFocus());
 
     const user = userEvent.setup();
     await user.keyboard('first{Shift>}{Enter}{/Shift}second');
-    expect(prompt).toHaveValue('first\nsecond');
+    expect(task).toHaveValue('first\nsecond');
     expect(fixture.posts).not.toContain('/api/assignments/solo');
   });
 
-  it('refuses to launch with no prompt', async () => {
+  it('refuses to start with no task, and says which field is missing', async () => {
     const fixture = serving();
     mount(<App />, { respond: fixture.respond });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
-    expect(within(dialog).getByRole('button', { name: /Launch/u })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: /Start work/u })).toBeDisabled();
+    // The reason, in words, beside the button that is off.
+    await waitFor(() => expect(within(dialog).getByText('Describe the task.')).toBeInTheDocument());
   });
 
   it('has a ≥44px target on every control, for touch (§15, IMPLEMENTATION §3)', async () => {
     const fixture = serving();
     mount(<App />, { respond: fixture.respond });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
     // Asserted against the stylesheet rather than against jsdom's zero layout:
     // every interactive element in the flow carries a class the sheet sizes.
     for (const control of within(dialog).getAllByRole('button')) {
       expect(control.className, control.textContent ?? '').toMatch(/button|card-menu/u);
     }
-    expect(within(dialog).getByLabelText('Agent').closest('.field')).not.toBeNull();
+    // Every roster row is a `.startwork__agent` label, which the sheet gives a
+    // 44px minimum — the checkbox itself is never the target.
+    for (const box of within(dialog).getAllByRole('checkbox')) {
+      expect(box.closest('.startwork__agent, .launch__toggle')).not.toBeNull();
+    }
   });
 });
 
@@ -217,7 +248,7 @@ describe('the elevation banner is never collapsed (§6)', () => {
   it('shows the widened rules and the reason before launch', async () => {
     const fixture = serving({ defaults: elevated });
     mount(<App />, { respond: fixture.respond });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
 
     await waitFor(() =>
@@ -241,7 +272,7 @@ describe('the elevation banner is never collapsed (§6)', () => {
       } satisfies EffectiveConfig,
     };
     mount(<App />, { respond: fixture.respond, boot });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
 
     await waitFor(() =>
@@ -260,7 +291,7 @@ describe('the permission preview (§6)', () => {
   it('shows roster’s refusal verbatim and guesses nothing', async () => {
     const fixture = serving();
     mount(<App />, { respond: fixture.respond });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
 
     const user = userEvent.setup();
@@ -290,7 +321,7 @@ describe('the permission preview (§6)', () => {
       },
     });
     mount(<App />, { respond: fixture.respond });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
 
     const user = userEvent.setup();
@@ -310,11 +341,11 @@ describe('failure handling (§6, IMPLEMENTATION §3)', () => {
       solo: { status: 429, body: { error: 'queue_full', message, queued: 50, limit: 50 } },
     });
     mount(<App />, { respond: fixture.respond });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
 
-    const prompt = promptOf(dialog);
-    await waitFor(() => expect(prompt).toHaveFocus());
+    const task = taskOf(dialog);
+    await waitFor(() => expect(task).toHaveFocus());
     const user = userEvent.setup();
     await user.keyboard('go{Enter}');
 
@@ -326,8 +357,8 @@ describe('failure handling (§6, IMPLEMENTATION §3)', () => {
       'href',
       '/usage',
     );
-    // Still open, so the prompt is not lost.
-    expect(screen.getByRole('dialog', { name: 'Launch' })).toBeInTheDocument();
+    // Still open, so the task is not lost.
+    expect(screen.getByRole('dialog', { name: 'Start work' })).toBeInTheDocument();
   });
 
   it('surfaces a 503 with the server’s own words', async () => {
@@ -341,10 +372,10 @@ describe('failure handling (§6, IMPLEMENTATION §3)', () => {
       },
     });
     mount(<App />, { respond: fixture.respond });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
-    const prompt = promptOf(dialog);
-    await waitFor(() => expect(prompt).toHaveFocus());
+    const task = taskOf(dialog);
+    await waitFor(() => expect(task).toHaveFocus());
     await userEvent.setup().keyboard('go{Enter}');
 
     const alert = await within(dialog).findByRole('alert');
@@ -353,7 +384,7 @@ describe('failure handling (§6, IMPLEMENTATION §3)', () => {
 });
 
 describe('the degraded states of §3.5', () => {
-  it('says why nothing can be launched when the orchestrator module is absent', async () => {
+  it('says why nothing can be started when the orchestrator module is absent', async () => {
     const fixture = serving();
     const boot = {
       ...BOOT_FACTS,
@@ -363,19 +394,19 @@ describe('the degraded states of §3.5', () => {
       },
     };
     mount(<App />, { respond: fixture.respond, boot });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
 
     expect(within(dialog).getByRole('alert').textContent).toContain(
       'The orchestrator module is not running',
     );
-    expect(within(dialog).getByRole('button', { name: /Launch/u })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: /Start work/u })).toBeDisabled();
   });
 
   it('omits the remote toggle when the remote module is not loaded (§13.5)', async () => {
     const fixture = serving();
     mount(<App />, { respond: fixture.respond });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
     expect(within(dialog).queryByText(/Allow remote starts/u)).toBeNull();
   });
@@ -390,7 +421,7 @@ describe('the degraded states of §3.5', () => {
       },
     };
     mount(<App />, { respond: fixture.respond, boot });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
     await waitFor(() =>
       expect(within(dialog).getByText(/Allow remote starts for Priya/u)).toBeInTheDocument(),
@@ -438,11 +469,11 @@ describe('the grant prompt and its automatic retry (§6, §13.4)', () => {
     };
 
     mount(<App />, { respond, boot: REMOTE_BOOT, token: 'a-device-token' });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
 
     const user = userEvent.setup();
-    await user.type(promptOf(dialog), 'Fix the billing migration{Enter}');
+    await user.type(taskOf(dialog), 'Fix the billing migration{Enter}');
 
     // Not an error — a question (§13.4: "Never presented as an error").
     const prompt = await screen.findByText(/Allow Priya to be started remotely\?/u);
@@ -467,7 +498,7 @@ describe('the grant prompt and its automatic retry (§6, §13.4)', () => {
   it('pre-authorises from the desk instead, through remote’s grant route (§6)', async () => {
     const fixture = serving();
     mount(<App />, { respond: fixture.respond, boot: REMOTE_BOOT });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
 
     const user = userEvent.setup();
@@ -482,11 +513,11 @@ describe('Escape closes the flow and starts nothing (§15)', () => {
   it('closes without a request', async () => {
     const fixture = serving();
     mount(<App />, { respond: fixture.respond });
-    openFlow({ agentId: 'priya', projectId: 'lpm', origin: 'drag' });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
-    await waitFor(() => expect(promptOf(dialog)).toHaveFocus());
+    await waitFor(() => expect(taskOf(dialog)).toHaveFocus());
     await userEvent.setup().keyboard('{Escape}');
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Launch' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Start work' })).toBeNull());
     expect(fixture.posts).not.toContain('/api/assignments/solo');
   });
 });

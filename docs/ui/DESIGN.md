@@ -209,8 +209,8 @@ component tree; the screens where the difference is more than reflow are called 
 
 | Screen | What actually changes on a phone |
 |---|---|
-| **Board** (§5) | Drag is not the primary path. Cards get an explicit **Launch** button and a `⋯` menu; reorder moves into an explicit "Reorder" mode with move-up/move-down controls. |
-| **Projects** (§5.1) | The card grid collapses to one column. There is no drag at all, so every card's **Launch an agent…** carries the whole gesture. |
+| **Board** (§5) | Drag is not the primary path. Cards get a `⋯` menu carrying **Start work…** (§6); reorder moves into an explicit "Reorder" mode with move-up/move-down controls. |
+| **Projects** (§5.1) | The card grid collapses to one column. There is no drag at all, so every card's **Start work…** carries the whole gesture (§6). |
 | **Session view** (§9) | The right-hand usage rail collapses under the header; tool blocks default collapsed; steer input docks above the keyboard. |
 | **Assignment view** (§10) | The two-seat side-by-side conversation stacks into one column, seat identity carried by the avatar+name row rather than by column position. |
 | **Question inbox** (§11) | Identical by design — this is the phone's primary surface and must not be a reduced mode (remote §12.8). Option buttons are full-width. |
@@ -405,7 +405,7 @@ The projects screen keeps everything the rail was load-bearing for. It is still 
 (§5.3), which is why it carries the same compact strip of draggable agent chips the project page uses
 for its work-item rows (§8.2): a drop target with no drag source on the same screen is not a feature.
 It still reads `status` and `health` from the server and never recomputes them, and it still offers
-each card's **Launch an agent…** as §5.4's pointer-free equivalent.
+each card's **Start work…** as §5.4's pointer-free equivalent.
 
 ### 5.2 Card anatomy
 
@@ -436,8 +436,13 @@ each card's **Launch an agent…** as §5.4's pointer-free equivalent.
 | Pinned | a pin glyph; pinned agents sort ahead of the rest |
 
 The card body is a link to `/agents/:id`. The `⋯` menu carries every action that has a drag
-equivalent, plus the ones that do not: **Launch on…**, **Start a pair…**, **Duplicate**, **Edit**,
-**Export**, **Pin**, **Allow remote starts** (home edition), **Archive**.
+equivalent, plus the ones that do not: **Start work…**, **Duplicate**, **Edit**, **Export**, **Pin**,
+**Allow remote starts** (home edition), **Archive**.
+
+**Start work…** is one item where there used to be two (*Launch on…* and *Start a pair…*). It opens
+§6's one flow with this card already ticked, so launching it at a project and pairing it with someone
+are the same gesture followed by a different second tick — which is what makes the pointer-free path
+equal to the drag rather than a reduced version of it.
 
 An **archived** agent is hidden behind the archive filter and renders greyed with actions reduced to
 Restore/Export — it must remain visible because sessions reference it (foundation §1.4). A session
@@ -456,9 +461,9 @@ on it.
 
 | Drop target | Payload | What happens |
 |---|---|---|
-| **Project card** on `/projects`, or the project header on `/projects/:id` | `{ type: 'project', projectId }` | Opens the **launch flow** (§6) pre-filled with agent × project. Nothing is started by the drop itself. |
-| **Work item row** on a project page | `{ type: 'workItem', workItemId, projectId }` | Launch flow pre-filled with agent × project, the item attached (`workItemIds`), its `title` seeded into the prompt and its `scopePaths` shown as a scope hint. |
-| **Another agent card** | `{ type: 'agent', agentId }` | Opens the **pair create dialog** (§10.4) with the dragged agent in the drafting seat and the target in the critic seat. Lands with the assignment view (M9); until then the target is inert. |
+| **Project card** on `/projects`, or the project header on `/projects/:id` | `{ type: 'project', projectId }` | Opens **Start work** (§6) pre-filled with agent × project. Nothing is started by the drop itself. |
+| **Work item row** on a project page | `{ type: 'workItem', workItemId, projectId }` | Start work pre-filled with agent × project, the item attached (`workItemIds`), its `title` seeded into the task and its `scopePaths` shown as a scope hint. |
+| **Another agent card** | `{ type: 'agent', agentId }` | Opens **Start work** (§6) with **both** agents ticked, which two agents open on the **Adversarial pair** option. The gesture still means "these two, adversarially"; it no longer picks a dialog to mean it in, and the user can change the shape or add a third before starting. |
 | **The board grid itself** | sortable context | **Reorder.** Optimistic local reorder, then persist. |
 
 **Reorder persistence** uses roster's `agent_ui_state.board_order` (roster §2.2), written through
@@ -473,7 +478,7 @@ accent colour, invalid ones dim, a long list auto-scrolls near its edges, and a 
 
 A project that cannot be launched against — `provisioning`, `archived`, or health `missing` (projects
 §2.2, §2.3) — is **not** a valid target: it dims during the drag and its tooltip says why. Refusing at
-the drop is better than a launch flow that fails on submit.
+the drop is better than a Start-work flow that fails on submit.
 
 ### 5.4 Every drag has a non-drag equivalent
 
@@ -482,82 +487,167 @@ class.
 
 | Gesture | Keyboard | Pointer-free / touch |
 |---|---|---|
-| Agent → project | Tab to the card, `Space` to lift, arrows to move between targets (dnd-kit announces each target in a live region), `Space` to drop | Card `⋯` → **Launch on…** → project picker → launch flow. Also: project page → **Launch an agent…** → agent picker. |
-| Agent → work item | as above | Work item row `⋯` → **Assign an agent…** |
-| Agent → agent (pair) | as above | Card `⋯` → **Start a pair…** |
+| Agent → project | Tab to the card, `Space` to lift, arrows to move between targets (dnd-kit announces each target in a live region), `Space` to drop | Card `⋯` → **Start work…** → pick the project. Also: project card or project page → **Start work…** → tick the agents. |
+| Agent → work item | as above | Work item row's **Assign an agent…** |
+| Agent → agent (pair) | as above | Card `⋯` → **Start work…** → tick the second agent |
 | Board reorder | `Space` to lift, arrows, `Space` to drop | **Reorder mode** toggle above the board: each card gains ▲▼ buttons and a position readout; leaving the mode persists once. |
 
-Both paths call the same code. There is no "mobile launch" and "desktop launch" — one launch flow,
-reached three ways.
+Both paths call the same code. There is no "mobile launch" and "desktop launch" — **one flow**, §6's
+Start work, reached from every screen through one `openStartWork(intent)`. The first three rows differ
+only in what the intent pre-fills, which is why they can share a menu item: the flow asks the
+questions the gesture did not answer.
 
 ---
 
-## 6. The launch flow
+## 6. The Start-work flow
 
-Agent × project × prompt, in under a minute. A centred dialog on desktop, a bottom sheet on phone.
+**Pick a project, pick one or more agents, describe the task, go.** One dialog, reached from every
+screen. A centred dialog on desktop, a bottom sheet on phone.
+
+This section used to describe a *launch* flow — agent × project × prompt — with a second dialog beside
+it for pairs (§10.4) reached from different buttons on the same screens. Assigning agents to work is
+the whole point of the app, and that shape made "how many agents" the **first** question, asked before
+the user had chosen a project, the people, or the task, by making them choose a dialog. It is the last
+question now, and the selection asks it:
+
+| Agents selected | What is offered |
+|---|---|
+| 1 | **On their own** — a solo assignment, `POST /api/assignments/solo` |
+| 2 | **Adversarial pair** (orchestrator §3.3) or **Independently** — two solos, one brief |
+| 3+ | **Team** — an `overseer` lead that decomposes (orchestrator §3.5) — or **Independently** |
 
 ```
-Launch                                                    [×]
+Start work                                                [×]
 ┌──────────────────────────────────────────────────────────┐
-│  🐛 Priya  ▾            on   📁 littlepocketmuseum  ▾     │
+│  Project                                                 │
+│  📁 littlepocketmuseum            [ Change project ]      │   ← skipped when the gesture named one
 │                                                          │
+│  Who works on it                                         │
+│  ☑ 🐛 Priya   reproduces first…      1 open · suits …    │
+│  ☐ 📐 Ada     draws the shape…       0 open · suits …    │   ← whole roster, nobody hidden
+│                                                          │
+│  The task                                                │
 │  ┌────────────────────────────────────────────────────┐  │
 │  │ What should Priya do?                              │  │   ← autofocused
-│  │                                                    │  │
 │  └────────────────────────────────────────────────────┘  │
+│  ▸ Options       implementer · read only · no work items │   ← collapsed
 │                                                          │
-│  ▸ Details          implementer · write · no work items  │   ← collapsed
-│  ▸ Permissions      acceptEdits · 12 allow · 4 deny      │   ← collapsed
+│  How they work                                           │
+│  ( ) Adversarial pair — one drafts, one critiques        │
+│  ( ) Independently — one assignment each, same brief     │
+│                                                          │
+│  ▸ Permissions   acceptEdits · 12 allow · 4 deny         │   ← collapsed, solo only
 │  ☐ Allow remote starts for Priya            (home only)  │
 │                                                          │
-│                              [ Cancel ]   [ Launch ⏎ ]   │
+│                          [ Cancel ]  [ Start work ⏎ ]    │
 └──────────────────────────────────────────────────────────┘
 ```
 
-**The fast path is: drop, type, Enter.** Everything else is collapsed and pre-filled.
+**The fast path is still: drop, type, Enter.** A gesture that named an agent and a project answers
+steps 1 and 2, the task box is autofocused, and `Enter` starts. Everything else is collapsed or
+pre-filled.
 
-**Pre-fill rules.** Agent and project come from the drag. When the flow is opened from a project with
-`defaults.agentIds`, `agentIds[0]` is pre-selected (projects §1.2). Role defaults to `implementer`
-where the agent declares it, else `capabilities.roles[0]` — the same rule orchestrator applies
-server-side (§2.3), stated in the UI only so the collapsed summary is honest.
+### The four steps
 
-**Details** (collapsed): role picker — **every** role, with the agent's declared ones marked;
-choosing another is allowed and the create call returns a `role_not_declared` warning saying the
-agent works the seat without that role's addendum (owner decision 2026-08-18, orchestrator §9-5) —
-write toggle,
-work-item multi-select from the project's `open` items, and — when the project has open assignments —
-the scope-overlap warning surfaced ahead of submit rather than after.
+**1. Project.** Pre-filled and *skipped* when the intent carries one — a project card, a project page,
+a work-item row, a drop — with **Change project** to reopen it. Otherwise a picker of the launchable
+projects. `projectLaunchRefusal` decides what is launchable (§5.3), and the projects it refuses are
+listed **with the reason** underneath rather than quietly missing: shown-and-explained is the same rule
+the drag surface applies by dimming.
 
-**Permissions preview** (collapsed) calls `POST /api/roster/agents/:id/validate` with the project id
-and renders the compiled effective set: mode, allow, deny, ask, and diagnostics. Two things are never
-collapsed:
+**2. Agents.** The whole live roster, multi-select, one checkbox per row carrying avatar, name,
+tagline, open-assignment count and the roles the agent declares. **Only archived agents are excluded**,
+and that is a fact about the agent's lifecycle rather than about its capabilities. Declared roles are a
+**hint** — they rank the seating and label the suggestion, they never hide a row, disable a box or gate
+a mode (owner decision 2026-08-18, orchestrator §16-9). The intent pre-ticks whoever it named; failing
+that, the project's `defaults.agentIds` do (projects §1.2) — **all** of them, because this flow can
+seat more than one.
+
+**3. The task.** One text area: the prompt for a solo, the goal for a pattern. `Enter` submits,
+`Shift+Enter` writes a newline. **Options** (collapsed) carries the role picker — every role, with the
+agent's declared ones marked; choosing another is allowed and the create call returns a
+`role_not_declared` warning (owner decision 2026-08-18, orchestrator §9-5) — the write toggle, and the
+work-item multi-select over the project's open items. A dropped work item seeds its title into the task
+and shows its `scopePaths` **outside** the collapsed options, because a narrowed scope changes what the
+agent can touch and that is not a detail.
+
+**4. How they work.** Driven by the count, per the table above. One agent gets a sentence rather than a
+radio. Two or more get radios, and the pattern's own required fields — driven entirely by
+`GET /api/patterns` (§10.4): scope paths, artifact path where the pattern requires one, round cap,
+token budget.
+
+- **Adversarial pair** shows which selected agent drafts and which reviews, ranked by declared role,
+  with **Swap seats** because who drafts is the user's call and a ranking is not a decision.
+- **Team** asks which selected agent **leads**. The lead is the assignment's *only* member: an
+  `overseer`'s workers are not seats of it, they hold seats in the child assignments the lead mints
+  (orchestrator §3.5). The others ride in the goal as a line — *"Prefer seating these agents in child
+  assignments: …"* — and the dialog says in as many words that **the lead decides the final split**,
+  because the lead has `list_roster` and this is guidance rather than a contract. Its **token budget is
+  required**: the pattern has no default on purpose (orchestrator §7.2), and an uncapped overseer is an
+  unbounded tree.
+
+### Submit
+
+| Shape | Request |
+|---|---|
+| solo | `POST /api/assignments/solo { projectId, agentId, prompt, role?, write?, workItemIds? }` → `{ assignmentId, sessionId }`, then `/sessions/:id` (orchestrator §16.7) |
+| independent | the same call, once per selected agent, same prompt; then the first session |
+| pair | `POST /api/assignments { pattern: 'pair', members: [drafter, critic], goal, scope, roundCap?, tokenBudget?, autoStart: false }` |
+| team | `POST /api/assignments { pattern: 'overseer', members: [lead], goal, scope, roundCap?, tokenBudget, autoStart: false }` |
+
+A pattern create is **always parked** (`autoStart: false`) and followed by a review step showing every
+`warnings[]` entry the server returned, then an explicit **Start** (`POST …/advance`) — §10.4's rule,
+unchanged. The warnings are **advisory**: `scope_overlap`, `projection_exceeds_budget`,
+`role_not_declared` and `lead_not_overseer` are rendered as advice beside an enabled Start, never as
+blockers. A returned `gate` removes the Start button and links to the card.
+
+**The only client-side refusals** are the fields the request has no honest value for — no project, no
+agent, no task, and an overseer with no token budget — and each one names itself in a sentence beside
+the disabled button rather than leaving it mysteriously off. Everything else is the server's call
+(§10.4: "refuses nothing client-side that the server would accept").
+
+### Privilege, and the two things never collapsed
 
 - **Elevation.** If the project declares `defaults.permissionElevation`, a bordered banner shows the
   widened rules **and the mandatory reason string** (projects §1.2, roster §6.2). Invisible privilege
-  escalation is the failure mode this exists to prevent, so it is shown before launch and again in the
-  session header.
-- **Elevation refused by policy.** When `policy.allowPermissionElevation` is false — the work edition
-  — the same banner renders **disabled** with "not permitted on this machine (work edition)". Shown
-  disabled with a reason, not hidden.
+  escalation is the failure mode this exists to prevent, so it is shown before the start and again in
+  the session header.
+- **Elevation refused by policy.** When `policy.allowPermissionElevation` is false — the work edition —
+  the same banner renders **disabled** with "not permitted on this machine (work edition)" and the
+  layer that set it. Shown disabled with a reason, not hidden.
 
-The preview is advisory-honest: it is a dry-run compile against agent × project, and the assignment
-layer for a solo launch is whole-project scope, so what it shows is what will apply. Where an
-assignment narrows further (a pattern launch, §10.4), the dialog says so.
+**Permissions preview** (collapsed, and only when exactly one agent is selected) calls
+`POST /api/roster/agents/:id/validate` with the project id and renders the compiled effective set. It
+is a dry-run compile against agent × project and a solo assignment is whole-project scope, so what it
+shows is what will apply; a pattern narrows further and the dialog says so through its scope field.
 
-**Remote access toggle** (home edition only). At the desk it pre-authorises the agent by calling
-`PUT /api/remote/agents/:id/access`, and shows the resulting `expiresAt`. From the tailnet it is
-pre-checked and rides the launch as `confirmRemoteAccess: true`, granting and starting in one call
-(remote §6.3).
+**Remote access toggle** (home edition only). At the desk it pre-authorises every selected agent by
+calling `PUT /api/remote/agents/:id/access`. From the tailnet it rides the start as
+`confirmRemoteAccess: true`, granting and starting in one call (remote §6.3).
 
-**Submit** calls `POST /api/assignments/solo { projectId, agentId, prompt, role?, write?, workItemIds? }`
-— orchestrator mints the trivial assignment and starts the first session, returning
-`{ assignmentId, sessionId }` (orchestrator §16.7). The UI navigates straight to `/sessions/:id`. There
-is no second code path for "one agent" versus "a collaboration".
+### Failure handling
 
-**Failure handling.** `429 queue_full` renders as "the queue is full (50) — stop or wait for something
-to finish", with a link to the queue panel. A `409 remote_access_required` is **not an error**
-(remote §12.5): the sheet swaps to *"Allow **Priya** to be started remotely?"*, one tap grants, and the
-original request is retried automatically.
+`429 queue_full` renders as "the queue is full (50) — stop or wait for something to finish", with a
+link to the queue panel. A `409 remote_access_required` is **not an error** (remote §12.5): the sheet
+swaps to *"Allow **Priya** to be started remotely?"*, one tap grants, and the original request is
+retried automatically — once, from the `409` body's list, however many agents it names. On the
+independent path the retry skips whoever already started, because a `409` names one request's agents
+and a blanket retry would launch a granted agent twice.
+
+### Where it is reached from
+
+Every one of these calls the same `openStartWork(intent)` and lands in the same dialog. There is no
+second entry and no second flow — no "mobile launch" and "desktop launch", and no separate dialog for
+two agents.
+
+| Entry | Intent it carries |
+|---|---|
+| Home's **Start work** (§2.4) | nothing — home knows neither |
+| Board card `⋯` → **Start work…** | that agent |
+| Agent → project drop (§5.3) | that agent, that project |
+| Agent → agent drop (§5.3) | both agents; the pair radio is what two agents open on |
+| Agent → work-item drop, and the row's **Assign an agent…** | that project, that item |
+| Project card / project page → **Start work…** | that project |
 
 ---
 
@@ -727,7 +817,7 @@ project registration is never stranded on the desktop.
 Four regions, in priority order:
 
 1. **Header** — name, path, branch, vcs, `status`, health chips derived server-side (`missing`,
-   `dirty`, `stale-agents`, `orphaned-worktrees`), and a **Launch an agent…** button (the non-drag
+   `dirty`, `stale-agents`, `orphaned-worktrees`), and a **Start work…** button (the non-drag
    equivalent of dropping onto the project). A `missing` path offers **Relocate**.
 2. **"Review needed"** — the workspaces list from `GET /api/projects/:id/workspaces`. A worktree
    retained because it has commits or uncommitted changes is the loudest thing on the page: branch
@@ -830,7 +920,7 @@ Mapped one-to-one onto runner §11.1, all idempotent, all identical over the tai
 | **Resume** | `POST …/resume` | `paused` |
 | **Stop** | `POST …/stop` | `queued`, `running`, `paused` |
 | **Continue** | `POST …/continue` with a prompt — the answer to runner §5.5's "the agent asked in prose and stopped" case | `done`, `failed`, `interrupted` |
-| **Relaunch** | a fresh launch flow, pre-filled | `orphaned` where resume is impossible (no `sdk_session_id`, or the workspace is gone) |
+| **Relaunch** | a fresh Start-work flow, pre-filled | `orphaned` where resume is impossible (no `sdk_session_id`, or the workspace is gone) |
 | **Pin** | `POST …/pin` | always — the retention exemption, labelled "keep this transcript" |
 
 A control that does not apply is **shown disabled with the reason**, not hidden — "paused sessions
@@ -938,22 +1028,31 @@ Orchestrator §16.7 pins it: a drag-and-drop launch produces a real assignment w
 rounds. The same view renders it — one seat, no round strip, no convergence — and the session view
 links to it. There is no second code path.
 
-### 10.4 The pattern create dialog
+### 10.4 Creating a pattern assignment
+
+**This is no longer a dialog of its own — it is the tail of §6's Start-work flow**, and the rules below
+are what that flow's "How they work" step and its review step implement. There was a separate *pattern
+create dialog* here, reached from its own buttons beside the launch flow's; the split is what made the
+number of agents the first question the app asked (§6). What did not change is any of the discipline:
 
 Driven entirely by `GET /api/patterns` (orchestrator §16.9): seats, allowed roles per seat, defaults,
-`preferredTier`. For each seat the picker lists **every** candidate the endpoint returns, in the order
-it returns them — role-declaring agents first, each carrying `declaresRole` for the label, then the
-available, then the least loaded (owner decision 2026-08-18: capabilities rank, they never gate, so
-the dialog must not hide an agent the user is allowed to seat) — showing each one's **model tier** and
-current open-assignment count. Goal, scope paths, artifact path (required for `pair`), round cap and
-token budget carry the config defaults; an `overseer` assignment has **one** seat, its workers arrive
-as the child assignments its lead creates, and its token budget has no default and must be entered.
-Submitting shows the returned `warnings[]` (scope overlap, projected cost, inverted tiers,
-`role_not_declared`, `lead_not_overseer`) **before** the assignment starts, and a returned `gate`
-renders as "waiting for your approval" with a link to the card.
+`preferredTier`. The agent picker offers **every** non-archived agent, ranked rather than filtered —
+role-declaring agents' rows carry the suggestion label, and nothing hides, disables or gates on
+capability (owner decision 2026-08-18: capabilities rank, they never gate, so the flow must not hide an
+agent the user is allowed to seat) — showing each one's current open-assignment count. Goal, scope
+paths, artifact path (required for `pair`), round cap and token budget carry the config defaults; an
+`overseer` assignment has **one** seat, its workers arrive as the child assignments its lead creates,
+and its token budget has no default and must be entered — the flow's one extra client-side requirement,
+because `validate.ts` refuses a budget-less overseer and accepts a budget-less pair.
 
-Dragging one agent card onto another opens this dialog pre-filled (§5.3) — the visual, direct path to
-the app's headline feature.
+The create is posted with `autoStart: false` and the returned `warnings[]` (scope overlap, projected
+cost, inverted tiers, `role_not_declared`, `lead_not_overseer`) are shown **before** the assignment
+starts, above an explicit **Start**. They are **advisory** — a warning names what the seating costs,
+never that it is refused, so Start stays enabled beside them. A returned `gate` renders as "waiting for
+your approval" with a link to the card, and removes the Start button.
+
+Dragging one agent card onto another reaches this with both agents ticked and the pair option chosen
+(§5.3) — the visual, direct path to the app's headline feature.
 
 ### 10.5 The assignments index
 
@@ -1141,7 +1240,7 @@ Everything works over the tailnet except what remote's deny list refuses. The di
 | **Entry** | A `401` shows the pairing screen: scan the QR from the desktop, or paste. The URL-fragment token is stripped before first render. |
 | **Under the hood** | Bearer header on every `/api` call; single-use stream tickets for WS/SSE; avatars and downloads fetched to object URLs. No screen knows. |
 | **Denied controls** | **Shown disabled with their reason, never hidden** — Create device token, Enable remote access, Restart listener, Stop background service. The set is read from the deny list enumerated in `GET /api/remote/status` (remote §12.7), not hardcoded, so a future denial greys the right control automatically. |
-| **Launch** | May need one extra tap: `409` → grant prompt → automatic retry. Never presented as an error. |
+| **Starting work** (§6) | May need one extra tap: `409` → grant prompt → automatic retry. Never presented as an error. |
 | **Token expiry** | A banner at 14 days remaining. |
 | **Notifications** | The app may say a push was sent; it never implies the push carried content or that answering works off the tailnet. |
 | **Viewport** | The phone layout of §2.3. |

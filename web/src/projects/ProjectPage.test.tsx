@@ -392,14 +392,16 @@ describe('work items (§8.2 region 4, §5.3 row 2)', () => {
 
     await user.keyboard(' ');
 
-    const dialog = await screen.findByRole('dialog', { name: 'Launch' });
-    await waitFor(() => expect(within(dialog).getByLabelText('Agent')).toHaveValue('priya'));
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
+    await waitFor(() =>
+      expect(within(dialog).getByRole('checkbox', { name: /^Priya/u })).toBeChecked(),
+    );
     // Nothing is started by the drop itself (§5.3).
     expect(view.posted.find((call) => call.path === '/api/assignments/solo')).toBeUndefined();
     expect(live()).toContain('Nothing has started yet');
   });
 
-  it('opens the launch flow with the item attached and its scope paths shown', async () => {
+  it('opens Start work with the item attached and its scope paths shown', async () => {
     const view = open({ workItems: items });
     const user = userEvent.setup();
 
@@ -407,15 +409,15 @@ describe('work items (§8.2 region 4, §5.3 row 2)', () => {
     if (row === null) throw new Error('the work item row is not on the page');
     await user.click(within(row).getByRole('button', { name: 'Assign an agent…' }));
 
-    const dialog = await screen.findByRole('dialog', { name: 'Launch' });
-    // §5.3: the title seeds the prompt and the scope paths are shown.
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
+    // §5.3: the title seeds the task and the scope paths are shown.
     await waitFor(() =>
       expect(within(dialog).getByLabelText(/What should/u)).toHaveValue('Fix the 500 on /invoices'),
     );
     expect(within(dialog).getByText(/Scoped to src\/api/u)).toBeInTheDocument();
 
-    await user.selectOptions(within(dialog).getByLabelText('Agent'), 'priya');
-    await user.click(within(dialog).getByRole('button', { name: 'Launch ⏎' }));
+    await user.click(within(dialog).getByRole('checkbox', { name: /^Priya/u }));
+    await user.click(within(dialog).getByRole('button', { name: /Start work/u }));
 
     await waitFor(() =>
       expect(view.posted.find((call) => call.path === '/api/assignments/solo')).toBeDefined(),

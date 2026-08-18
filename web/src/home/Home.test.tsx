@@ -258,8 +258,9 @@ describe('home is the three regions, in priority order (§2.4)', () => {
 
     await userEvent.click(start);
 
-    // The launch flow, opened with neither seat filled — home knows neither.
-    expect(await screen.findByRole('dialog', { name: 'Launch' })).toBeInTheDocument();
+    // §6's one flow, opened with neither question answered — home knows neither
+    // the agents nor the project, and the flow is where both are asked.
+    expect(await screen.findByRole('dialog', { name: 'Start work' })).toBeInTheDocument();
   });
 
   it('follows the event feed rather than polling (§3.4, §16)', async () => {

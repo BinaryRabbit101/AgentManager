@@ -39,23 +39,31 @@ export const DEFAULT_FILTERS: BoardFilters = Object.freeze({
 });
 
 /**
- * What the launch flow was opened with (§6's pre-fill rules).
+ * What the **Start work** flow was opened with (§6's pre-fill rules).
  *
- * One shape for all three ways in — drop, card menu, project page — because
- * "both paths call the same code. There is no 'mobile launch' and 'desktop
- * launch' — one launch flow, reached three ways" (§5.4).
+ * One shape for every way in — a drop, the card `⋯`, a project card or page, a
+ * work-item row, home's **Start work** — because §5.4's rule ("both paths call
+ * the same code… one flow, reached several ways") is only true if every opener
+ * writes the same intent. There is exactly one of these and exactly one opener
+ * for it: the two intents this replaced (`LaunchIntent` and `PairIntent`) were
+ * the shape in which "assign an agent" split into two dialogs the user had to
+ * choose between before they had decided anything (§6, rewritten 2026-08-18).
+ *
+ * `agentIds` is a **list** rather than one id because the count is what decides
+ * how the work is shaped — one is a solo, two can be an adversarial pair, three
+ * or more can be a team under a lead — and the dialog reads it as a pre-fill,
+ * never as a limit: every opener may name none, one or two, and the user adds
+ * or removes any of them before starting.
  */
-export interface LaunchIntent {
-  readonly agentId: string | null;
+export interface StartWorkIntent {
+  /** Pre-selected agents. Empty from home and from a project. */
+  readonly agentIds: readonly string[];
   readonly projectId: string | null;
   /**
-   * Where it was opened from, so the flow knows which picker to focus.
+   * Where it was opened from, so the flow knows which question is still open.
    *
-   * `home` is the fourth way in (§2.4's **Start work**) and the only one that
-   * arrives with *neither* seat filled: the other three all come from a card, a
-   * row or a drop that already names an agent or a project. It is a word in this
-   * vocabulary rather than a reused one because the flow's first question
-   * differs — "which agent, on which project" rather than "on what".
+   * `home` is the way in that arrives with *neither* an agent nor a project:
+   * the others all come from a card, a row or a drop that already names one.
    */
   readonly origin: 'drag' | 'agent-menu' | 'project' | 'work-item' | 'home';
   /**
@@ -66,23 +74,6 @@ export interface LaunchIntent {
    * intent never holds a stale copy of either.
    */
   readonly workItemIds?: readonly string[];
-}
-
-/**
- * What the pattern create dialog was opened with (§5.3 row 3, §10.4).
- *
- * The same shape for both ways in — the agent→agent drag and the card `⋯` →
- * **Start a pair…** — because §5.4's rule that every drag has a non-drag
- * equivalent is only true if both equivalents end in the same dialog with the
- * same pre-fill.
- */
-export interface PairIntent {
-  /** The dragged card — the drafting seat. */
-  readonly agentId: string | null;
-  /** The card it was dropped on — the critic seat. `null` from the menu. */
-  readonly withAgentId: string | null;
-  readonly projectId?: string | null;
-  readonly patternId?: string;
 }
 
 /** `runner.ratelimited`'s payload, kept for §12's cool-down strip. */
@@ -116,9 +107,14 @@ export interface AppState {
   readonly quickAddOpen: boolean;
   /** §5.4's explicit Reorder mode — the pointer-free path to board order. */
   readonly reorderMode: boolean;
-  readonly launch: LaunchIntent | null;
-  /** §10.4’s dialog, open or not — the agent→agent gesture’s destination. */
-  readonly pair: PairIntent | null;
+  /**
+   * §6's one flow, open or not — the destination of **every** launch gesture.
+   *
+   * One field rather than two: the launch flow and the pair dialog used to be
+   * separate pieces of state, which is how the app ended up asking the user to
+   * choose a dialog before they had chosen a project, an agent or a task.
+   */
+  readonly startWork: StartWorkIntent | null;
   readonly toasts: readonly Toast[];
   /**
    * Open questions, for the rail badge (§2.2).
@@ -153,10 +149,9 @@ export interface AppState {
   readonly setSort: (sort: BoardSort) => void;
   readonly setQuickAddOpen: (open: boolean) => void;
   readonly setReorderMode: (on: boolean) => void;
-  readonly openLaunch: (intent: LaunchIntent) => void;
-  readonly closeLaunch: () => void;
-  readonly openPair: (intent: PairIntent) => void;
-  readonly closePair: () => void;
+  /** The **one** public entry to §6. Every opener in the app calls this. */
+  readonly openStartWork: (intent: StartWorkIntent) => void;
+  readonly closeStartWork: () => void;
   readonly pushToast: (message: string, tone?: Toast['tone']) => void;
   readonly dismissToast: (id: string) => void;
   readonly setOpenQuestions: (count: number | null) => void;
@@ -203,8 +198,7 @@ export const useAppStore = create<AppState>((set) => ({
   sort: 'board-order',
   quickAddOpen: false,
   reorderMode: false,
-  launch: null,
-  pair: null,
+  startWork: null,
   toasts: [],
   openQuestions: null,
   rateLimit: null,
@@ -226,10 +220,8 @@ export const useAppStore = create<AppState>((set) => ({
   setSort: (sort) => set({ sort }),
   setQuickAddOpen: (quickAddOpen) => set({ quickAddOpen }),
   setReorderMode: (reorderMode) => set({ reorderMode }),
-  openLaunch: (launch) => set({ launch }),
-  closeLaunch: () => set({ launch: null }),
-  openPair: (pair) => set({ pair }),
-  closePair: () => set({ pair: null }),
+  openStartWork: (startWork) => set({ startWork }),
+  closeStartWork: () => set({ startWork: null }),
   pushToast: (message, tone = 'danger') => {
     toastSeq += 1;
     const toast: Toast = { id: `toast-${String(toastSeq)}`, message, tone };
@@ -246,8 +238,7 @@ export const useAppStore = create<AppState>((set) => ({
       sort: 'board-order',
       quickAddOpen: false,
       reorderMode: false,
-      launch: null,
-      pair: null,
+      startWork: null,
       toasts: [],
       openQuestions: null,
       rateLimit: null,

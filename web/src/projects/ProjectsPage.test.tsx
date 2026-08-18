@@ -110,9 +110,12 @@ describe('agent → project, after the move (§5.3 row 1, §5.4)', () => {
     await user.keyboard(' ');
 
     // "Nothing is started by the drop itself" (§5.3).
-    const dialog = await screen.findByRole('dialog', { name: 'Launch' });
-    await waitFor(() => expect(within(dialog).getByLabelText('Agent')).toHaveValue('priya'));
-    expect(within(dialog).getByLabelText('Project')).toHaveValue('lpm');
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
+    await waitFor(() =>
+      expect(within(dialog).getByRole('checkbox', { name: /^Priya/u })).toBeChecked(),
+    );
+    // The project the drop named is answered, so the flow does not ask again.
+    expect(within(dialog).getByText('littlepocketmuseum')).toBeInTheDocument();
     expect(live()).toContain('Nothing has started yet');
   });
 
@@ -136,9 +139,7 @@ describe('agent → project, after the move (§5.3 row 1, §5.4)', () => {
     expect(within(card as HTMLElement).getByText(/Can’t launch/u).textContent).toContain(
       'folder is missing',
     );
-    expect(
-      within(card as HTMLElement).queryByRole('button', { name: 'Launch an agent…' }),
-    ).toBeNull();
+    expect(within(card as HTMLElement).queryByRole('button', { name: 'Start work…' })).toBeNull();
 
     // And the drop itself is refused out loud rather than swallowed.
     const user = userEvent.setup();
@@ -149,7 +150,7 @@ describe('agent → project, after the move (§5.3 row 1, §5.4)', () => {
     expect(live()).toContain("can't be launched on");
     await user.keyboard(' ');
 
-    expect(screen.queryByRole('dialog', { name: 'Launch' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Start work' })).toBeNull();
     await waitFor(() =>
       expect(
         within(screen.getByRole('status', { name: 'Notifications' })).getByText(
@@ -159,14 +160,16 @@ describe('agent → project, after the move (§5.3 row 1, §5.4)', () => {
     );
   });
 
-  it('offers the project-first launch button, which is §5.4’s pointer-free path', async () => {
+  it('offers the project-first Start work… button, which is §5.4’s pointer-free path', async () => {
     open({ agents: [PRIYA], projects: [LPM] });
     const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: 'Launch an agent…' }));
+    await user.click(await screen.findByRole('button', { name: 'Start work…' }));
 
-    const dialog = await screen.findByRole('dialog', { name: 'Launch' });
-    await waitFor(() => expect(within(dialog).getByLabelText('Project')).toHaveValue('lpm'));
-    expect(within(dialog).getByLabelText('Agent')).toHaveValue('');
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
+    // The project is answered and the agents are not — the mirror image of the
+    // card menu's way in, and the same dialog (§6).
+    await waitFor(() => expect(within(dialog).getByText('littlepocketmuseum')).toBeInTheDocument());
+    expect(within(dialog).getByRole('checkbox', { name: /^Priya/u })).not.toBeChecked();
   });
 });
 

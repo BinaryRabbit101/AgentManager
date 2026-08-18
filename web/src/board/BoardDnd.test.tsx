@@ -171,19 +171,21 @@ describe('the keyboard drag on the board (§5.4, IMPLEMENTATION §3)', () => {
     await user.keyboard('{Escape}');
 
     expect(announcement()).toContain('stayed where it was');
-    expect(screen.queryByRole('dialog', { name: 'Launch' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Start work' })).toBeNull();
   });
 });
 
 /**
  * The two meanings of an agent→agent drop (§5.3 rows 3 and 4).
  *
- * Both are live from M9: outside Reorder mode the drop opens §10.4's pair
- * dialog, inside it the drop reorders the board. Each keeps its own keyboard
- * path, which is what IMPLEMENTATION §11 then requires of both.
+ * Both are live: outside Reorder mode the drop opens §6's Start work with both
+ * cards already selected — which is what "pair" means now that the number of
+ * agents is a tick inside one flow rather than a choice of dialog — and inside
+ * it the drop reorders the board. Each keeps its own keyboard path, which is
+ * what IMPLEMENTATION §11 then requires of both.
  */
-describe('agent → agent: the pair gesture (§5.3 row 3, §10.4)', () => {
-  it('opens the pair dialog with both seats pre-filled, and starts nothing', async () => {
+describe('agent → agent: the pair gesture (§5.3 row 3, §6)', () => {
+  it('opens Start work with both agents selected and the pair chosen, and starts nothing', async () => {
     const fixture = serving({ agents: [PRIYA, SAM], projects: [LPM] });
     mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
@@ -196,7 +198,14 @@ describe('agent → agent: the pair gesture (§5.3 row 3, §10.4)', () => {
     expect(announcement()).toContain('Start a pair: Priya drafting, Sam reviewing.');
     await user.keyboard(' ');
 
-    await screen.findByRole('dialog', { name: 'Start a pair' });
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
+    // Both cards arrive ticked, and the shape the gesture meant is the one the
+    // radio opens on (§6): two agents default to the adversarial pair.
+    await waitFor(() =>
+      expect(within(dialog).getByRole('checkbox', { name: /^Priya/u })).toBeChecked(),
+    );
+    expect(within(dialog).getByRole('checkbox', { name: /^Sam/u })).toBeChecked();
+    expect(within(dialog).getByRole('radio', { name: /adversarial pair/iu })).toBeChecked();
     expect(announcement()).toContain('Nothing has started yet');
     // Nothing was written: this gesture is not a reorder any more.
     expect(fixture.puts).toEqual([]);
@@ -210,8 +219,15 @@ describe('agent → agent: the pair gesture (§5.3 row 3, §10.4)', () => {
 
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Actions for Priya' }));
-    await user.click(screen.getByRole('menuitem', { name: 'Start a pair…' }));
-    await screen.findByRole('dialog', { name: 'Start a pair' });
+    // One item, not two: the menu names the agent and the flow asks how many
+    // work on it, so pairing is Priya plus one more tick (§6).
+    await user.click(screen.getByRole('menuitem', { name: 'Start work…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
+    await waitFor(() =>
+      expect(within(dialog).getByRole('checkbox', { name: /^Priya/u })).toBeChecked(),
+    );
+    await user.click(within(dialog).getByRole('checkbox', { name: /^Sam/u }));
+    expect(within(dialog).getByRole('radio', { name: /adversarial pair/iu })).toBeChecked();
   });
 });
 
@@ -293,18 +309,20 @@ describe('Reorder mode — the pointer-free path to board order (§5.4)', () => 
   });
 });
 
-describe('the card menu — the non-drag path to the launch flow (§5.4)', () => {
-  it('opens the launch flow with the agent pre-filled and the project to pick', async () => {
+describe('the card menu — the non-drag path to Start work (§5.4)', () => {
+  it('opens the flow with the agent ticked and the project still to pick', async () => {
     const fixture = serving({ agents: [PRIYA], projects: [LPM] });
     mount(<App />, { route: BOARD_ROUTE, respond: fixture.respond });
     await ready();
 
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Actions for Priya' }));
-    await user.click(screen.getByRole('menuitem', { name: 'Launch on…' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Start work…' }));
 
-    const dialog = await screen.findByRole('dialog', { name: 'Launch' });
-    expect(within(dialog).getByLabelText('Agent')).toHaveValue('priya');
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
+    await waitFor(() =>
+      expect(within(dialog).getByRole('checkbox', { name: /^Priya/u })).toBeChecked(),
+    );
     expect(within(dialog).getByLabelText('Project')).toHaveValue('');
   });
 
@@ -340,6 +358,6 @@ describe('an archived agent is not draggable (§5.2)', () => {
     await user.click(screen.getByRole('button', { name: 'Archived' }));
     expect(screen.queryByRole('button', { name: 'Move or launch Old Hand' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Actions for Old Hand' }));
-    expect(screen.getByRole('menuitem', { name: 'Launch on…' })).toBeDisabled();
+    expect(screen.getByRole('menuitem', { name: 'Start work…' })).toBeDisabled();
   });
 });

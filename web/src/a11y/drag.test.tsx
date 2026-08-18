@@ -58,11 +58,11 @@ async function board(): Promise<void> {
  * The project cards moved to their own route, and a drop target needs a drag
  * source on the same screen — so the agent chips moved with them, the same way
  * the project page carries chips for its work-item rows. The criterion is
- * unchanged: the keyboard path and the pointer-free path both reach the launch
- * flow, and neither starts anything.
+ * unchanged: the keyboard path and the pointer-free path both reach §6's Start
+ * work, and neither starts anything.
  */
 describe('agent → project', () => {
-  it('keyboard: lift an agent chip, arrow to the project, drop into the launch flow', async () => {
+  it('keyboard: lift an agent chip, arrow to the project, drop into Start work', async () => {
     mountAt('/projects');
     const user = userEvent.setup();
 
@@ -75,31 +75,38 @@ describe('agent → project', () => {
     expect(announcement()).toContain('Launch Ada on littlepocketmuseum.');
     await user.keyboard(' ');
 
-    const dialog = await screen.findByRole('dialog', { name: 'Launch' });
-    await waitFor(() => expect(within(dialog).getByLabelText('Agent')).toHaveValue('ada'));
-    expect(within(dialog).getByLabelText('Project')).toHaveValue('lpm');
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
+    await waitFor(() =>
+      expect(within(dialog).getByRole('checkbox', { name: /^Ada/u })).toBeChecked(),
+    );
+    // The project the drop named is answered, so the picker is not asked again.
+    expect(within(dialog).getByText('littlepocketmuseum')).toBeInTheDocument();
     expect(announcement()).toContain('Nothing has started yet');
   }, 20_000);
 
-  it('pointer-free: the card menu’s Launch on…, and the project’s Launch an agent…', async () => {
+  it('pointer-free: the card menu’s Start work…, and the project card’s', async () => {
     mountAt('/agents');
     await board();
     let user = userEvent.setup();
 
     await user.click(screen.getByRole('button', { name: 'Actions for Ada' }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Launch on…' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Launch' });
-    expect(within(dialog).getByLabelText('Agent')).toHaveValue('ada');
+    await user.click(await screen.findByRole('menuitem', { name: 'Start work…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
+    await waitFor(() =>
+      expect(within(dialog).getByRole('checkbox', { name: /^Ada/u })).toBeChecked(),
+    );
     await user.keyboard('{Escape}');
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Launch' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Start work' })).toBeNull());
     cleanup();
 
     // The project-first half of the same pair, on the screen that now owns it.
     mountAt('/projects');
     user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: 'Launch an agent…' }));
-    const projectFirst = await screen.findByRole('dialog', { name: 'Launch' });
-    await waitFor(() => expect(within(projectFirst).getByLabelText('Project')).toHaveValue('lpm'));
+    await user.click(await screen.findByRole('button', { name: 'Start work…' }));
+    const projectFirst = await screen.findByRole('dialog', { name: 'Start work' });
+    await waitFor(() =>
+      expect(within(projectFirst).getByText('littlepocketmuseum')).toBeInTheDocument(),
+    );
   }, 20_000);
 });
 
@@ -119,8 +126,8 @@ describe('agent → work item', () => {
     expect(announcement()).toContain('The importer drops trailing commas');
     await user.keyboard(' ');
 
-    const dialog = await screen.findByRole('dialog', { name: 'Launch' });
-    // The item rides along: its title seeds the prompt and its scope shows.
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
+    // The item rides along: its title seeds the task and its scope shows.
     await waitFor(() =>
       expect(within(dialog).getByText(/Scoped to src\/import/u)).toBeInTheDocument(),
     );
@@ -134,15 +141,21 @@ describe('agent → work item', () => {
     const user = userEvent.setup();
 
     await user.click(screen.getByRole('button', { name: /Assign an agent/u }));
-    const dialog = await screen.findByRole('dialog', { name: 'Launch' });
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
     await waitFor(() =>
       expect(within(dialog).getByText(/Scoped to src\/import/u)).toBeInTheDocument(),
     );
   }, 20_000);
 });
 
+/**
+ * The gesture still means "these two, adversarially" — it just no longer picks
+ * a dialog to mean it in. Both cards arrive ticked in §6's one flow and the
+ * **Adversarial pair** radio is the one two agents open on, which is the same
+ * outcome expressed as a selection the user can still change.
+ */
 describe('agent → agent (the pair)', () => {
-  it('keyboard: lift one card, arrow to another, drop into the pair dialog', async () => {
+  it('keyboard: lift one card, arrow to another, drop into Start work with both ticked', async () => {
     mountAt('/agents');
     await board();
     const user = userEvent.setup();
@@ -153,23 +166,32 @@ describe('agent → agent (the pair)', () => {
     expect(announcement()).toContain('Start a pair: Ada drafting, Sam reviewing.');
     await user.keyboard(' ');
 
-    const dialog = await screen.findByRole('dialog', { name: 'Start a pair' });
-    await waitFor(() => expect(within(dialog).getByLabelText('drafter agent')).toHaveValue('ada'));
-    expect(within(dialog).getByLabelText('critic agent')).toHaveValue('sam');
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
+    await waitFor(() =>
+      expect(within(dialog).getByRole('checkbox', { name: /^Ada/u })).toBeChecked(),
+    );
+    expect(within(dialog).getByRole('checkbox', { name: /^Sam/u })).toBeChecked();
+    expect(within(dialog).getByRole('radio', { name: /adversarial pair/iu })).toBeChecked();
+    expect(within(dialog).getByText(/Ada drafts · Sam reviews\./u)).toBeInTheDocument();
     expect(announcement()).toContain('Nothing has started yet');
   }, 20_000);
 
-  it('pointer-free: the card menu’s Start a pair…', async () => {
+  it('pointer-free: the card menu’s Start work…, plus one more tick', async () => {
     mountAt('/agents');
     await board();
     const user = userEvent.setup();
 
     await user.click(screen.getByRole('button', { name: 'Actions for Ada' }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Start a pair…' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Start a pair' });
-    await waitFor(() => expect(within(dialog).getByLabelText('drafter agent')).toHaveValue('ada'));
-    // The critic seat is left to pick — the menu names one agent, not two.
-    expect(within(dialog).getByLabelText('critic agent')).toHaveValue('');
+    await user.click(await screen.findByRole('menuitem', { name: 'Start work…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Start work' });
+    await waitFor(() =>
+      expect(within(dialog).getByRole('checkbox', { name: /^Ada/u })).toBeChecked(),
+    );
+    // The second agent is left to pick — the menu names one, not two — and
+    // ticking them is what turns a solo into a pair (§6).
+    expect(within(dialog).getByRole('checkbox', { name: /^Sam/u })).not.toBeChecked();
+    await user.click(within(dialog).getByRole('checkbox', { name: /^Sam/u }));
+    expect(within(dialog).getByRole('radio', { name: /adversarial pair/iu })).toBeChecked();
   }, 20_000);
 });
 
@@ -191,8 +213,8 @@ describe('board reorder', () => {
       expect(mounted.calls.filter((call) => call === '/api/roster/board-order')).toHaveLength(1),
     );
     expect(announcement()).toContain('Moved Ada');
-    // …and no pair dialog: the two agent→agent gestures stay apart.
-    expect(screen.queryByRole('dialog', { name: 'Start a pair' })).toBeNull();
+    // …and no flow opened: the two agent→agent gestures stay apart.
+    expect(screen.queryByRole('dialog', { name: 'Start work' })).toBeNull();
   }, 20_000);
 
   it('pointer-free: the ▲▼ controls, persisted once on leaving the mode', async () => {
@@ -225,7 +247,6 @@ describe('every gesture is announced, and Escape cancels every one of them', () 
     await user.keyboard('{Escape}');
 
     expect(announcement()).toContain('stayed where it was');
-    expect(screen.queryByRole('dialog', { name: 'Launch' })).toBeNull();
-    expect(screen.queryByRole('dialog', { name: 'Start a pair' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Start work' })).toBeNull();
   }, 20_000);
 });

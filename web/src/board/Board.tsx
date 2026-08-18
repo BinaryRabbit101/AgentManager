@@ -15,7 +15,7 @@
  * and reorder, and every gesture still has the non-drag equivalent §5.4
  * requires: the card `⋯` menu for launching and pairing, and an explicit
  * **Reorder** mode with ▲▼ controls that persists **once** when it is left. All
- * of them end in the same two functions — `openLaunch` and `persistBoardOrder`
+ * of them end in the same two functions — `openStartWork` and `persistBoardOrder`
  * — because "there is no 'mobile launch' and 'desktop launch'".
  */
 
@@ -49,8 +49,7 @@ export function Board(): ReactElement {
   const fleet = useAppStore((store) => store.fleet);
   const reorderMode = useAppStore((store) => store.reorderMode);
   const setReorderMode = useAppStore((store) => store.setReorderMode);
-  const openLaunch = useAppStore((store) => store.openLaunch);
-  const openPair = useAppStore((store) => store.openPair);
+  const openStartWork = useAppStore((store) => store.openStartWork);
   const pushToast = useAppStore((store) => store.pushToast);
 
   const agents = roster.data?.agents ?? [];
@@ -105,12 +104,22 @@ export function Board(): ReactElement {
       switch (outcome.kind) {
         case 'launch':
           // §5.3: "Nothing is started by the drop itself."
-          openLaunch({ agentId: outcome.agentId, projectId: outcome.projectId, origin: 'drag' });
+          openStartWork({
+            agentIds: [outcome.agentId],
+            projectId: outcome.projectId,
+            origin: 'drag',
+          });
           return;
         case 'pair':
-          // §5.3 row 3: the dragged card takes the drafting seat, the card it
-          // was dropped on takes the critic seat. Nothing starts here either.
-          openPair({ agentId: outcome.agentId, withAgentId: outcome.withAgentId });
+          // §5.3 row 3: both cards arrive selected, and §6's "How they work"
+          // opens on **Adversarial pair** because two agents are what the
+          // gesture chose — the drag still means what it meant, it just no
+          // longer picks the dialog. Nothing starts here either.
+          openStartWork({
+            agentIds: [outcome.agentId, outcome.withAgentId],
+            projectId: null,
+            origin: 'drag',
+          });
           return;
         case 'reorder':
           reorderTo(outcome.agentId, outcome.overAgentId, true);
@@ -122,7 +131,7 @@ export function Board(): ReactElement {
           return;
       }
     },
-    [openLaunch, openPair, pushToast, reorderTo],
+    [openStartWork, pushToast, reorderTo],
   );
 
   const move = useCallback(

@@ -73,6 +73,7 @@ describe('everything that acts is a real control (§15)', () => {
       'core-loop.css',
       'pages.css',
       'collaboration.css',
+      'startwork.css',
       'theme/tokens.css',
     ];
     for (const name of styles) {
@@ -120,22 +121,14 @@ describe('every dialog traps focus, closes on Escape, and restores it (§15)', (
   /** Opens each dialog the way a user does, and names its trigger. */
   const DIALOGS = [
     {
-      name: 'Launch',
+      // §6's one flow, reached from the card menu. It used to be two entries
+      // here for two dialogs; there is one of each now.
+      name: 'Start work',
       route: '/agents',
       open: async (user: ReturnType<typeof userEvent.setup>) => {
         const trigger = await screen.findByRole('button', { name: 'Actions for Ada' });
         await user.click(trigger);
-        await user.click(await screen.findByRole('menuitem', { name: 'Launch on…' }));
-        return trigger;
-      },
-    },
-    {
-      name: 'Start a pair',
-      route: '/agents',
-      open: async (user: ReturnType<typeof userEvent.setup>) => {
-        const trigger = await screen.findByRole('button', { name: 'Actions for Ada' });
-        await user.click(trigger);
-        await user.click(await screen.findByRole('menuitem', { name: 'Start a pair…' }));
+        await user.click(await screen.findByRole('menuitem', { name: 'Start work…' }));
         return trigger;
       },
     },

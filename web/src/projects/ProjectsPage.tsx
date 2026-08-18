@@ -20,9 +20,12 @@
  * reads `status`, `archivedAt` and the server's `missing` condition, and the
  * card dims and says why rather than accepting a drop that would fail on submit.
  *
- * **Launch an agent…** is §5.4's pointer-free counterpart to dropping here. It
- * lives on the card as well as on the project page (§8.2, M7) because there is
- * no drag at all on a phone.
+ * **Start work…** is §5.4's pointer-free counterpart to dropping here. It lives
+ * on the card as well as on the project page (§8.2, M7) because there is no drag
+ * at all on a phone. It replaces the pair of buttons this card used to carry —
+ * "Launch an agent…" and "Start a pair…" — because how many agents work on
+ * something is a question §6 now asks *inside* the flow, after the project and
+ * the task, rather than one the card makes the user answer first.
  */
 
 import { useDraggable, useDroppable } from '@dnd-kit/core';
@@ -32,7 +35,7 @@ import { Link } from 'react-router-dom';
 import { useProjects, useRoster } from '../api/queries';
 import { failureOf } from '../api/result';
 import { projectLaunchRefusal, type Project } from '../api/types';
-import { useHasOrchestrator, useServices } from '../app/AppContext';
+import { useServices } from '../app/AppContext';
 import { BoardDndContext } from '../board/BoardDndContext';
 import { agentTarget, projectTarget, type DropOutcome } from '../board/dnd';
 import { Icon } from '../icons/Sprite';
@@ -42,9 +45,7 @@ import { cloneProgressLabel } from './clone';
 import { QuickAddDialog } from './QuickAddDialog';
 
 function ProjectCard({ project }: { readonly project: Project }): ReactElement {
-  const openLaunch = useAppStore((store) => store.openLaunch);
-  const openPair = useAppStore((store) => store.openPair);
-  const hasOrchestrator = useHasOrchestrator();
+  const openStartWork = useAppStore((store) => store.openStartWork);
   const clone = useAppStore((store) => store.clones[project.id]);
   const refusal = projectLaunchRefusal(project);
   const { setNodeRef, isOver } = useDroppable({
@@ -106,21 +107,12 @@ function ProjectCard({ project }: { readonly project: Project }): ReactElement {
           <button
             type="button"
             className="button project-card__launch"
-            onClick={() => openLaunch({ agentId: null, projectId: project.id, origin: 'project' })}
+            onClick={() =>
+              openStartWork({ agentIds: [], projectId: project.id, origin: 'project' })
+            }
           >
-            Launch an agent…
+            Start work…
           </button>
-          {/* §10.4's dialog — see the note on the project page's own copy. */}
-          {hasOrchestrator ? (
-            <button
-              type="button"
-              className="button"
-              data-action="pair"
-              onClick={() => openPair({ agentId: null, withAgentId: null, projectId: project.id })}
-            >
-              Start a pair…
-            </button>
-          ) : null}
         </div>
       ) : (
         <p className="project-card__refusal">Can’t launch: {refusal}.</p>
@@ -155,7 +147,7 @@ export function ProjectsPage(): ReactElement {
   const { client } = useServices();
   const projects = useProjects(client);
   const roster = useRoster(client);
-  const openLaunch = useAppStore((store) => store.openLaunch);
+  const openStartWork = useAppStore((store) => store.openStartWork);
   const pushToast = useAppStore((store) => store.pushToast);
   const [adding, setAdding] = useState(false);
 
@@ -178,7 +170,11 @@ export function ProjectsPage(): ReactElement {
       switch (outcome.kind) {
         case 'launch':
           // §5.3: "Nothing is started by the drop itself."
-          openLaunch({ agentId: outcome.agentId, projectId: outcome.projectId, origin: 'drag' });
+          openStartWork({
+            agentIds: [outcome.agentId],
+            projectId: outcome.projectId,
+            origin: 'drag',
+          });
           return;
         case 'refused':
           pushToast(`${outcome.reason} Nothing was started.`);
@@ -192,7 +188,7 @@ export function ProjectsPage(): ReactElement {
           return;
       }
     },
-    [openLaunch, pushToast],
+    [openStartWork, pushToast],
   );
 
   const list = projects.data?.projects ?? [];
@@ -232,7 +228,7 @@ export function ProjectsPage(): ReactElement {
         {agentTargets.length === 0 || list.length === 0 ? null : (
           <div className="project-agent-strip">
             <p id="projects-strip-hint">
-              Drag an agent onto a project, or use its Launch an agent… button.
+              Drag an agent onto a project, or use its Start work… button.
             </p>
             <ul aria-labelledby="projects-strip-hint">
               {agents.map((agent) => (

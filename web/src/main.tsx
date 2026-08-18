@@ -21,6 +21,9 @@ import './home.css';
 // so the editor's connector UI can be edited without touching the base sheet,
 // and it lands after the utilities (`.field`, `.button`, `.badge`) it builds on.
 import './integrations.css';
+// §6's Start work flow, beside both for the same reason: one sheet per screen,
+// edited independently, landing after the system it builds on.
+import './startwork.css';
 
 import { App } from './App';
 import { AvatarCache } from './api/avatars';

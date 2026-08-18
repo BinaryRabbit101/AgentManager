@@ -2,13 +2,15 @@
  * The card's `⋯` menu (DESIGN §5.2, §5.4).
  *
  * §5.4 is a hard requirement — "the phone browser has no drag, and keyboard
- * users must not be second class" — and this is the agent→project row of its
- * table: **Launch on…**, which opens the same launch flow the drop opens, with
- * the project picker unset instead of pre-filled.
+ * users must not be second class" — and this is where **both** of its agent
+ * rows land: **Start work…** opens §6's one flow with this card pre-selected
+ * and the project still to pick, which is the pointer-free equivalent of
+ * dropping the card on a project *and* of dropping it on another agent. It used
+ * to be two entries, **Launch on…** and **Start a pair…**, and the choice
+ * between them was the app asking which dialog the user wanted before they had
+ * decided what the work was — the flow now asks that last (§6).
  *
- * §5.2's other entries: **Edit**, **Duplicate** and **Export** (M8), and
- * **Start a pair…** (M9) — §5.4's pointer-free equivalent of dropping one card
- * on another, opening the same dialog the drop opens.
+ * §5.2's other entries: **Edit**, **Duplicate** and **Export** (M8).
  *
  * **Allow remote starts** is §5.2's home-edition entry and §13.2's "the same
  * toggle appears on the board card". It is the only place on the board a grant
@@ -56,8 +58,7 @@ export function AgentCardMenu({
   grant,
 }: AgentCardMenuProps): ReactElement {
   const [open, setOpen] = useState(false);
-  const openLaunch = useAppStore((store) => store.openLaunch);
-  const openPair = useAppStore((store) => store.openPair);
+  const openStartWork = useAppStore((store) => store.openStartWork);
   const pushToast = useAppStore((store) => store.pushToast);
   const { client } = useServices();
   const queryClient = useQueryClient();
@@ -146,23 +147,13 @@ export function AgentCardMenu({
       {open ? (
         <ul className="card-menu__list" role="menu" aria-label={`${agentName} actions`}>
           <li role="none">
-            <button
-              type="button"
-              role="menuitem"
-              disabled={archived}
-              onClick={() => {
-                close();
-                openLaunch({ agentId, projectId: null, origin: 'agent-menu' });
-              }}
-            >
-              Launch on…
-            </button>
-          </li>
-          <li role="none">
             {/*
-              §5.4's agent→agent row: the pointer-free equivalent of dropping
-              one card on another. It opens the *same* dialog the drop opens,
-              with this card in the drafting seat and the critic seat to pick.
+              §5.4's two agent rows, in one item. The flow opens with this card
+              already ticked and every other agent one tick away, so "launch it
+              on a project" and "pair it with someone" are the same gesture
+              followed by a different second tick — which is what makes the
+              pointer-free path equal to the drag rather than a reduced version
+              of it.
             */}
             <button
               type="button"
@@ -170,10 +161,10 @@ export function AgentCardMenu({
               disabled={archived}
               onClick={() => {
                 close();
-                openPair({ agentId, withAgentId: null });
+                openStartWork({ agentIds: [agentId], projectId: null, origin: 'agent-menu' });
               }}
             >
-              Start a pair…
+              Start work…
             </button>
           </li>
           <li role="none">

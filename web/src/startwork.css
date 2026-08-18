@@ -1,0 +1,173 @@
+/**
+ * The Start work flow (DESIGN §6).
+ *
+ * Deliberately small, for the same reason `home.css` is: the dialog is built out
+ * of things the design system already draws — `.dialog` and `.dialog-scrim`,
+ * `.field`, `.button`, `.badge`, `.notice`, `.empty`, and the `.launch__*`
+ * family that the flow this replaced left behind (the collapsed section, the
+ * toggle row, the elevation banner, the actions bar). What is left here is the
+ * step rhythm, the roster rows, and the one thing a four-step dialog needs that
+ * a one-step one did not: somewhere to scroll.
+ *
+ * No fixed widths and no fixed grid tracks. §2.3 makes this a bottom sheet on a
+ * phone and §15 wants it readable at 390px and at 200% zoom, so every row is a
+ * wrapping flex line and the dialog itself is capped by viewport height rather
+ * than by a pixel count.
+ */
+
+.startwork {
+  /*
+    Four steps is more than fits a phone, so the dialog scrolls **inside** the
+    scrim rather than growing past it — the actions bar stays reachable and the
+    page behind never gains a second scrollbar.
+  */
+  max-height: min(88vh, 60rem);
+  overflow-y: auto;
+  width: min(38rem, 94vw);
+}
+
+.startwork__step {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 0;
+  padding: var(--space-3) 0 0;
+  min-width: 0;
+}
+
+.startwork__step:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* A step heading is a label for the step, not a document section, so it is set
+   at meta weight rather than competing with the dialog's own h2. */
+.startwork__step > h3,
+.startwork__step > legend {
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  font-size: var(--font-size-meta);
+  font-weight: var(--weight-semibold);
+  color: var(--text-muted);
+  text-transform: none;
+}
+
+.startwork__chosen {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-weight: var(--weight-semibold);
+}
+
+/* §5.3's refusal, off the drag surface: shown with its reason, never omitted. */
+.startwork__refusals {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-meta);
+}
+
+.startwork__roster {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  /*
+    Capped rather than open-ended: a roster of thirty would push the task box
+    off the screen, which is the field the fast path types into. The list is the
+    thing that scrolls, so the steps below it stay where the user left them.
+  */
+  max-height: 16rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.startwork__roster > li + li {
+  border-top: 1px solid var(--border);
+}
+
+/*
+  The whole row is the label, so the tap target is the row and not the 16px box
+  inside it (§15's 44px rule on coarse pointers).
+*/
+.startwork__agent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  font-size: var(--font-size-meta);
+  transition: background-color var(--duration-fast) var(--ease);
+}
+
+.startwork__agent:hover {
+  background: var(--surface-hover);
+}
+
+.startwork__agent-name {
+  font-weight: var(--weight-semibold);
+  font-size: var(--font-size-body);
+}
+
+/* The tagline: one line of the agent's own voice (§14.1), truncated rather than
+   wrapping the row to three lines. It takes the slack so the badges sit right. */
+.startwork__agent-meta {
+  flex: 1 1 8rem;
+  min-width: 0;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+  The role hint. Muted on purpose: owner decision 2026-08-18 makes declared
+  roles a *suggestion*, and a hint drawn as loudly as a rule reads as one.
+*/
+.startwork__agent-roles {
+  color: var(--text-muted);
+  font-size: var(--font-size-meta);
+}
+
+.startwork__note {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-meta);
+  text-wrap: pretty;
+}
+
+.startwork__pattern-fields {
+  margin-top: var(--space-3);
+}
+
+/*
+  Why the primary button is off, beside the primary button. It sits first in the
+  actions row and takes the slack, so it reads as an explanation of the control
+  next to it rather than as an error about something that already happened.
+*/
+.startwork__blocker {
+  flex: 1 1 12rem;
+  margin: 0;
+  align-self: center;
+  color: var(--text-muted);
+  font-size: var(--font-size-meta);
+  text-wrap: pretty;
+}
+
+/*
+  The actions bar is sticky inside a scrolling dialog: on a phone the task box
+  and the roster together are taller than the sheet, and a Start button that has
+  scrolled away is a flow with no exit. It keeps `.launch__actions`' own top
+  border as the separator and paints the dialog's ground, so the rows scrolling
+  under it disappear rather than showing through.
+*/
+.startwork .launch__actions {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface-raised);
+}

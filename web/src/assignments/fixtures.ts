@@ -263,5 +263,31 @@ export const PATTERNS: PatternListView = {
         ],
       },
     },
+    /**
+     * orchestrator §3.5, as `GET /api/patterns` serves it (engine.ts).
+     *
+     * **One** seat — the workers hold seats in the child assignments the lead
+     * mints, never on this one — and `defaults.tokenBudget: null` with
+     * `requires.tokenBudget: true`, which is the pair of facts §6's team option
+     * turns into a required field: "a default cap on work that creates more
+     * work is a number nobody agreed to" (§7.2).
+     */
+    {
+      id: 'overseer',
+      driver: 'sequential',
+      seats: [
+        {
+          key: 'lead',
+          roles: ['overseer'],
+          required: true,
+          preferredTier: 'max',
+          write: false,
+        },
+      ],
+      requires: { artifactPath: false, roundCap: true, tokenBudget: true },
+      defaults: { roundCap: 3, tokenBudget: null },
+      maxRoundCap: 6,
+      cardSeatOrder: ['lead'],
+    },
   ],
 };

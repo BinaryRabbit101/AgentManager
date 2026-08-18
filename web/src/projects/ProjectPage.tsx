@@ -2,7 +2,8 @@
  * The project page (DESIGN §8.2) — four regions, in priority order.
  *
  * 1. **Header** — name, path, branch, vcs, `status`, the server's health chips,
- *    **Launch an agent…**, and **Relocate** when the folder is `missing`.
+ *    **Start work…** (§6's one flow, pre-filled with this project), and
+ *    **Relocate** when the folder is `missing`.
  * 2. **Review needed** — retained worktrees. "Projects never discards agent
  *    output (§4.4), so the UI never makes cleanup one click": every Clean up is
  *    behind a confirmation that names the branch.
@@ -51,7 +52,7 @@ import {
   type WorkItem,
   type WorkspaceListEntry,
 } from '../api/types';
-import { useHasOrchestrator, useServices } from '../app/AppContext';
+import { useServices } from '../app/AppContext';
 import { BoardDndContext } from '../board/BoardDndContext';
 import { agentTarget, projectTarget, workItemTarget, type DropOutcome } from '../board/dnd';
 import { useAppStore } from '../state/store';
@@ -65,7 +66,7 @@ export function ProjectPage(): ReactElement {
   const project = useProject(client, id);
   const roster = useRoster(client);
   const workItems = useWorkItems(client, id);
-  const openLaunch = useAppStore((store) => store.openLaunch);
+  const openStartWork = useAppStore((store) => store.openStartWork);
   const pushToast = useAppStore((store) => store.pushToast);
 
   const items = workItems.data?.workItems ?? [];
@@ -88,11 +89,15 @@ export function ProjectPage(): ReactElement {
     (outcome: DropOutcome) => {
       switch (outcome.kind) {
         case 'launch':
-          openLaunch({ agentId: outcome.agentId, projectId: outcome.projectId, origin: 'drag' });
+          openStartWork({
+            agentIds: [outcome.agentId],
+            projectId: outcome.projectId,
+            origin: 'drag',
+          });
           return;
         case 'launch-work-item':
-          openLaunch({
-            agentId: outcome.agentId,
+          openStartWork({
+            agentIds: [outcome.agentId],
             projectId: outcome.projectId,
             origin: 'work-item',
             workItemIds: [outcome.workItemId],
@@ -107,7 +112,7 @@ export function ProjectPage(): ReactElement {
           return;
       }
     },
-    [openLaunch, pushToast],
+    [openStartWork, pushToast],
   );
 
   if (project.isError) {
@@ -170,9 +175,7 @@ export function ProjectPage(): ReactElement {
 function ProjectHeader({ project }: { readonly project: ProjectDetail }): ReactElement {
   const { client } = useServices();
   const queryClient = useQueryClient();
-  const openLaunch = useAppStore((store) => store.openLaunch);
-  const openPair = useAppStore((store) => store.openPair);
-  const hasOrchestrator = useHasOrchestrator();
+  const openStartWork = useAppStore((store) => store.openStartWork);
   const [relocating, setRelocating] = useState(false);
   const [newPath, setNewPath] = useState('');
   const [failure, setFailure] = useState<string | undefined>();
@@ -224,31 +227,24 @@ function ProjectHeader({ project }: { readonly project: ProjectDetail }): ReactE
 
       {refusal === undefined ? (
         <div className="project-card__actions">
+          {/*
+            One button, because there is one flow (§6). This screen used to
+            carry **Launch an agent…** beside **Start a pair…**, which made the
+            number of agents the first question the project page asked — before
+            the user had said what the work was. The flow asks it last now, from
+            the selection itself, so pointing one agent or five at this project
+            is the same button.
+          */}
           <button
             type="button"
             className="button"
             data-variant="primary"
-            onClick={() => openLaunch({ agentId: null, projectId: project.id, origin: 'project' })}
+            onClick={() =>
+              openStartWork({ agentIds: [], projectId: project.id, origin: 'project' })
+            }
           >
-            Launch an agent…
+            Start work…
           </button>
-          {/*
-            §10.4's dialog, reached from here as well as from the board. Launch
-            seats **one** agent — that is what a solo assignment is — so a project
-            screen offering only Launch offers no way at all to point two agents
-            at the project unless the user already knows to drag one card onto
-            another on the board. Same dialog, same seats; only the way in is new.
-          */}
-          {hasOrchestrator ? (
-            <button
-              type="button"
-              className="button"
-              data-action="pair"
-              onClick={() => openPair({ agentId: null, withAgentId: null, projectId: project.id })}
-            >
-              Start a pair…
-            </button>
-          ) : null}
         </div>
       ) : (
         <p className="project-card__refusal">Can’t launch: {refusal}.</p>
@@ -555,7 +551,7 @@ interface WorkItemRowProps {
 }
 
 function WorkItemRow({ item, position, total, onMove }: WorkItemRowProps): ReactElement {
-  const openLaunch = useAppStore((store) => store.openLaunch);
+  const openStartWork = useAppStore((store) => store.openStartWork);
   const { setNodeRef, isOver } = useDroppable({
     id: item.id,
     data: { type: 'workItem', workItemId: item.id, projectId: item.projectId },
@@ -578,13 +574,14 @@ function WorkItemRow({ item, position, total, onMove }: WorkItemRowProps): React
         </span>
       )}
 
-      {/* §5.4's pointer-free equivalent of the drop. */}
+      {/* §5.4's pointer-free equivalent of the drop — §6's flow with the item
+          attached and the agents still to pick. */}
       <button
         type="button"
         className="button"
         onClick={() =>
-          openLaunch({
-            agentId: null,
+          openStartWork({
+            agentIds: [],
             projectId: item.projectId,
             origin: 'work-item',
             workItemIds: [item.id],
