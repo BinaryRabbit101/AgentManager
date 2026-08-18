@@ -33,6 +33,7 @@
     "typecheck:electron": "tsc -p electron/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:live": "node --env-file-if-exists=.env node_modules/vitest/vitest.mjs run --project server src/modules/runner/__spike__/sdk.spike.test.ts src/modules/orchestrator/__spike__/sdk.spike.test.ts src/modules/roster/draft.live.test.ts",
     "test:boundary": "vitest run --project server boundary src/lifecycle/bind.test.ts src/lifecycle/process.test.ts src/main.test.ts src/modules/runner/boundaries.test.ts",
     "checks:ui": "node scripts/ui-manual-checks.mjs",
     "checks:a11y": "vitest run --project web web/src/a11y",

@@ -16,6 +16,8 @@ coverage/
 # The data root lives outside this repository — nothing under it is ever written here.
 .env
 .env.*
+# ...except the committed template of which keys exist (never their values).
+!.env.example
 *.local.json
 
 # Agent worktrees (created by Claude Code inside the repo directory)
