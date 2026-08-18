@@ -22,8 +22,9 @@
 .assignment {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: var(--space-4);
   max-width: 70rem;
+  min-width: 0;
 }
 
 /*
@@ -38,15 +39,18 @@
   background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 0.75rem 1rem;
+  box-shadow: var(--shadow-card);
+  padding: var(--space-3) var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .assignment__header h2 {
   margin: 0;
-  font-size: 1.25rem;
+  font-size: var(--font-size-page);
+  overflow-wrap: anywhere;
 }
 
 .assignment__facts,
@@ -54,15 +58,16 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-1) var(--space-3);
   margin: 0;
+  font-size: var(--font-size-meta);
 }
 
 .assignment__seats {
   list-style: none;
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
+  gap: var(--space-2) var(--space-4);
   margin: 0;
   padding: 0;
 }
@@ -70,7 +75,13 @@
 .assignment__seats li {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.assignment__seat-name {
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
 }
 
 .assignment__seat-role,
@@ -78,20 +89,23 @@
 .assignment__artifact,
 .turn__round {
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: var(--font-size-meta);
 }
 
 .assignment__pips {
   display: inline-flex;
-  gap: 0.2rem;
-  margin-left: 0.4rem;
+  gap: var(--space-1);
+  margin-left: var(--space-1);
 }
 
+/* Rounds used, as a row of pips: an empty pip is an outline, a used one is
+   filled. The number is beside them (§10.2); these only make it scannable. */
 .assignment__pip {
   width: 0.6rem;
   height: 0.6rem;
-  border-radius: 50%;
+  border-radius: var(--radius-pill);
   border: 1px solid var(--border-strong);
+  background: var(--surface-sunken);
   display: inline-block;
 }
 
@@ -104,7 +118,7 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--space-2);
   font-variant-numeric: tabular-nums;
 }
 
@@ -113,7 +127,7 @@
   width: 6rem;
   max-width: 30vw;
   height: 0.5rem;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: var(--surface-sunken);
   border: 1px solid var(--border);
   background-image: linear-gradient(to right, var(--accent) var(--fill, 0%), transparent 0);
@@ -126,13 +140,26 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
+/* A round is a divider with a name on it, not a heading competing with the
+   assignment's own — hence the rule through it and the micro size. */
 .assignment__round h3 {
-  margin: 0 0 0.5rem;
-  font-size: 0.95rem;
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-micro);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
   color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.assignment__round h3::after {
+  content: '';
+  flex: 1 1 0;
+  border-top: 1px solid var(--border);
 }
 
 .turn,
@@ -141,7 +168,55 @@
   background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 0.75rem;
+  box-shadow: var(--shadow-card);
+  padding: var(--space-3) var(--space-4);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/*
+  A turn carries its own status word (§10.2), and the leading edge puts that
+  word's tone family on the block — so a stack of eight turns shows at a glance
+  which one stopped. Colour is never alone: `.turn__status` is right there.
+*/
+.turn {
+  border-inline-start: 3px solid var(--border);
+}
+
+.turn[data-status='planned'] {
+  border-inline-start-color: var(--status-queued);
+}
+
+.turn[data-status='running'] {
+  border-inline-start-color: var(--status-working);
+}
+
+.turn[data-status='reported'] {
+  border-inline-start-color: var(--status-done);
+}
+
+.turn[data-status='blocked'] {
+  border-inline-start-color: var(--warn);
+}
+
+.turn[data-status='failed'],
+.turn[data-status='orphaned'] {
+  border-inline-start-color: var(--danger);
+}
+
+/* An inline question is a decision inside the conversation; it takes the same
+   attention ground the transcript's question block does, so the two read as the
+   same event seen from two screens. */
+.inline-question {
+  border-inline-start: 3px solid var(--warn);
+  background: var(--tint-attention);
+  border-color: var(--tint-attention);
+}
+
+.inline-question[data-answered='true'] {
+  background: var(--surface-raised);
+  border-color: var(--border);
+  border-inline-start-color: var(--status-done);
 }
 
 /*
@@ -159,64 +234,97 @@
   }
 }
 
+/* Who spoke, in the seat's own name and avatar — §2.3 says that row is what
+   carries seat identity once the two columns stack on a phone. */
 .turn__who,
 .message__who,
 .inline-question__head {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  margin: 0 0 0.4rem;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-meta);
+  min-width: 0;
+}
+
+.turn__name,
+.message__who strong {
+  font-weight: var(--weight-semibold);
+  font-size: var(--font-size-body);
+  overflow-wrap: anywhere;
 }
 
 .turn__headline {
-  margin: 0 0 0.4rem;
+  margin: 0 0 var(--space-2);
+  font-weight: var(--weight-semibold);
+  max-width: var(--measure);
+  text-wrap: pretty;
 }
 
 .turn__excerpt {
-  margin: 0.4rem 0;
+  margin: var(--space-2) 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  max-width: var(--measure);
+  color: var(--text-muted);
+  border-inline-start: 2px solid var(--border);
+  padding-inline-start: var(--space-3);
 }
 
 .turn__blocking,
 .turn__artifacts,
 .turn__non-blocking ul {
-  margin: 0.25rem 0;
-  padding-left: 1.1rem;
+  margin: var(--space-1) 0;
+  padding-left: var(--space-5);
+  font-size: var(--font-size-meta);
 }
 
 .turn__severity {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   color: var(--danger);
 }
 
 .turn__status {
-  margin: 0.25rem 0;
+  margin: var(--space-1) 0;
   color: var(--warn);
+  font-size: var(--font-size-meta);
+  font-weight: var(--weight-semibold);
 }
 
+/* A message is an aside inside the conversation: indented, sunken, quieter. */
 .message {
-  margin-left: 1.5rem;
+  margin-left: var(--space-5);
   background: var(--surface-sunken);
+  box-shadow: none;
+  font-size: var(--font-size-meta);
+}
+
+.message__body {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: var(--measure);
 }
 
 .message__delivery {
-  margin: 0.25rem 0 0;
+  margin: var(--space-2) 0 0;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: var(--font-size-micro);
 }
 
+/* §10.2: an unseen message is the one fact on this screen that can go stale
+   silently, so it is the one that gets the danger colour and the weight. */
 .message__delivery[data-unseen='true'] {
   color: var(--danger);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 
 .assignment__actions,
 .assignment__edit {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-2);
   align-items: flex-end;
 }
 
@@ -227,23 +335,26 @@
 .pattern-create__seat {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.5rem 0.75rem;
-  margin: 0 0 0.5rem;
+  background: var(--surface-sunken);
+  padding: var(--space-2) var(--space-3);
+  margin: 0 0 var(--space-2);
+  min-width: 0;
 }
 
 .pattern-create__roles,
 .pattern-create__tier {
   color: var(--text-muted);
-  font-weight: 400;
+  font-weight: var(--weight-normal);
+  font-size: var(--font-size-meta);
 }
 
 .pattern-create__warnings {
   list-style: none;
-  margin: 0.5rem 0;
+  margin: var(--space-2) 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: var(--space-1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -254,63 +365,115 @@
 .settings {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: var(--space-5);
   max-width: 70rem;
+  min-width: 0;
 }
 
 .panel {
   background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 1rem;
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4);
+  min-width: 0;
 }
 
 .panel h3 {
-  margin: 0 0 0.25rem;
+  margin: 0 0 var(--space-1);
 }
 
 .panel__provenance,
 .settings__layer {
   color: var(--text-muted);
-  font-size: 0.85rem;
-  margin: 0 0 0.5rem;
+  font-size: var(--font-size-meta);
+  margin: 0 0 var(--space-3);
 }
 
 .usage__windows {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
-  gap: 0.75rem;
+  gap: var(--space-3);
   margin: 0;
 }
 
+/*
+  A window is a stat tile: the number is the point, the label is the caption,
+  and the two are stacked rather than run together. The sunken ground separates
+  a row of tiles from the panel holding them without another border.
+*/
 .usage__window {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.5rem 0.75rem;
+  background: var(--surface-sunken);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.usage__window dt {
+  font-size: var(--font-size-micro);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--text-muted);
+}
+
+.usage__window dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .usage__number {
   font-variant-numeric: tabular-nums;
-  font-size: 1.2rem;
+  font-size: var(--font-size-page);
+  font-weight: var(--weight-semibold);
+  line-height: var(--line-tight);
 }
 
 /* A table is genuinely wide; it scrolls inside its own box, never the page. */
 .table-scroll {
   overflow-x: auto;
   max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overscroll-behavior-x: contain;
 }
 
 .table-scroll table {
   border-collapse: collapse;
   min-width: 32rem;
+  width: 100%;
+  font-size: var(--font-size-meta);
 }
 
 .table-scroll th,
 .table-scroll td {
   text-align: left;
-  padding: 0.35rem 0.6rem;
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
+}
+
+.table-scroll th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  font-size: var(--font-size-micro);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  font-weight: var(--weight-semibold);
+}
+
+.table-scroll td {
+  font-variant-numeric: tabular-nums;
+}
+
+.table-scroll tr:last-child td {
+  border-bottom: 0;
 }
 
 .cooldown {
@@ -325,7 +488,15 @@
   background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 1rem;
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4);
+  min-width: 0;
+}
+
+.settings__section > h3 {
+  margin: 0 0 var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
 }
 
 .settings__list {
@@ -334,42 +505,70 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .settings__row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-2) var(--space-3);
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--border);
-  padding-bottom: 0.4rem;
+  padding-bottom: var(--space-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
+.settings__list li:last-child .settings__row,
+.settings__row:last-child {
+  border-bottom: 0;
+}
+
+/*
+  A token in plaintext is shown once and copied; it is the one string on the
+  screen where a misread character costs a round trip, so it gets the mono face
+  at body size and room to breathe rather than the caption treatment.
+*/
 .token-plaintext {
   font-family: var(--font-mono);
+  font-size: var(--font-size-meta);
+  line-height: 1.6;
   overflow-wrap: anywhere;
   background: var(--surface-sunken);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  padding: 0.5rem;
+  padding: var(--space-3);
+  min-width: 0;
 }
 
+/*
+  The QR stays on white in both themes — a phone camera reading an inverted code
+  is a coin toss — so it carries its own quiet frame rather than sitting as a
+  white slab on charcoal.
+*/
 .qr {
   display: block;
   width: min(14rem, 60vw);
   height: auto;
   image-rendering: pixelated;
   background: #ffffff;
+  border: var(--space-2) solid #ffffff;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
 }
 
 .pairing {
   max-width: 30rem;
-  margin: 3rem auto;
+  margin: var(--space-7) auto;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-raised);
 }
 
 /*

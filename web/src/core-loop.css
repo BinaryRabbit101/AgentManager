@@ -10,6 +10,8 @@
 /* --- drag and drop (§5.3) ----------------------------------------------- */
 
 .agent-card__grip {
+  display: grid;
+  place-items: center;
   min-width: 44px;
   min-height: 44px;
   border: 0;
@@ -18,10 +20,26 @@
   cursor: grab;
   color: var(--text-muted);
   flex: none;
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease);
 }
 
+.agent-card__grip:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.agent-card__grip:active {
+  cursor: grabbing;
+}
+
+/* The card left behind while its preview is being dragged: a dashed outline of
+   where it was, rather than a ghost of what it is. */
 .agent-card[data-dragging='true'] {
   opacity: 0.4;
+  border-style: dashed;
+  box-shadow: none;
 }
 
 /* §5.3's lift: a shadow and 2°, inside §14.1's ≤150ms ceiling. */
@@ -64,32 +82,48 @@
 }
 
 .project-card__launch {
-  margin-top: 0.4rem;
+  margin-top: var(--space-1);
   width: 100%;
-  font-size: 0.8rem;
+  font-size: var(--font-size-meta);
 }
 
 .project-card__refusal {
-  margin: 0.4rem 0 0;
-  font-size: 0.75rem;
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-micro);
   color: var(--text-muted);
 }
 
 .agent-card__reorder {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.8rem;
+  gap: var(--space-1);
+  font-size: var(--font-size-meta);
   color: var(--text-muted);
 }
 
 .agent-card__reorder button {
+  display: grid;
+  place-items: center;
   min-width: 44px;
   min-height: 44px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--surface);
   cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease);
+}
+
+.agent-card__reorder button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--text-muted);
+}
+
+.agent-card__reorder button:disabled {
+  color: var(--text-muted);
+  border-color: var(--border);
+  background: var(--surface-sunken);
 }
 
 /* --- the card menu (§5.2) ------------------------------------------------ */
@@ -100,12 +134,23 @@
 }
 
 .card-menu__trigger {
+  display: grid;
+  place-items: center;
   min-width: 44px;
   min-height: 44px;
   border: 0;
   background: transparent;
+  color: var(--text-muted);
   cursor: pointer;
   border-radius: var(--radius-sm);
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease);
+}
+
+.card-menu__trigger:hover {
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 .card-menu__list {
@@ -113,29 +158,36 @@
   right: 0;
   z-index: 5;
   list-style: none;
-  margin: 0;
-  padding: 0.25rem;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1);
   min-width: 12rem;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius);
   background: var(--surface-raised);
   box-shadow: var(--shadow-raised);
 }
 
 .card-menu__list button {
-  display: block;
+  display: flex;
+  align-items: center;
   width: 100%;
   text-align: left;
   min-height: 44px;
-  padding: 0 0.6rem;
+  padding: 0 var(--space-2);
   border: 0;
   background: transparent;
   cursor: pointer;
   border-radius: var(--radius-sm);
+  font-size: var(--font-size-meta);
+  transition: background-color var(--duration-fast) var(--ease);
 }
 
 .card-menu__list button:hover:not(:disabled) {
-  background: var(--surface-sunken);
+  background: var(--surface-hover);
+}
+
+.card-menu__list button:disabled {
+  color: var(--text-muted);
 }
 
 /*
@@ -170,15 +222,16 @@
 
 .toast {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-2);
   align-items: flex-start;
   border: 1px solid var(--border-strong);
   border-inline-start: 3px solid var(--warn);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius);
   background: var(--surface-raised);
   box-shadow: var(--shadow-raised);
-  padding: 0.6rem 0.75rem;
-  font-size: 0.85rem;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-meta);
+  overflow-wrap: anywhere;
 }
 
 .toast[data-tone='danger'] {
@@ -186,12 +239,25 @@
 }
 
 .toast button {
+  display: grid;
+  place-items: center;
   min-width: 44px;
   min-height: 44px;
   border: 0;
+  border-radius: var(--radius-sm);
   background: transparent;
+  color: var(--text-muted);
   cursor: pointer;
   margin-inline-start: auto;
+  flex: none;
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease);
+}
+
+.toast button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 /* --- launch flow (§6) ---------------------------------------------------- */
@@ -203,13 +269,16 @@
   place-items: center;
   background: rgb(0 0 0 / 45%);
   z-index: 30;
-  padding: 1rem;
+  padding: var(--space-4);
   overflow-y: auto;
+  /* The scrim is the one place a backdrop filter earns its cost: it separates
+     the dialog from a transcript that is otherwise the same value behind it. */
+  backdrop-filter: blur(2px);
 }
 
 .launch__pickers {
   display: flex;
-  gap: 0.75rem;
+  gap: var(--space-3);
   flex-wrap: wrap;
 }
 
@@ -220,7 +289,7 @@
 .launch select,
 .launch textarea {
   min-height: 44px;
-  padding: 0.4rem 0.6rem;
+  padding: var(--space-2) var(--space-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--surface);
@@ -231,7 +300,7 @@
 
 .launch__section {
   border-top: 1px solid var(--border);
-  padding: 0.5rem 0;
+  padding: var(--space-1) 0;
 }
 
 .launch__section summary {
@@ -239,27 +308,37 @@
   min-height: 44px;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
+  font-weight: var(--weight-semibold);
+  border-radius: var(--radius-xs);
 }
 
 .launch__summary-line {
   color: var(--text-muted);
-  font-size: 0.8rem;
+  font-size: var(--font-size-meta);
+  font-weight: var(--weight-normal);
 }
 
 .launch__toggle {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   min-height: 44px;
-  font-size: 0.85rem;
+  font-size: var(--font-size-meta);
 }
 
 .launch__permissions {
   display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.2rem 1rem;
-  font-size: 0.85rem;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
+  font-size: var(--font-size-meta);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+}
+
+.launch__permissions dt {
+  color: var(--text-muted);
 }
 
 .launch__permissions dd {
@@ -268,22 +347,28 @@
   overflow-wrap: anywhere;
 }
 
-/* §6: never collapsed — invisible escalation is the failure mode it prevents. */
+/*
+  §6: never collapsed — invisible escalation is the failure mode it prevents.
+  So it takes the attention family's ground as well as its border: a 2px outline
+  alone is easy to skim past in a dialog that is mostly outlined boxes.
+*/
 .launch__elevation {
   border: 2px solid var(--warn);
   border-radius: var(--radius-sm);
-  padding: 0.6rem 0.75rem;
-  margin: 0.5rem 0;
-  font-size: 0.85rem;
+  background: var(--tint-attention);
+  padding: var(--space-2) var(--space-3);
+  margin: var(--space-2) 0;
+  font-size: var(--font-size-meta);
 }
 
 .launch__elevation[data-permitted='false'] {
   border-color: var(--border-strong);
+  background: var(--surface-sunken);
   color: var(--text-muted);
 }
 
 .launch__elevation p {
-  margin: 0.25rem 0 0;
+  margin: var(--space-1) 0 0;
 }
 
 .launch__reason {
@@ -292,17 +377,20 @@
 
 .launch__actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
 }
 
 /* --- session view (§9) --------------------------------------------------- */
 
 .session {
   display: grid;
-  grid-template-columns: 1fr 15rem;
-  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) 15rem;
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -334,15 +422,21 @@
   `overflow-x` to `auto` too, so anything bleeding past its content box would buy
   this a horizontal scrollbar. The block is opaque and spans the column, which is
   all it needs to be.
+
+  The separation from the transcript is a rule *and* a shadow. The rule alone
+  reads as one more divider in a screen full of bordered blocks; the one-sided
+  `--shadow-sticky` under it is what makes a block scrolling past visibly go
+  *under* the header rather than merely behind a line.
 */
 .session__pinned {
   position: sticky;
   top: 0;
   z-index: 3;
   background: var(--surface);
-  padding-bottom: 0.5rem;
-  margin-bottom: 0.5rem;
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-3);
   border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-sticky);
 }
 
 .session__header {
@@ -352,45 +446,63 @@
 .session__header h2 {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin: 0 0 0.35rem;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-section);
+  overflow-wrap: anywhere;
 }
 
 .session__meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: var(--space-1) var(--space-3);
   align-items: center;
-  margin: 0 0 0.5rem;
-  font-size: 0.85rem;
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-meta);
+  color: var(--text-muted);
 }
 
 .session__controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-bottom: 0.5rem;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+/* The run's controls are dense and secondary to the transcript, so they sit at
+   the compact height — but only where a fine pointer is. §15's floor lives on
+   the less specific `.button` in collaboration.css, so an unguarded rule here
+   would outrank it on a touch screen. */
+@media (pointer: fine) {
+  .session__controls .button {
+    min-height: 36px;
+    padding: 0 var(--space-3);
+    font-size: var(--font-size-meta);
+  }
 }
 
 .session__steer {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-2);
   align-items: center;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0;
 }
 
 .session__steer > label:first-child {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
+  font-size: var(--font-size-meta);
 }
 
 .session__steer input:not([type='checkbox']) {
   flex: 1 1 16rem;
+  min-width: 0;
   min-height: 44px;
-  padding: 0 0.6rem;
+  padding: 0 var(--space-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--surface-raised);
   color: var(--text);
   font: inherit;
 }
@@ -401,45 +513,159 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
+
+/* ---------------------------------------------------------------------------
+   The transcript (§9.2)
+
+   Seven kinds of block share one screen and the eye has to sort them without
+   reading: what you said, what the agent said, what it ran, what it asked, what
+   went wrong, and the two brackets around the run. Three signals do the sorting,
+   and they are consistent across all seven:
+
+     the ground   the raised surface for the agent's own words, a tinted one
+                  for anything a person or the system contributed
+     the edge     a 3px leading rule in the block's tone family
+     the meta     one muted line naming the kind, above the content
+
+   Nothing here is colour-only: every block already carries its own word in
+   `.session-block__meta` (§15).
+   ------------------------------------------------------------------------ */
 
 .session-block {
   border: 1px solid var(--border);
+  border-inline-start: 3px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-raised);
-  padding: 0.5rem 0.7rem;
+  padding: var(--space-2) var(--space-3);
   min-width: 0;
 }
 
+/* What the agent said keeps the base rule above unchanged: the plain raised
+   card with a neutral edge. It is the most common block, so it is the one with
+   the least decoration — every other kind is read against it.
+
+   What you said. §9.2 wants the prompt, a steer and an answer visually
+   distinct, and they already carry their own words; the accent ground says
+   "a person wrote this" for all three, and the edge separates them. */
 .session-block[data-kind='prompt'] {
   background: var(--accent-soft);
+  border-color: var(--accent-soft);
+  border-inline-start-color: var(--accent);
 }
 
+.session-block[data-kind='prompt'][data-variant='steer'] {
+  border-inline-start-color: var(--status-awaiting_user);
+}
+
+.session-block[data-kind='prompt'][data-variant='answer'] {
+  border-inline-start-color: var(--status-done);
+}
+
+/* What it ran. A tool call is a row, not prose, so it recedes to the sunken
+   ground and only its leading edge marks it. */
+.session-block[data-kind='tool'] {
+  background: var(--surface-sunken);
+  border-inline-start-color: var(--border-strong);
+  padding: 0 var(--space-3) 0 var(--space-2);
+}
+
+.session-block[data-kind='tool'][data-error='true'] {
+  background: var(--tint-fail);
+  border-color: var(--tint-fail);
+  border-inline-start-color: var(--danger);
+}
+
+/* What it asked. The one block in the transcript that wants an answer. */
+.session-block[data-kind='question'] {
+  background: var(--tint-attention);
+  border-color: var(--tint-attention);
+  border-inline-start-color: var(--warn);
+}
+
+/* What went wrong, at the level the server said. */
 .session-block[data-kind='diagnostic'] {
-  border-color: var(--danger);
+  background: var(--tint-fail);
+  border-color: var(--tint-fail);
+  border-inline-start-color: var(--danger);
+}
+
+.session-block[data-kind='diagnostic'][data-level='warn'] {
+  background: var(--tint-attention);
+  border-color: var(--tint-attention);
+  border-inline-start-color: var(--warn);
+}
+
+/*
+  The two brackets. Start and end are punctuation rather than content: they
+  carry no border and no ground, only their meta line, centred between rules so
+  the run visibly begins and ends.
+*/
+.session-block[data-kind='start'],
+.session-block[data-kind='end'] {
+  background: transparent;
+  border: 0;
+  border-block: 1px solid var(--border);
+  border-radius: 0;
+  padding: var(--space-2) 0;
+  text-align: center;
+}
+
+.session-block[data-kind='start'] .session-block__meta,
+.session-block[data-kind='end'] .session-block__meta {
+  margin: 0;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
 }
 
 .session-block__meta {
-  margin: 0 0 0.25rem;
-  font-size: 0.75rem;
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-size-micro);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.02em;
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 .session-block__text {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  line-height: var(--line-body);
 }
 
-/* §14.1's second and last looping indicator. */
+/* Prose in the transcript is read, not scanned, so it gets a measure. The block
+   itself still spans the column — only the text stops. */
+.session-block[data-kind='assistant'] .session-block__text,
+.session-block[data-kind='prompt'] .session-block__text {
+  max-width: var(--measure);
+}
+
+.session-block__body {
+  padding-bottom: var(--space-2);
+}
+
+/*
+  §14.1's second and last looping indicator. Squared off and set on the accent,
+  so it reads as a cursor sitting in the text rather than as a stray pip; the
+  `steps(2)` is what makes it blink rather than breathe.
+*/
 .session-block__caret {
   display: inline-block;
   width: 0.5rem;
   height: 1em;
+  margin-inline-start: 0.1em;
   vertical-align: text-bottom;
+  border-radius: 1px;
   background: var(--accent);
   animation: caret 1s steps(2) infinite;
+}
+
+/* A block that is still arriving is not a finished one. The tint says so
+   without motion, which is the whole of the budget §14.1 has left. */
+.session-block[data-streaming='true'] {
+  border-inline-start-color: var(--accent);
 }
 
 @keyframes caret {
@@ -453,26 +679,50 @@
   }
 }
 
+/*
+  A tool call collapsed is one row: the glyph, the name, the call, and whatever
+  badges apply. It is the densest thing in the transcript and the thing most
+  often clicked, so it gets a hover ground of its own and a chevron-free
+  affordance — the name goes accent-coloured on hover, which is the only hint a
+  row this dense has room for.
+*/
 .session-block__toggle {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   width: 100%;
   min-width: 0;
   min-height: 44px;
+  padding: 0;
   border: 0;
+  border-radius: var(--radius-xs);
   background: transparent;
   cursor: pointer;
   text-align: left;
+  color: var(--text);
+  transition: color var(--duration-fast) var(--ease);
+}
+
+.session-block__toggle > svg {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.session-block__toggle:hover .session-block__tool-name {
+  color: var(--accent);
 }
 
 .session-block__tool-name {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-meta);
+  flex: none;
+  transition: color var(--duration-fast) var(--ease);
 }
 
 .session-block__preview {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--font-size-meta);
   color: var(--text-muted);
   white-space: nowrap;
   /* The ellipsis only ever appears if this can shrink — see `.session__main`. */
@@ -485,14 +735,28 @@
 /* §15: code blocks scroll inside their own container, never the page. */
 .session-block__pre {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--font-size-meta);
+  line-height: 1.45;
+  color: var(--text);
   background: var(--surface-sunken);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.5rem;
-  margin: 0.25rem 0;
+  padding: var(--space-2) var(--space-3);
+  margin: var(--space-1) 0 var(--space-2);
   overflow-x: auto;
   max-height: 24rem;
   overflow-y: auto;
+  /* Scrolls itself, so it must never be what stretches its parent (§15). */
+  min-width: 0;
+  overscroll-behavior: contain;
+  tab-size: 2;
+}
+
+/* On a tinted block the sunken grey would fight the tint, so `pre` takes the
+   base surface there instead and stays a distinct plane either way. */
+.session-block[data-kind='tool'] .session-block__pre,
+.session-block[data-kind='diagnostic'] .session-block__pre {
+  background: var(--surface);
 }
 
 /* Sticky beside a scrolling transcript, for the same reason the controls are. */
@@ -506,65 +770,88 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-raised);
-  padding: 0.75rem;
+  box-shadow: var(--shadow-card);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
+/* The rail's eyebrow — the one all-caps treatment in the app, and the reason
+   `--tracking-caps` exists: capitals set at the body's tracking are unreadable. */
 .usage-rail h3 {
-  font-size: 0.8rem;
+  font-size: var(--font-size-micro);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: var(--tracking-caps);
   color: var(--text-muted);
-  margin: 0 0 0.5rem;
+  margin: 0;
 }
 
 .usage-rail__figures {
   display: grid;
-  grid-template-columns: 1fr max-content;
-  gap: 0.2rem 0.75rem;
-  font-size: 0.85rem;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: var(--space-1) var(--space-3);
+  font-size: var(--font-size-meta);
+  align-items: baseline;
   margin: 0;
 }
 
 .usage-rail__figures dt {
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 .usage-rail__figures dd {
   margin: 0;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
 /* Tokens are the unit, so they are the biggest thing in the rail (§16.8). */
 .usage-rail__figures dd[data-primary='true'] {
-  font-size: 1rem;
-  font-weight: 600;
+  font-size: var(--font-size-subsection);
+  font-weight: var(--weight-semibold);
+  color: var(--text);
 }
 
 .usage-rail__bar {
   height: 0.5rem;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 1px var(--border);
   overflow: hidden;
 }
 
 .usage-rail__bar span {
   display: block;
   height: 100%;
+  border-radius: var(--radius-pill);
   background: var(--accent);
+  transition: width var(--duration) var(--ease);
 }
 
 /* --- question inbox (§11) ------------------------------------------------ */
 
+/*
+  §2.2's count. It is a number on a navigation row, so it is a solid accent pill
+  rather than an outline: at 11px an outlined count is a smudge. `tabular-nums`
+  keeps 9 and 11 the same width, so the rail does not twitch as questions
+  arrive and are answered.
+*/
 .rail-badge {
   min-width: 1.4rem;
-  padding: 0 0.35rem;
-  border-radius: 999px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--accent-contrast);
-  font-size: 0.72rem;
-  font-weight: 700;
+  font-size: var(--font-size-micro);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
   text-align: center;
+  flex: none;
 }
 
 .question-list {
@@ -573,33 +860,93 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
+
+/* ---------------------------------------------------------------------------
+   The question card (§11.2)
+
+   This is decision UI: everything on it exists so a person can answer without
+   opening anything else. The card is therefore laid out as an argument —
+   what kind of decision, the question, the call it is gating, who says what,
+   and then the options — and the leading edge carries the kind, so a budget
+   halt is distinguishable from a plain question in a stack of ten.
+   ------------------------------------------------------------------------ */
 
 .question-card {
   border: 1px solid var(--border);
+  border-inline-start: 3px solid var(--accent);
   border-radius: var(--radius);
   background: var(--surface-raised);
   box-shadow: var(--shadow-card);
-  padding: 0.75rem;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  transition:
+    box-shadow var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease);
+}
+
+.question-card:hover {
+  box-shadow: var(--shadow-hover);
+}
+
+.question-card[data-kind='approval_gate'] {
+  border-inline-start-color: var(--warn);
+}
+
+.question-card[data-kind='budget_halt'] {
+  border-inline-start-color: var(--danger);
+}
+
+/*
+  An answered card is history. It steps back to the base surface, loses its
+  elevation and its coloured edge, and stops being the brightest thing in the
+  list — without dropping any of its text below AA.
+*/
+.question-card[data-status='answered'],
+.question-card[data-status='expired'],
+.question-card[data-status='cancelled'] {
+  background: var(--surface);
+  border-inline-start-color: var(--border-strong);
+  box-shadow: none;
 }
 
 .question-card__head {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-2);
   align-items: center;
-  font-size: 0.8rem;
+  font-size: var(--font-size-meta);
+  color: var(--text-muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The card is a flex column with its own gap, so a child that also carries a
+   bottom margin would space itself twice. */
+.question-card .notice {
+  margin: 0;
 }
 
 .question-card__prompt {
-  margin: 0.4rem 0 0.2rem;
-  font-size: 1rem;
+  margin: 0;
+  font-size: var(--font-size-section);
+  line-height: var(--line-tight);
+  max-width: var(--measure);
+  overflow-wrap: anywhere;
 }
 
 .question-card__prompt a {
   color: var(--text);
   text-decoration: none;
+}
+
+.question-card__prompt a:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 /*
@@ -612,8 +959,8 @@
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);
   background: var(--surface-sunken);
-  padding: 0.4rem 0.6rem;
-  margin: 0 0 0.5rem;
+  padding: var(--space-2) var(--space-3);
+  margin: 0;
   min-width: 0;
 }
 
@@ -621,114 +968,225 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--space-2);
   margin: 0;
   min-width: 0;
 }
 
+/* The call itself. It is the sentence the decision is about, so it is set at
+   body size in the mono face rather than shrunk to a caption. */
 .question-card__call-summary {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--font-size-meta);
+  color: var(--text);
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
+/* §15: the disclosure is operated, so it takes the 44px floor like everything
+   else that is — a `summary` is not covered by the `.button, button, select`
+   list in `collaboration.css`. */
 .question-card__call summary {
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: var(--font-size-meta);
   color: var(--text-muted);
-  margin-top: 0.35rem;
+  margin-top: var(--space-2);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-xs);
+  transition: color var(--duration-fast) var(--ease);
+}
+
+.question-card__call summary:hover {
+  color: var(--accent);
 }
 
 /* §15: the whole input scrolls in its own container, never the page. */
 .question-card__call-detail {
   font-family: var(--font-mono);
-  font-size: 0.75rem;
-  margin: 0.35rem 0 0;
-  padding: 0.4rem;
+  font-size: var(--font-size-micro);
+  line-height: 1.5;
+  color: var(--text);
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
   overflow: auto;
+  overscroll-behavior: contain;
   max-height: 16rem;
+  min-width: 0;
 }
 
 .question-card__asked {
-  margin: 0 0 0.5rem;
-  font-size: 0.78rem;
+  margin: 0;
+  font-size: var(--font-size-meta);
   color: var(--text-muted);
 }
 
 .question-card__divider {
   border-top: 1px solid var(--border);
-  padding-top: 0.5rem;
-  margin: 0.5rem 0;
-  font-weight: 600;
+  padding-top: var(--space-3);
+  margin: var(--space-1) 0 0;
+  font-weight: var(--weight-semibold);
 }
 
 .question-card__stances {
   list-style: none;
-  margin: 0 0 0.5rem;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: var(--space-1);
 }
 
+/*
+  One seat's stance, as a row: who, how strongly, toward what — and the
+  rationale under all three. The leading rule is what makes a stack of four
+  seats read as four opinions rather than as a paragraph.
+*/
 .question-card__stance {
   display: grid;
-  grid-template-columns: max-content max-content 1fr;
-  gap: 0.5rem;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-2);
   align-items: baseline;
-  font-size: 0.85rem;
+  font-size: var(--font-size-meta);
+  padding: var(--space-1) var(--space-2);
+  border-inline-start: 2px solid var(--border);
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  min-width: 0;
+}
+
+.question-card__who {
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.question-card__toward {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 .question-card__rationale {
   grid-column: 1 / -1;
   margin: 0;
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
-/* §11.2: colour is always secondary to the word. */
+/*
+  §11.2: colour is always secondary to the word. The four emphases are a ladder,
+  and each rung adds one thing rather than swapping one for another —
+  weight, then the ground, then the edge — so the loudest stance is
+  unmistakable and the quietest is still fully readable.
+*/
+.question-card__stance[data-emphasis='shout'] {
+  background: var(--tint-fail);
+  border-inline-start-color: var(--danger);
+}
+
 .question-card__stance[data-emphasis='shout'] .question-card__strength {
   color: var(--danger);
-  font-weight: 700;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.question-card__stance[data-emphasis='bold'] {
+  border-inline-start-color: var(--text-muted);
 }
 
 .question-card__stance[data-emphasis='bold'] .question-card__strength {
-  font-weight: 700;
+  font-weight: var(--weight-bold);
+}
+
+.question-card__stance[data-emphasis='muted'] {
+  border-inline-start-color: transparent;
 }
 
 .question-card__stance[data-emphasis='muted'] .question-card__strength {
   color: var(--text-muted);
 }
 
+/*
+  The answer region. It is the point of the card, so it is separated from the
+  argument above it by a rule and sits on the base surface — a shelf the options
+  stand on rather than more card.
+*/
 .question-card__answer {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-2);
   align-items: center;
+  margin-top: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
 }
 
+/*
+  An option is a commitment, so it is a full button rather than a link, and one
+  with a description stacks the two: the label at body weight, the description
+  muted beneath it, both left-aligned because they are read rather than scanned.
+*/
 .question-card__option {
   flex: 1 1 12rem;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.question-card__option[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .question-card__option-detail {
   display: block;
-  font-size: 0.75rem;
+  font-size: var(--font-size-micro);
+  font-weight: var(--weight-normal);
   color: var(--text-muted);
 }
 
+.question-card__option[aria-pressed='true'] .question-card__option-detail {
+  color: var(--accent);
+}
+
+/* §16-4: expiry of an approval gate is a denial and the UI must not imply
+   otherwise — so it is a label, and it looks like one. */
 .question-card__expiry {
   margin-left: auto;
-  font-size: 0.78rem;
+  font-size: var(--font-size-meta);
   color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The card's outcome, once there is one: the settled tone, and the only line
+   left that is not muted. */
+.question-card__answered {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--tint-done);
+  color: var(--text);
+  font-size: var(--font-size-meta);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
 }
 
 /* §2.3: the inbox is the phone's primary surface. Option buttons go full width. */
 @media (width <= 640px) {
   .question-card__option {
     flex: 1 1 100%;
+  }
+
+  .question-card__expiry {
+    margin-left: 0;
   }
 }

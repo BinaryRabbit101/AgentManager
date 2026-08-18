@@ -1,7 +1,10 @@
 /*
  * The app's layout and component styles (DESIGN §2.3, §5, §14).
  *
- * Components reference semantic tokens only — never a raw colour (§14.2).
+ * Components reference semantic tokens only — never a raw colour (§14.2), and
+ * every size, gap, radius, shadow and duration comes from §14.3's scales rather
+ * than from a number chosen here. A literal `0.65rem` in this file is a scale
+ * that was missing, not a licence.
  */
 
 @import './theme/tokens.css';
@@ -26,9 +29,10 @@ body {
   background: var(--surface);
   color: var(--text);
   font-family: var(--font-sans);
-  font-size: 15px;
-  line-height: 1.5;
+  font-size: var(--font-size-body);
+  line-height: var(--line-body);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 #root {
@@ -47,6 +51,111 @@ a {
 button {
   font: inherit;
   color: inherit;
+}
+
+/*
+ * The type scale, applied to the elements the screens already render (§14.3).
+ * Four voices: the page's one h1, a section's h2, a card or panel's h3/h4, and
+ * body. Headings are tighter-leaded than prose, which is what makes a two-line
+ * heading read as one thing rather than as two lines of text.
+ */
+h1,
+h2,
+h3,
+h4 {
+  line-height: var(--line-tight);
+  font-weight: var(--weight-semibold);
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: var(--font-size-page);
+  margin: 0 0 var(--space-3);
+}
+
+h2 {
+  font-size: var(--font-size-section);
+  margin: 0 0 var(--space-3);
+}
+
+h3 {
+  font-size: var(--font-size-subsection);
+  margin: 0 0 var(--space-2);
+}
+
+h4 {
+  font-size: var(--font-size-meta);
+  color: var(--text-muted);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  margin: var(--space-3) 0 var(--space-1);
+}
+
+/*
+ * Form controls inherit the app's face rather than the platform's, and take the
+ * same ring, radius and 44px floor as everything else that can be operated.
+ */
+select,
+input,
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  transition:
+    border-color var(--duration-fast) var(--ease),
+    background-color var(--duration-fast) var(--ease);
+}
+
+select {
+  padding: 0 var(--space-2);
+  cursor: pointer;
+}
+
+/*
+  `styles.css` is the last sheet in the cascade — its own `@import`s all sit
+  above it — so a bare `select { min-height: 36px }` here would override §15's
+  `@media (pointer: coarse) { select { min-height: 44px } }` in
+  `collaboration.css` at equal specificity, just by coming later. Guarded.
+*/
+@media (pointer: fine) {
+  select {
+    min-height: 36px;
+  }
+}
+
+select:hover:not(:disabled),
+input:hover:not(:disabled),
+textarea:hover:not(:disabled) {
+  border-color: var(--text-muted);
+}
+
+textarea {
+  padding: var(--space-2);
+  line-height: var(--line-body);
+}
+
+:disabled {
+  cursor: not-allowed;
+}
+
+::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: var(--space-4) 0;
+}
+
+code,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
 }
 
 .visually-hidden {
@@ -133,23 +242,48 @@ button {
   grid-area: topbar;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.5rem 1rem;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
   border-bottom: 1px solid var(--border);
   background: var(--surface-raised);
+  /* The bar sits above the rail's and the main column's own shadows. */
+  position: relative;
+  z-index: 4;
 }
 
 .frame__title {
-  font-size: 1rem;
-  font-weight: 600;
+  font-size: var(--font-size-subsection);
+  font-weight: var(--weight-semibold);
+  line-height: var(--line-tight);
+  letter-spacing: -0.01em;
   margin: 0;
   margin-right: auto;
+  /* The one place the accent is used as identity rather than as a control. */
+  padding-inline-start: var(--space-2);
+  border-inline-start: 3px solid var(--accent);
+}
+
+/*
+  The bar's own controls sit at one height and read as a group, not a row of
+  unrelated widgets. `New agent` is the only filled thing up here.
+
+  Every compact height in this codebase is written inside `pointer: fine`, and
+  that is not a nicety: §15's floor is `@media (pointer: coarse) { .button {
+  min-height: 44px } }`, which is a *less* specific selector than any of these.
+  A bare `.frame__topbar .button { min-height: 36px }` would therefore win on a
+  touch screen and quietly shrink the target below the floor.
+*/
+@media (pointer: fine) {
+  .frame__topbar .button {
+    min-height: 36px;
+  }
 }
 
 .frame__rail {
   grid-area: rail;
   border-right: 1px solid var(--border);
-  padding: 1rem 0.5rem;
+  padding: var(--space-3) var(--space-2);
+  background: var(--surface);
   /* Its own scrollport, so a long destination list never pushes the page. */
   overflow-y: auto;
 }
@@ -160,29 +294,65 @@ button {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: var(--space-1);
 }
 
+/*
+  A destination is an icon, a word and — for Questions — a count. The icon sits
+  in a fixed column so the words line up whatever the glyph's width, and the
+  count is pushed to the far edge, which is where a count belongs when the row
+  is a target rather than a sentence.
+*/
 .frame__rail a {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   min-height: 44px;
-  padding: 0 0.75rem;
+  padding: 0 var(--space-3);
   border-radius: var(--radius-sm);
   text-decoration: none;
+  color: var(--text);
+  font-size: var(--font-size-body);
+  /* The active marker's width, reserved on every row, so nothing shifts when
+     the current page changes. */
+  border-inline-start: 3px solid transparent;
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease);
+}
+
+.frame__rail a > svg {
+  flex: none;
+  color: var(--text-muted);
+  transition: color var(--duration-fast) var(--ease);
+}
+
+.frame__rail a > span:not(.rail-badge) {
+  margin-inline-end: auto;
+}
+
+.frame__rail a:hover {
+  background: var(--surface-hover);
+}
+
+.frame__rail a:hover > svg {
   color: var(--text);
 }
 
 .frame__rail a[aria-current='page'] {
   background: var(--accent-soft);
   color: var(--accent);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
+  border-inline-start-color: var(--accent);
+}
+
+.frame__rail a[aria-current='page'] > svg {
+  color: var(--accent);
 }
 
 .frame__main {
   grid-area: main;
-  padding: 1rem;
+  padding: var(--space-4);
   min-width: 0;
   /* The one scrollport. Everything sticky on a screen is sticky inside this. */
   overflow-y: auto;
@@ -190,10 +360,13 @@ button {
 
 .frame__banner {
   grid-area: banner;
-  padding: 0.5rem 1rem;
+  padding: var(--space-2) var(--space-4);
   background: var(--danger);
   color: var(--accent-contrast);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
+  font-size: var(--font-size-meta);
+  position: relative;
+  z-index: 3;
 }
 
 @media (width <= 640px) {
@@ -207,24 +380,65 @@ button {
       'rail';
   }
 
+  /*
+    The bottom tab bar. It is a bar, not a shrunken rail: the active marker
+    moves from the leading edge to the top edge of the tab, the label drops to
+    the micro size under its icon, and the whole bar floats over the content it
+    scrolls above with `--shadow-sticky` inverted.
+  */
   .frame__rail {
     border-right: 0;
     border-top: 1px solid var(--border);
-    padding: 0.25rem;
+    padding: var(--space-1) var(--space-1) max(var(--space-1), env(safe-area-inset-bottom));
     background: var(--surface-raised);
     overflow-y: visible;
+    box-shadow: 0 -8px 12px -10px rgb(0 0 0 / 25%);
   }
 
   .frame__rail ul {
     flex-direction: row;
     justify-content: space-around;
+    gap: 0;
   }
 
   .frame__rail a {
     flex-direction: column;
-    gap: 0.1rem;
-    font-size: 0.75rem;
+    justify-content: center;
+    gap: var(--space-1);
+    font-size: var(--font-size-micro);
     min-width: 48px;
+    padding: var(--space-1) var(--space-1);
+    border-inline-start: 0;
+    border-top: 2px solid transparent;
+    border-radius: var(--radius-xs);
+  }
+
+  .frame__rail a > span:not(.rail-badge) {
+    margin-inline-end: 0;
+    line-height: 1;
+  }
+
+  .frame__rail a[aria-current='page'] {
+    background: transparent;
+    border-top-color: var(--accent);
+  }
+
+  /*
+    A count beside a stacked label would push the word off centre, so on a
+    phone it becomes a corner marker on the tab instead — positioned against
+    the `li`, not left to its static position, so it lands in the same place
+    whatever the label's length.
+  */
+  .frame__rail li {
+    position: relative;
+    display: flex;
+    justify-content: center;
+  }
+
+  .frame__rail a .rail-badge {
+    position: absolute;
+    top: 0;
+    inset-inline-end: 0;
   }
 }
 
@@ -233,28 +447,40 @@ button {
 .connection {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.8rem;
+  gap: var(--space-2);
+  font-size: var(--font-size-meta);
   color: var(--text-muted);
+  flex: none;
 }
 
+/*
+  The dot is small, so it gets a ring of its own colour rather than more size —
+  a 0.6rem disc on a warm-white bar is easy to miss, a 0.6rem disc inside a
+  translucent halo of the same hue is not. The word beside it still carries the
+  state (§15); this only makes the state findable.
+*/
 .connection__dot {
   width: 0.6rem;
   height: 0.6rem;
-  border-radius: 50%;
+  border-radius: var(--radius-pill);
   background: var(--status-idle);
+  box-shadow: 0 0 0 3px var(--tint-idle);
+  flex: none;
 }
 
 .connection[data-state='live'] .connection__dot {
   background: var(--ok);
+  box-shadow: 0 0 0 3px var(--tint-live);
 }
 
 .connection[data-state='reconnecting'] .connection__dot {
   background: var(--warn);
+  box-shadow: 0 0 0 3px var(--tint-attention);
 }
 
 .connection[data-state='offline'] .connection__dot {
   background: var(--danger);
+  box-shadow: 0 0 0 3px var(--tint-fail);
 }
 
 /* --- board ------------------------------------------------------------- */
@@ -262,101 +488,166 @@ button {
 .board {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 1rem;
+  gap: var(--space-5);
   align-items: start;
 }
 
 .board__filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
   align-items: center;
 }
 
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: var(--space-1);
   min-height: 32px;
-  padding: 0 0.7rem;
+  padding: 0 var(--space-3);
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--surface-raised);
+  color: var(--text);
+  font-size: var(--font-size-meta);
   cursor: pointer;
-  transition: background var(--duration) ease;
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease);
+}
+
+.chip:hover:not([aria-pressed='true']) {
+  background: var(--surface-hover);
+  border-color: var(--text-muted);
 }
 
 .chip[aria-pressed='true'] {
   background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent);
+  font-weight: var(--weight-semibold);
 }
 
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(17rem, 100%), 1fr));
+  gap: var(--space-3);
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
+/*
+  The card language (§14.3), shared by the agent card, the project card, the
+  question card, a record row and a session block: 1px border, `--radius`, the
+  raised surface, `--shadow-card` at rest. What differs is only what the card
+  *is* — a card you can pick up also lifts, a card that is a decision also
+  carries a tone.
+*/
 .agent-card {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-raised);
   box-shadow: var(--shadow-card);
-  padding: 0.75rem;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: var(--space-2);
+  transition:
+    box-shadow var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease),
+    transform var(--duration-fast) var(--ease);
 }
 
+.agent-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-hover);
+}
+
+/* §14.1's lift, and the only transform on the board. Reduced motion keeps the
+   shadow and the border — the information — and drops the movement. */
+@media (prefers-reduced-motion: no-preference) {
+  .agent-card:hover {
+    transform: translateY(-1px);
+  }
+}
+
+/*
+  An archived agent is present but out of play. Opacity alone would take its
+  text under AA, so the card recedes by ground and border instead and only the
+  avatar — decoration — is dimmed.
+*/
 .agent-card[data-archived='true'] {
-  opacity: 0.6;
   background: var(--surface-sunken);
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.agent-card[data-archived='true'] .avatar {
+  opacity: 0.6;
+}
+
+.agent-card[data-archived='true']:hover {
+  box-shadow: var(--shadow-card);
 }
 
 .agent-card__head {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: var(--space-3);
 }
 
 .agent-card__name {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   margin: 0;
-  font-size: 1rem;
+  font-size: var(--font-size-subsection);
+  line-height: var(--line-tight);
   text-decoration: none;
   color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.agent-card__name:hover {
+  color: var(--accent);
 }
 
 .agent-card__tagline {
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: var(--font-size-meta);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   margin: 0;
+  font-style: italic;
 }
 
 .agent-card__badges {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin-top: auto;
+  padding-top: var(--space-1);
 }
 
+/*
+  §14.1: "a 28px emoji on a coloured disc reads as a face at a glance" — this is
+  where nearly all the personality lives, so the disc gets a hairline ring to
+  separate it from the card behind it in both themes, and nothing else.
+*/
 .avatar {
   width: 42px;
   height: 42px;
-  border-radius: 50%;
+  border-radius: var(--radius-pill);
   display: grid;
   place-items: center;
   font-size: 28px;
   line-height: 1;
   font-family: var(--font-emoji);
   background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 1px var(--border);
   flex: none;
   overflow: hidden;
 }
@@ -374,34 +665,76 @@ button {
   color: var(--accent-contrast);
 }
 
+/*
+  §14.1: the specialty is colour *plus the word*, never colour alone. The word
+  is what the chip is; the swatch only makes the roster scannable, so it takes
+  the specialty colour and the word takes the specialty colour too — both are
+  audited against both surfaces.
+*/
 .specialty-chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  font-size: 0.75rem;
-  color: var(--text-muted);
+  gap: var(--space-1);
+  font-size: var(--font-size-micro);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.01em;
+  color: var(--specialty, var(--specialty-general));
 }
 
 .specialty-chip::before {
   content: '';
   width: 0.55rem;
   height: 0.55rem;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   background: var(--specialty, var(--specialty-general));
+  flex: none;
 }
 
 .status-pill {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.85rem;
+  gap: var(--space-2);
+  font-size: var(--font-size-meta);
+  font-weight: var(--weight-semibold);
+  color: var(--status, var(--status-idle));
 }
 
 .status-pill__dot {
   width: 0.55rem;
   height: 0.55rem;
-  border-radius: 50%;
+  border-radius: var(--radius-pill);
   background: var(--status, var(--status-idle));
+  box-shadow: 0 0 0 3px var(--status-tint, var(--tint-idle));
+  flex: none;
+}
+
+/*
+  The tone families, applied to the fleet's six words (§14.3). `--status` is set
+  inline by the component from its own ramp; `--status-tint` is the halo behind
+  the dot, and is the only thing this rule adds.
+*/
+.status-pill[data-state='idle'] {
+  --status-tint: var(--tint-idle);
+}
+
+.status-pill[data-state='queued'] {
+  --status-tint: var(--tint-wait);
+}
+
+.status-pill[data-state='working'] {
+  --status-tint: var(--tint-live);
+}
+
+.status-pill[data-state='awaiting_user'] {
+  --status-tint: var(--tint-attention);
+}
+
+.status-pill[data-state='paused'] {
+  --status-tint: var(--tint-pause);
+}
+
+.status-pill[data-state='halted'] {
+  --status-tint: var(--tint-fail);
 }
 
 /* §14.1: one of exactly two looping indicators in the whole app. */
@@ -422,30 +755,158 @@ button {
 
 .status-pill__headline {
   color: var(--text-muted);
-  font-size: 0.8rem;
+  font-size: var(--font-size-meta);
   margin: 0;
 }
+
+/* ---------------------------------------------------------------------------
+   The status system (§14.3)
+
+   Every closed vocabulary in the app — session status, assignment phase,
+   project status, work-item status, activity outcome, question kind, tone —
+   renders as a `.badge` carrying its word, and every word maps onto one of the
+   seven tone families. A family is a tinted ground, a foreground from the
+   audited ramp, and a border of the same foreground: readable at a glance
+   without colour ever being the only signal, because the word is always there.
+
+   `--tone-fg` / `--tone-bg` are the two custom properties a family sets; the
+   `.badge` rule below is the only place they are consumed, so adding a word to
+   a vocabulary is one line, not a new rule set.
+   ------------------------------------------------------------------------ */
 
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  font-size: 0.72rem;
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-  border: 1px solid var(--border-strong);
-  background: var(--surface-sunken);
-  color: var(--text-muted);
+  gap: var(--space-1);
+  font-size: var(--font-size-micro);
+  font-weight: var(--weight-semibold);
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--tone-border, var(--border-strong));
+  background: var(--tone-bg, var(--surface-sunken));
+  color: var(--tone-fg, var(--text-muted));
+  white-space: nowrap;
+  flex: none;
 }
 
+/* The seven families. Nothing below this line picks a colour; it picks a
+   family, and the family is defined once, here. */
+.badge[data-status='archived'],
+.badge[data-status='closed'],
+.badge[data-status='dropped'],
+.badge[data-status='idle'],
+.badge[data-phase-chip='closed'] {
+  --tone-fg: var(--status-idle);
+  --tone-bg: var(--tint-idle);
+  --tone-border: var(--status-idle);
+}
+
+.badge[data-status='queued'],
+.badge[data-status='planned'],
+.badge[data-status='provisioning'],
+.badge[data-status='open'],
+.badge[data-phase-chip='planned'] {
+  --tone-fg: var(--status-queued);
+  --tone-bg: var(--tint-wait);
+  --tone-border: var(--status-queued);
+}
+
+.badge[data-status='running'],
+.badge[data-status='active'],
+.badge[data-status='in_progress'],
+.badge[data-phase-chip='running'],
+.badge[data-outcome='running'] {
+  --tone-fg: var(--status-working);
+  --tone-bg: var(--tint-live);
+  --tone-border: var(--status-working);
+}
+
+.badge[data-status='awaiting_user'],
+.badge[data-phase-chip='awaiting_user'],
 .badge[data-tone='warn'] {
-  border-color: var(--warn);
-  color: var(--warn);
+  --tone-fg: var(--warn);
+  --tone-bg: var(--tint-attention);
+  --tone-border: var(--warn);
 }
 
+.badge[data-status='paused'],
+.badge[data-status='interrupted'],
+.badge[data-outcome='stopped'] {
+  --tone-fg: var(--status-paused);
+  --tone-bg: var(--tint-pause);
+  --tone-border: var(--status-paused);
+}
+
+.badge[data-status='done'],
+.badge[data-status='converged'],
+.badge[data-phase-chip='converged'],
+.badge[data-outcome='completed'] {
+  --tone-fg: var(--status-done);
+  --tone-bg: var(--tint-done);
+  --tone-border: var(--status-done);
+}
+
+.badge[data-status='failed'],
+.badge[data-status='orphaned'],
+.badge[data-status='halted'],
+.badge[data-phase-chip='halted'],
+.badge[data-outcome='failed'],
 .badge[data-tone='danger'] {
-  border-color: var(--danger);
-  color: var(--danger);
+  --tone-fg: var(--danger);
+  --tone-bg: var(--tint-fail);
+  --tone-border: var(--danger);
+}
+
+/*
+  Running is the one state that is *happening*, and §14.1 has already spent both
+  of its looping indicators (the fleet pulse and the streaming caret). So the
+  live treatment here is static: a filled leading dot in the family's own
+  colour, which reads as "there is something at this moment" beside the flat
+  words around it and costs no motion at all.
+*/
+.badge[data-status='running']::before,
+.badge[data-status='in_progress']::before,
+.badge[data-phase-chip='running']::before,
+.badge[data-outcome='running']::before {
+  content: '';
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: var(--radius-pill);
+  background: currentcolor;
+  flex: none;
+}
+
+/*
+  The question kinds (§11.2). A plain question is the accent; a gate and a halt
+  are decisions with a consequence, and take attention and fail respectively.
+*/
+.badge[data-kind-chip='question'] {
+  --tone-fg: var(--accent);
+  --tone-bg: var(--accent-soft);
+  --tone-border: var(--accent);
+}
+
+.badge[data-kind-chip='approval_gate'] {
+  --tone-fg: var(--warn);
+  --tone-bg: var(--tint-attention);
+  --tone-border: var(--warn);
+}
+
+.badge[data-kind-chip='budget_halt'] {
+  --tone-fg: var(--danger);
+  --tone-bg: var(--tint-fail);
+  --tone-border: var(--danger);
+}
+
+/* The tool name on a gated call is a name, not a state: monospace, quiet. */
+.badge[data-tool-name='true'] {
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+  --tone-fg: var(--text);
+  --tone-bg: var(--surface-raised);
+  --tone-border: var(--border-strong);
 }
 
 /* --- projects page ----------------------------------------------------- */
@@ -455,8 +916,10 @@ button {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
 }
 
 .projects-page__header h2 {
@@ -468,27 +931,58 @@ button {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr));
+  gap: var(--space-3);
   align-items: start;
 }
 
+/*
+  A project card is a drop target (§5.3) as well as a link, so it takes the same
+  card language as the agent card and the same lift — the two are picked up and
+  put down beside each other and must read as the same kind of object.
+*/
 .project-card {
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 0.5rem;
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  transition:
+    box-shadow var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease);
+}
+
+.project-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-hover);
 }
 
 .project-card__name {
-  font-weight: 600;
-  font-size: 0.9rem;
+  font-weight: var(--weight-semibold);
+  font-size: var(--font-size-subsection);
+  line-height: var(--line-tight);
+  overflow-wrap: anywhere;
 }
 
+/*
+  A path is an identifier, and an identifier that wraps mid-segment is unusable.
+  It gets the sunken ground the transcript's code uses, so a path always looks
+  like a path wherever it appears.
+*/
 .project-card__path {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: var(--font-size-micro);
   color: var(--text-muted);
   overflow-wrap: anywhere;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-xs);
+  padding: 0 var(--space-1);
+  align-self: flex-start;
+  max-width: 100%;
 }
 
 @media (width <= 640px) {
@@ -499,35 +993,126 @@ button {
 
 /* --- buttons and dialog ------------------------------------------------ */
 
+/*
+  Three levels and no fourth (§14.3). `.button` on its own is the secondary —
+  the level nearly every control in the app is at. `data-variant` promotes or
+  demotes it:
+
+    (none)     secondary — a bordered surface, the default weight
+    primary    the one committing action on a screen, filled in the accent
+    quiet      a bordered-less action inside a dense row; still 44px
+    danger     a destructive commit, filled in danger
+
+  `.button` is worn by `<a>` as often as by `<button>` (§2.2's New agent is a
+  route), so it is a flex box in its own right: an anchor with `min-height` and
+  no display of its own would simply ignore the height.
+*/
 .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
   min-height: 44px;
-  padding: 0 0.9rem;
+  padding: var(--space-1) var(--space-4);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
   background: var(--surface-raised);
+  color: var(--text);
+  font-size: var(--font-size-body);
+  font-weight: var(--weight-semibold);
+  line-height: var(--line-tight);
+  text-align: center;
+  text-decoration: none;
   cursor: pointer;
-  transition: background var(--duration) ease;
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease),
+    box-shadow var(--duration-fast) var(--ease);
+}
+
+.button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--text-muted);
+}
+
+.button:active:not(:disabled) {
+  background: var(--surface-active);
 }
 
 .button[data-variant='primary'] {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-contrast);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
+  box-shadow: var(--shadow-card);
 }
 
+/*
+  A filled variant's hover moves *away* from the contrast boundary in both
+  themes — `--accent-hover` darkens on warm white and lightens on charcoal — so
+  the label is never less readable hovered than at rest. An overlay of black at
+  low alpha would have done the opposite in dark.
+*/
+.button[data-variant='primary']:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  box-shadow: var(--shadow-hover);
+}
+
+.button[data-variant='primary']:active:not(:disabled) {
+  background: var(--accent-active);
+  border-color: var(--accent-active);
+  box-shadow: none;
+}
+
+.button[data-variant='danger'] {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--accent-contrast);
+  box-shadow: var(--shadow-card);
+}
+
+.button[data-variant='danger']:hover:not(:disabled) {
+  background: var(--danger-hover);
+  border-color: var(--danger-hover);
+  box-shadow: var(--shadow-hover);
+}
+
+.button[data-variant='quiet'] {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+  font-weight: var(--weight-normal);
+}
+
+.button[data-variant='quiet']:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+/*
+  §15 and the brief: a disabled control must *look* disabled and still be read.
+  Fading it with `opacity` does both jobs badly — it takes the label under AA
+  and takes the `title` that says why with it. So a disabled button recedes by
+  ground instead: the sunken surface, the muted foreground (6.0:1 on it in
+  light, 7.3:1 in dark) and no shadow at all.
+*/
 .button:disabled {
-  opacity: 0.55;
   cursor: not-allowed;
+  background: var(--surface-sunken);
+  border-color: var(--border);
+  color: var(--text-muted);
+  box-shadow: none;
 }
 
 .dialog {
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   background: var(--surface-raised);
   color: var(--text);
   box-shadow: var(--shadow-raised);
-  padding: 1rem;
+  padding: var(--space-5);
   width: min(34rem, 92vw);
 }
 
@@ -537,23 +1122,27 @@ button {
 
 .dialog h2 {
   margin-top: 0;
+  font-size: var(--font-size-section);
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  margin-bottom: 0.75rem;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+  min-width: 0;
 }
 
-.field label {
-  font-size: 0.8rem;
+.field label,
+.field > span:first-child {
+  font-size: var(--font-size-meta);
+  font-weight: var(--weight-semibold);
   color: var(--text-muted);
 }
 
 .field input {
   min-height: 44px;
-  padding: 0 0.6rem;
+  padding: 0 var(--space-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--surface);
@@ -561,12 +1150,17 @@ button {
   font: inherit;
 }
 
+.field input:focus-visible {
+  border-color: var(--focus-ring);
+}
+
 .browse {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  background: var(--surface);
   max-height: 12rem;
   overflow-y: auto;
-  margin-bottom: 0.75rem;
+  margin-bottom: var(--space-3);
 }
 
 .browse ul {
@@ -576,55 +1170,93 @@ button {
 }
 
 .browse button {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   width: 100%;
   text-align: left;
   min-height: 44px;
-  padding: 0 0.6rem;
+  padding: 0 var(--space-2);
   border: 0;
   background: transparent;
   cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: background-color var(--duration-fast) var(--ease);
 }
 
 .browse button:hover {
-  background: var(--surface-sunken);
+  background: var(--surface-hover);
 }
 
+.browse li + li button {
+  border-top: 1px solid var(--border);
+}
+
+/*
+  A notice is a sentence with a consequence, so it takes its tone's own ground
+  rather than the one grey they all used to share — "started from remote" and
+  "this decision is contested" are not the same news and must not look it. The
+  three tones in the markup are `info` (also the default, for a notice with no
+  `data-tone` at all), `warn` and `danger`.
+*/
 .notice {
-  border-left: 3px solid var(--warn);
+  border-inline-start: 3px solid var(--border-strong);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   background: var(--surface-sunken);
-  padding: 0.5rem 0.75rem;
-  margin: 0 0 0.5rem;
-  font-size: 0.85rem;
+  color: var(--text);
+  padding: var(--space-2) var(--space-3);
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-meta);
+  overflow-wrap: anywhere;
+}
+
+.notice[data-tone='info'] {
+  border-inline-start-color: var(--accent);
+}
+
+.notice[data-tone='warn'] {
+  border-inline-start-color: var(--warn);
+  background: var(--tint-attention);
 }
 
 .notice[data-tone='danger'] {
-  border-left-color: var(--danger);
+  border-inline-start-color: var(--danger);
+  background: var(--tint-fail);
 }
 
+/* §14.1: "Copy has a voice." An empty state is prose, so it is set as prose —
+   a readable measure, room around it, and the muted voice. */
 .empty {
   color: var(--text-muted);
-  padding: 2rem 0;
-  max-width: 34rem;
+  padding: var(--space-6) 0;
+  max-width: min(34rem, 100%);
+  font-size: var(--font-size-body);
+  text-wrap: pretty;
 }
 
 .debug-panel {
-  margin-top: 1.5rem;
-  font-size: 0.8rem;
+  margin-top: var(--space-5);
+  font-size: var(--font-size-meta);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
 }
 
 .debug-panel summary {
   cursor: pointer;
   color: var(--text-muted);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
 }
 
 .debug-panel dl {
   display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.2rem 1rem;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
 }
 
 .debug-panel dd {
   margin: 0;
   font-family: var(--font-mono);
+  overflow-wrap: anywhere;
 }

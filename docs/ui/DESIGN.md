@@ -1123,6 +1123,87 @@ One token set, two themes, no third. Semantic tokens only (`--surface`, `--surfa
 - Default is **system**; the toggle (system/light/dark) persists in `localStorage` and applies with a
   `data-theme` attribute on the root, so there is no flash on load.
 
+### 14.3 The scales
+
+§14.2 fixes the colours. This fixes everything else, so that a screen added later is *in* the
+system rather than beside it. All of it lives in `web/src/theme/tokens.css`; a literal number in a
+component stylesheet is a scale that was missing, not a licence.
+
+**Type — four voices and no fifth.** The page's one `h1`, a section's heading, body, and the meta
+line under it. `--font-size-micro` is badge lettering, which is a label rather than prose, and is
+the only size below `--font-size-meta`.
+
+| Token | Value | Where |
+|---|---|---|
+| `--font-size-page` | 1.5rem | `h1`, an assignment's title, a usage figure |
+| `--font-size-section` | 1.125rem | `h2`, a question's prompt, a session's title |
+| `--font-size-subsection` | 1rem | `h3`/`h4`, a card's name, the rail's primary figure |
+| `--font-size-body` | 0.9375rem | body, buttons, transcript prose |
+| `--font-size-meta` | 0.8125rem | timestamps, provenance, rationale, tool calls |
+| `--font-size-micro` | 0.72rem | badges, pips, eyebrows — never a sentence |
+
+with `--line-tight` (1.25) on headings, `--line-body` (1.5) on prose, `--weight-normal` /
+`--weight-semibold` / `--weight-bold`, `--tracking-caps` (0.06em) for the one all-caps treatment
+(eyebrows), and `--measure` (68ch) capping any block of prose that is read rather than scanned.
+
+**Space — 4px base**, in rem so it scales with the user's own font size at 200% zoom (§15):
+`--space-1` 4px · `--space-2` 8px · `--space-3` 12px · `--space-4` 16px · `--space-5` 24px ·
+`--space-6` 32px · `--space-7` 48px. The rhythm is: `--space-2` inside a row, `--space-3` between
+rows, `--space-4` inside a panel, `--space-5` between panels.
+
+**Radius** — `--radius-xs` 4px (a swatch, a hover target inside a row) · `--radius-sm` 6px
+(controls, inputs, sub-blocks) · `--radius` 10px (cards, panels, rows) · `--radius-lg` 14px
+(dialogs) · `--radius-pill` 999px (badges, dots, bars).
+
+**Elevation — four steps, tuned per theme** rather than shared, because on warm white a shadow is a
+soft warm grey and on charcoal it is near black and needs more of it to read at all:
+`--shadow-card` (a resting surface) · `--shadow-hover` (the same surface, picked up) ·
+`--shadow-raised` (menus, dialogs, the drag preview) · `--shadow-sticky` (one-sided, under
+`.session__pinned` and the phone tab bar, so content scrolling past visibly goes *under* it).
+
+**Motion** — `--duration` 150ms is §14.1's ceiling; `--duration-fast` 120ms is the one used for
+hover and focus, where 150ms already reads as lag; `--ease` is a single
+`cubic-bezier(0.2, 0, 0, 1)`. Both durations go to **0ms** under `prefers-reduced-motion: reduce`,
+which is what makes a rule written as `transition: … var(--duration-fast) var(--ease)`
+reduced-motion-safe without opting in. A hover *transform* is the exception and must sit inside
+`@media (prefers-reduced-motion: no-preference)`, because zeroing its duration would still leave it
+jumping.
+
+**Status as seven tone families.** Every closed vocabulary in the app — session status, fleet state,
+assignment phase, project status, work-item status, activity outcome, question kind, notice tone —
+maps onto one of seven treatments rather than inventing an eighth. A family is a foreground from
+the audited `--status-<n>` ramp, a `--tint-<n>` ground, and a border of the foreground.
+
+| Family | Foreground | Ground | The words |
+|---|---|---|---|
+| idle | `--status-idle` | `--tint-idle` | `idle`, `closed`, `archived`, `dropped` |
+| wait | `--status-queued` | `--tint-wait` | `queued`, `planned`, `provisioning`, `open` |
+| live | `--status-working` | `--tint-live` | `running`, `working`, `active`, `in_progress` |
+| attention | `--warn` | `--tint-attention` | `awaiting_user`, `approval_gate`, tone `warn` |
+| pause | `--status-paused` | `--tint-pause` | `paused`, `interrupted`, `stopped` |
+| done | `--status-done` | `--tint-done` | `done`, `completed`, `converged` |
+| fail | `--danger` | `--tint-fail` | `failed`, `halted`, `orphaned`, `budget_halt`, tone `danger` |
+
+Two rules govern extending it, and both exist because of the CI audit:
+
+1. A token named `--status-…`, `--specialty-…` or `--ansi-…` is a **foreground**, and
+   `a11y/contrast.test.ts` will hold it to 4.5:1 against both surfaces and demand the measured
+   ratio in a comment beside it. A **background** must therefore never take one of those prefixes —
+   tinted grounds are `--tint-…`, whose ratios are recorded in prose in the token file because the
+   audit only measures against the two base surfaces. Every foreground clears 5.0:1 on its own
+   tint in both themes; `--text` clears 11.9:1 and `--focus-ring` 5.4:1 on all fourteen.
+2. Every hex in the system-dark block must appear identically in the chosen-dark block — the
+   toggle changes who wins, not the palette, and a test asserts it.
+
+**`running` is the one state that is happening**, and §14.1 has already spent both of its looping
+indicators. Its live treatment is therefore **static**: a filled leading dot in the family's colour
+on the badge, and the accent edge on a streaming transcript block. No third loop, ever.
+
+**Compact heights are written inside `@media (pointer: fine)`.** §15's floor is
+`@media (pointer: coarse) { .button, button, select { min-height: 44px } }`, which is a *less*
+specific selector than `.session__controls .button`; an unguarded compact rule wins on a touch
+screen and silently drops the target under the floor.
+
 ---
 
 ## 15. Accessibility baseline

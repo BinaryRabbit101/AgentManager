@@ -19,6 +19,18 @@
  *
  * The contrast ratios recorded beside each pair are against that theme's own
  * --surface; the CI check of IMPLEMENTATION §11 reads them from here.
+ *
+ * §14.3 records the scales below (type, space, radius, elevation, the status
+ * tone families). Two rules govern extending this file:
+ *
+ *  1. **A token whose name starts with `status-`, `specialty-` or `ansi-` is a
+ *     foreground**, and the audit in `a11y/contrast.test.ts` will hold it to
+ *     4.5:1 against both surfaces and demand the measured ratio in a comment
+ *     beside it. A *background* must therefore never take one of those prefixes
+ *     — tinted grounds are `--tint-…`, and their ratios are recorded here in
+ *     prose because the audit only measures against the two base surfaces.
+ *  2. **Every hex in the system-dark block must appear identically in the
+ *     chosen-dark block**, because the toggle changes who wins, not the palette.
  */
 
 :root {
@@ -26,6 +38,11 @@
   --surface: #faf8f5; /* base */
   --surface-raised: #ffffff;
   --surface-sunken: #f1ede7;
+  /* Interaction grounds: the wash under a hover and under a press. Not
+     foregrounds, so not audited — but --text reads 15.4:1 and --text-muted
+     6.2:1 on --surface-hover, and 14.1:1 / 5.7:1 on --surface-active. */
+  --surface-hover: #f4f1ec;
+  --surface-active: #ece7e0;
   --text: #1d1a16; /* 16.4:1 */
   --text-muted: #5f584f; /* 6.6:1 */
   --border: #e0d9d0;
@@ -33,18 +50,54 @@
   --accent: #8a4b1f; /* 6.4:1 */
   --accent-soft: #f3e5d8;
   --accent-contrast: #ffffff; /* 6.8:1 */
+  /*
+   * The filled variants' hover and press. Both move *away* from the contrast
+   * boundary rather than across it — light darkens, dark lightens — so a
+   * hovered primary is never less readable than a resting one. Measured with
+   * --accent-contrast on top: 8.6:1 hovered and 10.7:1 pressed in light,
+   * 9.2:1 and 10.8:1 in dark, against 6.8:1 and 7.8:1 at rest.
+   */
+  --accent-hover: #733e19;
+  --accent-active: #5f3315;
+  --danger-hover: #86231a; /* 9.3:1 under --accent-contrast */
   --danger: #a02a1f; /* 7.0:1 */
   --warn: #7a5200; /* 6.5:1 */
   --ok: #1f6b3a; /* 6.1:1 */
   --focus-ring: #1f5fa8; /* 6.1:1 */
 
-  /* Status ramp — one per word of orchestrator §16.6's vocabulary. */
+  /* Status ramp — one per word of orchestrator §16.6's vocabulary, plus
+     `done`, which the runner's own vocabulary has and the fleet's does not:
+     a finished run is neither working nor halted and must not borrow either
+     one's colour. */
   --status-idle: #6b6259; /* 5.6:1 */
   --status-queued: #5a4a9c; /* 6.8:1 */
   --status-working: #1f6b3a; /* 6.1:1 */
   --status-awaiting_user: #7a5200; /* 6.5:1 */
   --status-paused: #4a5b78; /* 6.5:1 */
   --status-halted: #a02a1f; /* 7.0:1 */
+  --status-done: #1f6070; /* 6.7:1 */
+
+  /*
+   * Tone families (§14.3). Seven grounds, one per family, so every status
+   * vocabulary in the app — session status, fleet state, assignment phase,
+   * project status, work-item status, activity outcome, question kind — maps
+   * onto the same seven treatments rather than inventing an eighth.
+   *
+   * The audit measures foregrounds against --surface and --surface-raised, not
+   * against these; measured here instead, worst pair per family:
+   *   idle 5.1:1 · wait 6.1:1 · live 5.6:1 · attention 6.0:1
+   *   pause 5.9:1 · done 6.0:1 · fail 6.3:1
+   * and on every one of them --text clears 14.6:1, --text-muted 5.9:1 and
+   * --focus-ring 5.4:1 — so a chip's label, its meta line and its focus ring
+   * are all above AA wherever a tint is painted.
+   */
+  --tint-idle: #efece7;
+  --tint-wait: #eeeaf8;
+  --tint-live: #e4f1e8;
+  --tint-attention: #f8efd9;
+  --tint-pause: #e9eef7;
+  --tint-done: #e2eff2;
+  --tint-fail: #fbe9e6;
 
   /* Specialty ramp — the closed roster enum, colour plus the word, never colour alone. */
   --specialty-bug-patching: #a3401f; /* 6.0:1 */
@@ -76,11 +129,70 @@
   --ansi-bright-cyan: #29798c; /* 4.7:1 */
   --ansi-bright-white: #1d1a16; /* 16.4:1 */
 
-  --radius: 10px;
+  /*
+   * Type scale (§14.3). Four voices and no fifth: the page's title, a section's
+   * heading, body, and the meta line under it. `--font-size-micro` is the badge
+   * and pip lettering, which is a label rather than prose. Ratios are ~1.2, so
+   * a heading is legibly larger without shouting.
+   */
+  --font-size-page: 1.5rem; /* 24px — one h1 per screen (§15) */
+  --font-size-section: 1.125rem; /* 18px — h2 */
+  --font-size-subsection: 1rem; /* 16px — h3/h4 and card names */
+  --font-size-body: 0.9375rem; /* 15px — the body size `body` already sets */
+  --font-size-meta: 0.8125rem; /* 13px — timestamps, provenance, rationale */
+  --font-size-micro: 0.72rem; /* ~11.5px — badges only, never prose */
+  --line-tight: 1.25; /* headings */
+  --line-body: 1.5; /* prose */
+  --weight-normal: 400;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --tracking-caps: 0.06em; /* the one all-caps treatment: rail/panel eyebrows */
+  --measure: 68ch; /* a readable line length for long prose */
+
+  /*
+   * Spacing scale (§14.3): 4px base, doubling then 1.5×, expressed in rem so it
+   * scales with the user's own font size at 200% zoom (§15).
+   */
+  --space-1: 0.25rem; /* 4px */
+  --space-2: 0.5rem; /* 8px */
+  --space-3: 0.75rem; /* 12px */
+  --space-4: 1rem; /* 16px */
+  --space-5: 1.5rem; /* 24px */
+  --space-6: 2rem; /* 32px */
+  --space-7: 3rem; /* 48px */
+
+  /* Radius scale. `--radius-pill` is the only 999px in the app. */
+  --radius-xs: 4px;
   --radius-sm: 6px;
-  --shadow-card: 0 1px 2px rgb(29 26 22 / 8%);
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  /*
+   * Elevation (§14.3). Four steps, tuned per theme rather than shared: on a
+   * warm-white ground a shadow is a soft warm grey, on charcoal it is near
+   * black and needs more of it to read at all.
+   *
+   *   card    a resting surface, barely off the page
+   *   hover   the same surface, picked up
+   *   raised  genuinely floating — menus, dialogs, the drag preview
+   *   sticky  a one-sided shadow under a pinned header, so the transcript
+   *           scrolling beneath it visibly goes *under* rather than behind
+   */
+  --shadow-card: 0 1px 2px rgb(29 26 22 / 7%);
+  --shadow-hover: 0 2px 4px rgb(29 26 22 / 8%), 0 8px 16px -6px rgb(29 26 22 / 12%);
   --shadow-raised: 0 6px 20px rgb(29 26 22 / 14%);
+  --shadow-sticky: 0 8px 12px -10px rgb(29 26 22 / 30%);
+
+  /*
+   * §14.1: "transitions ≤150ms". `--duration` is the ceiling and `--duration-fast`
+   * the one used for hover and focus feedback, where 150ms already reads as lag.
+   * Both drop to 0ms under `prefers-reduced-motion: reduce` below, which is what
+   * makes every transition in the app reduced-motion-safe by construction.
+   */
   --duration: 150ms; /* §14.1: the whole animation budget */
+  --duration-fast: 120ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* §1.4: no webfonts, ever. The tailnet browser may have no internet route. */
   --font-sans:
@@ -94,6 +206,11 @@
     --surface: #1b1a18; /* soft charcoal, not black */
     --surface-raised: #24231f;
     --surface-sunken: #131211;
+    /* --text reads 12.4:1 on --surface-hover and 11.5:1 on --surface-active;
+       --text-muted 5.6:1 and 5.2:1. Dark lifts rather than darkens on hover,
+       because on charcoal a darker wash reads as disabled. */
+    --surface-hover: #2b2a26;
+    --surface-active: #322f2a;
     --text: #f2eee7; /* 13.6:1 */
     --text-muted: #a9a196; /* 6.2:1 */
     --border: #35332e;
@@ -101,6 +218,9 @@
     --accent: #e0a06a; /* 7.0:1 */
     --accent-soft: #3a2f24;
     --accent-contrast: #1b1a18; /* 7.8:1 */
+    --accent-hover: #eeb07c;
+    --accent-active: #f7c193;
+    --danger-hover: #f8a094;
     --danger: #f08a7d; /* 6.5:1 */
     --warn: #e3b95c; /* 8.5:1 */
     --ok: #71c98d; /* 7.8:1 */
@@ -112,6 +232,21 @@
     --status-awaiting_user: #e3b95c; /* 8.5:1 */
     --status-paused: #9db2d4; /* 7.3:1 */
     --status-halted: #f08a7d; /* 6.5:1 */
+    --status-done: #7cc3dd; /* 8.0:1 */
+
+    /* The same seven families, mixed toward the charcoal rather than toward
+       white — a light tint on a dark ground reads as a highlight, not a state.
+       Worst foreground-on-tint per family, measured:
+         idle 5.6:1 · wait 6.3:1 · live 7.1:1 · attention 7.5:1
+         pause 6.7:1 · done 7.4:1 · fail 5.9:1
+       with --text ≥11.9:1, --text-muted ≥5.4:1, --focus-ring ≥6.6:1 on all. */
+    --tint-idle: #2c2a26;
+    --tint-wait: #2b2740;
+    --tint-live: #1c2f24;
+    --tint-attention: #342c1b;
+    --tint-pause: #222a37;
+    --tint-done: #1c2c31;
+    --tint-fail: #3a2521;
 
     --specialty-bug-patching: #eb9a7c; /* 7.1:1 */
     --specialty-feature-implementation: #7cc3dd; /* 8.0:1 */
@@ -124,7 +259,9 @@
     --specialty-general: #a9a196; /* 6.2:1 */
 
     --shadow-card: 0 1px 2px rgb(0 0 0 / 40%);
+    --shadow-hover: 0 2px 6px rgb(0 0 0 / 45%), 0 10px 20px -6px rgb(0 0 0 / 50%);
     --shadow-raised: 0 6px 20px rgb(0 0 0 / 55%);
+    --shadow-sticky: 0 10px 14px -12px rgb(0 0 0 / 80%);
   }
 }
 
@@ -132,6 +269,8 @@
   --surface: #1b1a18;
   --surface-raised: #24231f;
   --surface-sunken: #131211;
+  --surface-hover: #2b2a26;
+  --surface-active: #322f2a;
   --text: #f2eee7; /* 13.6:1 */
   --text-muted: #a9a196; /* 6.2:1 */
   --border: #35332e;
@@ -139,6 +278,9 @@
   --accent: #e0a06a; /* 7.0:1 */
   --accent-soft: #3a2f24;
   --accent-contrast: #1b1a18; /* 7.8:1 */
+  --accent-hover: #eeb07c;
+  --accent-active: #f7c193;
+  --danger-hover: #f8a094;
   --danger: #f08a7d; /* 6.5:1 */
   --warn: #e3b95c; /* 8.5:1 */
   --ok: #71c98d; /* 7.8:1 */
@@ -150,6 +292,15 @@
   --status-awaiting_user: #e3b95c; /* 8.5:1 */
   --status-paused: #9db2d4; /* 7.3:1 */
   --status-halted: #f08a7d; /* 6.5:1 */
+  --status-done: #7cc3dd; /* 8.0:1 */
+
+  --tint-idle: #2c2a26;
+  --tint-wait: #2b2740;
+  --tint-live: #1c2f24;
+  --tint-attention: #342c1b;
+  --tint-pause: #222a37;
+  --tint-done: #1c2c31;
+  --tint-fail: #3a2521;
 
   --specialty-bug-patching: #eb9a7c; /* 7.1:1 */
   --specialty-feature-implementation: #7cc3dd; /* 8.0:1 */
@@ -179,17 +330,24 @@
   --ansi-bright-white: #f2eee7; /* 13.6:1 */
 
   --shadow-card: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-hover: 0 2px 6px rgb(0 0 0 / 45%), 0 10px 20px -6px rgb(0 0 0 / 50%);
   --shadow-raised: 0 6px 20px rgb(0 0 0 / 55%);
+  --shadow-sticky: 0 10px 14px -12px rgb(0 0 0 / 80%);
 }
 
 /*
  * §14.1 and §15: "prefers-reduced-motion: reduce disables both loops and every
  * transition." Stated once, globally, rather than per component — a transition
  * added later cannot forget to opt in.
+ *
+ * Both duration tokens go to zero, so a rule written as
+ * `transition: … var(--duration-fast) var(--ease)` needs no opt-in of its own;
+ * the `!important` sweep below is the backstop for anything that hard-codes one.
  */
 @media (prefers-reduced-motion: reduce) {
   :root {
     --duration: 0ms;
+    --duration-fast: 0ms;
   }
 
   *,
