@@ -113,6 +113,7 @@ export function anAgent(overrides: {
   readonly diagnostics?: readonly Diagnostic[];
   readonly needsCredentials?: boolean;
   readonly lastUsedAt?: string | null;
+  readonly roleAddenda?: AgentView['roleAddenda'];
 }): AgentView {
   return {
     definition: {
@@ -128,6 +129,7 @@ export function anAgent(overrides: {
       meta: { createdAt: '2026-08-01T00:00:00.000Z' },
     },
     persona: '',
+    roleAddenda: overrides.roleAddenda ?? {},
     uiState: {
       agentId: overrides.id,
       boardOrder: overrides.boardOrder ?? 0,

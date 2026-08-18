@@ -245,3 +245,52 @@ describe('the session history (§7.3)', () => {
     expect(within(history).getByText('This agent has not run yet.')).toBeInTheDocument();
   });
 });
+
+describe('role addenda (roster §4)', () => {
+  it('shows a box per role, filled from the agent, and marks the unlisted ones', async () => {
+    open({
+      agent: anAgent({
+        id: 'priya',
+        name: 'Priya',
+        roleAddenda: { skeptic: '## As the skeptic\n\nArgue against.\n' },
+      }),
+    });
+
+    const addenda = await screen.findByRole('group', { name: 'Role addenda' });
+    for (const role of ['implementer', 'architect', 'skeptic', 'reviewer', 'overseer']) {
+      expect(within(addenda).getByLabelText(new RegExp(`^${role}`, 'u'))).toBeInTheDocument();
+    }
+    expect(within(addenda).getByLabelText(/^skeptic/u)).toHaveValue(
+      '## As the skeptic\n\nArgue against.\n',
+    );
+    // The seat list and the addenda are independent (§4), and the form says so
+    // rather than hiding the box for a role the agent is not listed for.
+    expect(within(addenda).getByLabelText(/^skeptic/u)).toHaveAccessibleName(
+      'skeptic (not a listed role)',
+    );
+  });
+
+  it('posts an edited addendum verbatim, and null for one the user cleared', async () => {
+    const view = open({
+      agent: anAgent({
+        id: 'priya',
+        name: 'Priya',
+        roleAddenda: { skeptic: 'to be cleared', reviewer: 'untouched' },
+      }),
+    });
+    const user = userEvent.setup();
+
+    const addenda = await screen.findByRole('group', { name: 'Role addenda' });
+    await user.clear(within(addenda).getByLabelText(/^skeptic/u));
+    await user.type(within(addenda).getByLabelText(/^architect/u), 'Draw the seams first.');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(view.calls.some((call) => call.method === 'PATCH')).toBe(true));
+    const patch = view.calls.find((call) => call.method === 'PATCH');
+    expect((patch?.body as Record<string, unknown>)['roleAddenda']).toEqual({
+      skeptic: null,
+      architect: 'Draw the seams first.',
+      reviewer: 'untouched',
+    });
+  });
+});

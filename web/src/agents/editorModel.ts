@@ -20,7 +20,7 @@
  * hope.
  */
 
-import type { AgentDraft, AgentView, DraftResponse, SuggestedSkill } from '../api/types';
+import type { AgentDraft, AgentView, DraftResponse, Role, SuggestedSkill } from '../api/types';
 
 /**
  * Everything the form holds, as strings where the form holds strings.
@@ -48,6 +48,14 @@ export interface EditorModel {
   readonly ask: string;
   readonly roles: readonly string[];
   readonly overseer: boolean;
+  /**
+   * `roles/<role>.md` bodies, verbatim, keyed by role (roster §4).
+   *
+   * A role with no addendum has no key — the same distinction the wire format
+   * draws, carried all the way into the form so that clearing a textarea can
+   * mean "delete the file" rather than "write an empty one".
+   */
+  readonly roleAddenda: Readonly<Partial<Record<Role, string>>>;
   /** Suggested skills the user ticked. Untouched ones write nothing (§12.4). */
   readonly acceptedSkills: readonly string[];
 }
@@ -69,6 +77,7 @@ export const EMPTY_MODEL: EditorModel = Object.freeze({
   ask: '',
   roles: [],
   overseer: false,
+  roleAddenda: {},
   acceptedSkills: [],
 });
 
@@ -105,6 +114,11 @@ export function fromDraft(response: DraftResponse): EditorModel {
     ask: linesOf(draft.permissions?.ask),
     roles: draft.capabilities?.roles ?? [],
     overseer: draft.capabilities?.overseer ?? false,
+    // Drafting proposes which seats the agent suits, never the per-seat prose:
+    // an addendum is written against a collaboration the agent has actually
+    // been in, and the wizard has not seen one (roster §16's line on Claude
+    // writing skill bodies applies to these for the same reason).
+    roleAddenda: {},
     acceptedSkills: [],
   };
 }
@@ -130,6 +144,7 @@ export function fromAgent(agent: AgentView): EditorModel {
     ask: linesOf(definition.permissions?.ask),
     roles: definition.capabilities?.roles ?? [],
     overseer: definition.capabilities?.overseer ?? false,
+    roleAddenda: { ...agent.roleAddenda },
     acceptedSkills: [],
   };
 }
@@ -165,6 +180,7 @@ export function toCreateBody(
   const accepted = (options.suggestedSkills ?? []).filter((skill) =>
     model.acceptedSkills.includes(skill.name),
   );
+  const roleAddenda = roleAddendaBody(model);
 
   return {
     name: model.name,
@@ -199,8 +215,28 @@ export function toCreateBody(
           })),
         }),
     personaText: model.personaText,
+    ...(Object.keys(roleAddenda).length === 0 ? {} : { roleAddenda }),
     ...(options.origin === undefined ? {} : { meta: { origin: options.origin } }),
   };
+}
+
+/**
+ * The role addenda as the wire wants them: body, `null` to delete, or absent.
+ *
+ * A role the form never showed a body for is absent, so an agent's untouched
+ * addenda are not rewritten on every save. A role whose box the user emptied is
+ * `null` — roster's `composePersona` skips whitespace-only slots so that "no
+ * addendum" and "an empty one" compose byte-identically, which makes deleting
+ * the file the canonical way to spell the state the user just asked for. That is
+ * a choice about **which** file to write, not a normalisation of its bytes: a
+ * body with anything in it is sent exactly as typed, like `personaText`.
+ */
+function roleAddendaBody(model: EditorModel): Readonly<Partial<Record<Role, string | null>>> {
+  const out: Partial<Record<Role, string | null>> = {};
+  for (const [role, body] of Object.entries(model.roleAddenda)) {
+    out[role as Role] = body.trim() === '' ? null : body;
+  }
+  return out;
 }
 
 /**

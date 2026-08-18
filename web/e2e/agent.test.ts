@@ -71,6 +71,7 @@ function form(overrides: Partial<EditorModel> = {}): EditorModel {
     ask: '',
     roles: ['implementer'],
     overseer: false,
+    roleAddenda: {},
     acceptedSkills: [],
     ...overrides,
   };

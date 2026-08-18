@@ -223,6 +223,9 @@ the roster directory; the API never returns filesystem paths to the browser, onl
 frontmatter-free means the same file can be dropped into `append` or `replace` mode unchanged, and
 that non-technical editing (the UI's textarea) round-trips byte-for-byte.
 
+Role addenda are edited in the agent editor (ui §7.1), alongside the persona and the role
+checkboxes, and written through `roleAddenda` on create/patch (§9.1).
+
 Role addenda in `roles/<role>.md` are optional and appended **after** the persona when the
 orchestrator assigns that agent to that collaboration role — so one "Priya" can be a normal
 implementer on a solo assignment and a sharpened skeptic inside an adversarial pair, without a
@@ -469,7 +472,7 @@ with no roster-specific work.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/agents` | list; includes `uiState` and any `diagnostics` |
-| `GET` | `/agents/:id` | full definition + resolved persona text |
+| `GET` | `/agents/:id` | full definition + resolved persona text + resolved `roleAddenda` |
 | `POST` | `/agents` | create; id derived from name if absent, collision-suffixed |
 | `PATCH` | `/agents/:id` | partial update; `id` immutable |
 | `DELETE` | `/agents/:id` | archive (soft); `?purge=true` only when no sessions reference it |
@@ -487,6 +490,28 @@ with no roster-specific work.
 `POST /agents/:id/validate` exists for the UI: before launching, show the user the *effective*
 permission set for this agent on this project, including any elevation. Permission composition
 that the user cannot see is permission composition they will not trust.
+
+**The wire-only fields.** `POST /agents` and `PATCH /agents/:id` accept three keys that are not
+definition fields, because the things they name are files beside `agent.json` rather than entries
+inside it. The schema still rejects every *other* unknown top-level key (§3); these are lifted out
+before it sees the body, not tolerated by it.
+
+| Field | Writes | Shape |
+|---|---|---|
+| `personaText` | `persona.md` | a string, verbatim — no trim, no line-ending rewrite (§4) |
+| `roleAddenda` | `roles/<role>.md` | `{ [role]: string | null }` — a body writes, `null` deletes, an absent role is left alone |
+| `acceptedSkills` | `skills/<name>/SKILL.md` | the wizard's ticked suggestions (§12.4) |
+
+`roleAddenda` is keyed by §3.1's closed `ROLES`, and an unknown key is a 400 rather than a silent
+no-op: a typo'd role would otherwise write nothing and report success. It is deliberately not
+validated against `capabilities.roles` in either direction — §4 already says an agent may carry a
+file for a role it does not list, and list a role it carries no file for.
+
+The three-way write/delete/leave-alone distinction matters because there is otherwise no way to
+*remove* an addendum through the API. The UI spells "remove" as an emptied textarea, which is safe
+because `composePersona` skips whitespace-only slots (§4) — "no addendum" and "an empty one" compose
+byte-identically, so deleting the file is the canonical form of the same state rather than a second
+one.
 
 ### 9.2 Duplicate-and-edit
 

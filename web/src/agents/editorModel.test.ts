@@ -138,3 +138,52 @@ describe('the redraft guard (§7.1)', () => {
     expect(hasEdits({ ...baseline, tagline: 'mine' }, baseline)).toBe(true);
   });
 });
+
+describe('role addenda (roster §4)', () => {
+  it('carries an agent’s addenda into the form and back out unchanged', () => {
+    const agent = {
+      definition: DRAFT.draft,
+      persona: '',
+      roleAddenda: { skeptic: '## As the skeptic\r\n\r\nArgue against.  \r\n' },
+    } as unknown as AgentView;
+
+    const model = fromAgent(agent);
+    expect(model.roleAddenda).toEqual({ skeptic: '## As the skeptic\r\n\r\nArgue against.  \r\n' });
+    // Verbatim, for the reason `personaText` is: these are prompt bytes.
+    expect(toCreateBody(model)['roleAddenda']).toEqual({
+      skeptic: '## As the skeptic\r\n\r\nArgue against.  \r\n',
+    });
+  });
+
+  it('omits the key entirely when no addendum was shown, so untouched files are not rewritten', () => {
+    expect(toCreateBody({ ...EMPTY_MODEL, name: 'x' })).not.toHaveProperty('roleAddenda');
+    expect(toCreateBody(fromDraft(DRAFT))).not.toHaveProperty('roleAddenda');
+  });
+
+  it('sends null for a box the user emptied — the canonical spelling of "no addendum"', () => {
+    // roster's `composePersona` skips whitespace-only slots, so an empty file and
+    // no file compose byte-identically; deleting is the honest one of the two.
+    const body = toCreateBody({
+      ...EMPTY_MODEL,
+      name: 'x',
+      roleAddenda: { skeptic: '', architect: '   \n  ', reviewer: 'kept' },
+    });
+    expect(body['roleAddenda']).toEqual({ skeptic: null, architect: null, reviewer: 'kept' });
+  });
+
+  it('is independent of capabilities.roles in both directions', () => {
+    const body = toCreateBody({
+      ...EMPTY_MODEL,
+      name: 'x',
+      roles: ['implementer'],
+      roleAddenda: { skeptic: 'body' },
+    });
+    expect(body['capabilities']).toEqual({ overseer: false, roles: ['implementer'] });
+    expect(body['roleAddenda']).toEqual({ skeptic: 'body' });
+  });
+
+  it('counts as an edit for the redraft guard', () => {
+    const baseline = fromDraft(DRAFT);
+    expect(hasEdits({ ...baseline, roleAddenda: { skeptic: 'x' } }, baseline)).toBe(true);
+  });
+});

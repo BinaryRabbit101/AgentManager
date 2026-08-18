@@ -47,6 +47,7 @@ import {
   AgentIdTakenError,
   AgentNotFoundError,
   ImmutableFieldError,
+  InvalidRosterRequestError,
   PurgeBlockedError,
   UnknownBoardOrderIdError,
 } from './serviceErrors.js';
@@ -543,5 +544,118 @@ describe('secrets never leave as values (§10)', () => {
 
     expect(body).not.toContain(harness.libraryRoot);
     expect(body).not.toContain(harness.libraryRoot.replace(/\\/g, '\\\\'));
+  });
+});
+
+describe('role addenda (§4)', () => {
+  /** The `field` a 400 body carries — `issuesOf`'s counterpart for a
+   *  hand-thrown `InvalidRosterRequestError` rather than a schema failure. */
+  function fieldOf(operation: () => unknown): string | undefined {
+    try {
+      operation();
+    } catch (error) {
+      if (error instanceof InvalidRosterRequestError) return error.field;
+      throw error;
+    }
+    throw new Error('expected the write to be rejected');
+  }
+
+  it('writes roles/<role>.md from the create body and resolves it on the view', () => {
+    const view = service.create({
+      name: 'Priya',
+      specialty: 'bug-patching',
+      personaText: '# Priya\n',
+      capabilities: { overseer: false, roles: ['skeptic'] },
+      roleAddenda: { skeptic: '## As the skeptic\n\nArgue the case against.\n' },
+    });
+
+    expect(readFileSync(agentPath('priya', 'roles', 'skeptic.md'), 'utf8')).toBe(
+      '## As the skeptic\n\nArgue the case against.\n',
+    );
+    expect(view.roleAddenda).toEqual({
+      skeptic: '## As the skeptic\n\nArgue the case against.\n',
+    });
+    expect(service.get('priya').roleAddenda.skeptic).toContain('Argue the case against');
+  });
+
+  it('leaves an addendum the patch does not mention alone', () => {
+    service.create({
+      name: 'Priya',
+      specialty: 'bug-patching',
+      roleAddenda: { skeptic: 'skeptic body', architect: 'architect body' },
+    });
+
+    const patched = service.patch('priya', { roleAddenda: { architect: 'rewritten' } });
+
+    expect(patched.roleAddenda).toEqual({ skeptic: 'skeptic body', architect: 'rewritten' });
+  });
+
+  it('deletes the file when the body is null, and says so on the view', () => {
+    service.create({ name: 'Priya', specialty: 'bug-patching', roleAddenda: { skeptic: 'body' } });
+    expect(existsSync(agentPath('priya', 'roles', 'skeptic.md'))).toBe(true);
+
+    const patched = service.patch('priya', { roleAddenda: { skeptic: null } });
+
+    expect(existsSync(agentPath('priya', 'roles', 'skeptic.md'))).toBe(false);
+    expect(patched.roleAddenda).toEqual({});
+  });
+
+  it('deleting an addendum that was never there is not an error', () => {
+    service.create({ name: 'Priya', specialty: 'bug-patching' });
+
+    expect(service.patch('priya', { roleAddenda: { reviewer: null } }).roleAddenda).toEqual({});
+    expect(existsSync(agentPath('priya', 'roles'))).toBe(false);
+  });
+
+  it('does not require the role to be listed in capabilities.roles, or the reverse', () => {
+    // §4: "an agent that carries the file need not list the role", and a listed
+    // role need not carry one.
+    const view = service.create({
+      name: 'Priya',
+      specialty: 'bug-patching',
+      capabilities: { overseer: false, roles: ['implementer'] },
+      roleAddenda: { skeptic: 'body' },
+    });
+
+    expect(view.definition.capabilities?.roles).toEqual(['implementer']);
+    expect(view.roleAddenda).toEqual({ skeptic: 'body' });
+  });
+
+  it('rejects a key that is not one of the five roles', () => {
+    service.create({ name: 'Priya', specialty: 'bug-patching' });
+
+    expect(fieldOf(() => service.patch('priya', { roleAddenda: { skeptik: 'typo' } }))).toBe(
+      'roleAddenda.skeptik',
+    );
+    // …and wrote nothing on the way out.
+    expect(existsSync(agentPath('priya', 'roles'))).toBe(false);
+  });
+
+  it('rejects a body that is neither a string nor null', () => {
+    service.create({ name: 'Priya', specialty: 'bug-patching' });
+
+    expect(fieldOf(() => service.patch('priya', { roleAddenda: { skeptic: 42 } }))).toBe(
+      'roleAddenda.skeptic',
+    );
+    expect(fieldOf(() => service.patch('priya', { roleAddenda: 'nope' }))).toBe('roleAddenda');
+  });
+
+  it('an edit to an addendum is a roster.changed, like an edit to the persona', () => {
+    service.create({ name: 'Priya', specialty: 'bug-patching' });
+    harness.events.length = 0;
+
+    service.patch('priya', { roleAddenda: { skeptic: 'body' } });
+
+    expect(rosterEvents()).toHaveLength(1);
+  });
+
+  it('duplicate carries the addenda, and the copy edits independently (§9.2)', () => {
+    service.create({ name: 'Priya', specialty: 'bug-patching', roleAddenda: { skeptic: 'body' } });
+
+    const clone = service.duplicate('priya', { name: 'Priya Two' });
+    expect(clone.roleAddenda).toEqual({ skeptic: 'body' });
+
+    service.patch(clone.definition.id, { roleAddenda: { skeptic: 'diverged' } });
+    expect(service.get('priya').roleAddenda.skeptic).toBe('body');
   });
 });

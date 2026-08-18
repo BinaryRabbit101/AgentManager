@@ -100,9 +100,18 @@ export type Avatar =
 export const PERMISSION_MODES = ['plan', 'dontAsk', 'default', 'acceptEdits'] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
-/** orchestrator §2.3's pinned five. The role checkboxes, and nothing else. */
+/** orchestrator §2.3's pinned five. The role checkboxes, and the addenda. */
 export const ROLES = ['implementer', 'architect', 'skeptic', 'reviewer', 'overseer'] as const;
 export type Role = (typeof ROLES)[number];
+
+/**
+ * `roles/<role>.md` per role that has one (roster §4).
+ *
+ * Distinct from `capabilities.roles`, which says which seats an agent may fill:
+ * this is what gets appended to the persona once it is sitting in one. A role
+ * can have an addendum without being listed, and be listed without one.
+ */
+export type RoleAddenda = Readonly<Partial<Record<Role, string>>>;
 
 export interface PermissionSet {
   readonly mode?: PermissionMode;
@@ -171,6 +180,7 @@ export interface IntegrationCredentialStatus {
 export interface AgentView {
   readonly definition: AgentDefinition;
   readonly persona: string;
+  readonly roleAddenda: RoleAddenda;
   readonly uiState: AgentUiState;
   readonly diagnostics: readonly Diagnostic[];
   readonly archivedAt: string | null;

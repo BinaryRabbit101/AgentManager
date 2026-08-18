@@ -49,8 +49,13 @@ import type { Diagnostic } from './contracts.js';
 import { RosterValidationError } from './errors.js';
 import { validateIntegrationAllowRules } from './integrations.js';
 import { parseAgentDefinitionJson, serialiseAgentDefinition } from './parse.js';
-import { readRoleAddenda, type RoleAddenda } from './roleAddenda.js';
-import type { AgentDefinition, AgentId } from './schema.js';
+import {
+  readRoleAddenda,
+  roleAddendumFile,
+  ROLES_DIRNAME,
+  type RoleAddenda,
+} from './roleAddenda.js';
+import type { AgentDefinition, AgentId, Role } from './schema.js';
 import { LibraryWriteError } from './serviceErrors.js';
 import { listSkillNames, validateSkills } from './skills.js';
 
@@ -75,7 +80,7 @@ export const AVATAR_FILENAME = 'avatar.png';
 /** Optional per-collaboration-role persona addenda (§4) — defined in
  *  `roleAddenda.ts` with the reader, re-exported so the layout reads as one
  *  list. */
-export { ROLES_DIRNAME } from './roleAddenda.js';
+export { ROLES_DIRNAME };
 /** Per-agent skills, in plugin layout (§7) — defined in `skills.ts`, which this
  *  module imports, and re-exported so the layout reads as one list. */
 export { SKILLS_DIRNAME } from './skills.js';
@@ -303,6 +308,15 @@ export interface ArchiveEntry {
   readonly archivedAt: string;
 }
 
+/**
+ * A role-addendum edit: a body to write, `null` to delete, absent to leave
+ * alone.
+ *
+ * Keyed by {@link Role} rather than by file name so a caller cannot name a file
+ * outside `roles/` — the closed v1 vocabulary is the traversal check.
+ */
+export type RoleAddendaPatch = Readonly<Partial<Record<Role, string | null>>>;
+
 export interface RosterStore {
   readonly paths: LibraryPaths;
   /** Absolute path to a live agent's folder; the folder need not exist. */
@@ -324,6 +338,18 @@ export interface RosterStore {
    */
   write(definition: AgentDefinition, persona?: string): ResolvedAgent;
   writePersona(id: string, text: string): void;
+  /**
+   * Applies a patch to `roles/<role>.md` and reads the folder back (§4).
+   *
+   * The same three-way distinction the definition patch draws over its fields,
+   * for the same reason: without `null` there is no way to remove an addendum
+   * once it is written.
+   *
+   * Returns the re-read agent because the bodies are part of the content hash
+   * ({@link contentHash}), so the registry's copy is stale the moment one of
+   * these files changes.
+   */
+  writeRoleAddenda(id: string, patch: RoleAddendaPatch): ResolvedAgent;
   writeAvatar(id: string, bytes: Uint8Array): void;
   removeAvatar(id: string): boolean;
   /**
@@ -606,6 +632,46 @@ export function createRosterStore(options: RosterStoreOptions): RosterStore {
       } catch (cause) {
         throw new LibraryWriteError(`writing the persona of "${id}"`, { cause });
       }
+    },
+
+    writeRoleAddenda(id, patch) {
+      const dir = agentDir(id);
+      const rolesDir = join(dir, ROLES_DIRNAME);
+      try {
+        // Only when something is actually being written: a patch that is all
+        // deletions must not leave an empty `roles/` behind on an agent that
+        // never had one.
+        if (Object.values(patch).some((body) => typeof body === 'string')) {
+          mkdirSync(rolesDir, { recursive: true });
+        }
+        for (const [role, body] of Object.entries(patch)) {
+          const path = join(rolesDir, roleAddendumFile(role as Role));
+          if (body === null) {
+            try {
+              unlinkSync(path);
+            } catch {
+              // Deleting an addendum that is not there is the state the caller
+              // asked for, not a failure.
+            }
+          } else if (body !== undefined) {
+            writeFileAtomic(path, body, hooks);
+          }
+        }
+      } catch (cause) {
+        throw new LibraryWriteError(`writing the role addenda of "${id}"`, { cause });
+      }
+
+      const outcome = readFolder(dir, id, null);
+      if (!outcome.ok) {
+        // Same unreachable-short-of-a-concurrent-hand-edit case `write` guards:
+        // nothing here touches `agent.json`, so a folder that loaded before this
+        // call has no new reason to stop loading.
+        throw new LibraryWriteError(
+          `agent "${id}" did not read back after its role addenda were written: ` +
+            outcome.diagnostics.map((d) => d.message).join('; '),
+        );
+      }
+      return outcome.agent;
     },
 
     writeAvatar(id, bytes) {

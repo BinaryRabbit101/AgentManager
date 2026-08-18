@@ -88,8 +88,10 @@ import {
   AGENT_JSON_FILENAME,
   AVATAR_FILENAME,
   type ResolvedAgent,
+  type RoleAddendaPatch,
   type RosterStore,
 } from './store.js';
+import type { RoleAddenda } from './roleAddenda.js';
 import { createRosterRegistry, type RegistryChange, type RosterRegistry } from './registry.js';
 import type { AgentUiState, AgentUiStateRepository } from './uiState.js';
 
@@ -109,6 +111,12 @@ export interface AgentView {
   readonly definition: AgentDefinition;
   /** `persona.md`, resolved (§9.1: "full definition + resolved persona text"). */
   readonly persona: string;
+  /**
+   * `roles/<role>.md` per role that has one (§4) — the second system-prompt
+   * slot, resolved for the same reason the persona is: the editor round-trips
+   * these bodies, and a role with no addendum simply has no key.
+   */
+  readonly roleAddenda: RoleAddenda;
   readonly uiState: AgentUiState;
   readonly diagnostics: readonly Diagnostic[];
   /** Non-null for an agent read out of `.archive/` (§9.3). */
@@ -461,6 +469,7 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
     return {
       definition: agent.definition,
       persona: agent.persona,
+      roleAddenda: agent.roleAddenda,
       uiState: uiState.get(id) ?? {
         agentId: id,
         // An archived agent has no board row by design; the view still has to
@@ -541,8 +550,19 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
     );
   }
 
-  function persist(definition: AgentDefinition, persona: string | undefined): ResolvedAgent {
-    const written = store.write(definition, persona);
+  function persist(
+    definition: AgentDefinition,
+    persona: string | undefined,
+    roleAddenda?: RoleAddendaPatch,
+  ): ResolvedAgent {
+    let written = store.write(definition, persona);
+    // After `write`, never as part of it: `agent.json` is what makes a folder an
+    // agent, so the folder has to exist before there is a `roles/` inside it.
+    // The second read is the price of the addenda being in the content hash, and
+    // it is only paid when a request actually carries them.
+    if (roleAddenda !== undefined && Object.keys(roleAddenda).length > 0) {
+      written = store.writeRoleAddenda(definition.id, roleAddenda);
+    }
     registry.apply(written);
     return written;
   }
@@ -606,7 +626,7 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
     },
 
     create(body) {
-      const { record, personaText, acceptedSkills } = splitBody(body);
+      const { record, personaText, roleAddenda, acceptedSkills } = splitBody(body);
       const now = isoTimestamp(clock());
 
       const requestedId = record['id'];
@@ -663,7 +683,7 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
       // An empty `persona.md` rather than none: the definition names the file
       // (§3), and a definition pointing at a file that is not there loads with a
       // warning for something the API just created.
-      const written = persist(definition, personaText ?? '');
+      const written = persist(definition, personaText ?? '', roleAddenda);
       uiState.ensure(id);
       settle('created', [id]);
       return viewOf(written);
@@ -671,7 +691,7 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
 
     patch(id, body) {
       const existing = requireLive(id);
-      const { record, personaText } = splitBody(body);
+      const { record, personaText, roleAddenda } = splitBody(body);
 
       if (record['id'] !== undefined && record['id'] !== id) {
         throw new ImmutableFieldError(['id']);
@@ -698,7 +718,7 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
       if (violations.length > 0) throw new ImmutableFieldError(violations);
       requireSkillFolders(next, `PATCH /api/roster/agents/${id}`);
 
-      const written = persist(next, personaText);
+      const written = persist(next, personaText, roleAddenda);
       settle('updated', [id]);
       return viewOf(written);
     },
@@ -1154,10 +1174,15 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  * tolerated by the schema, because the schema rejects unknown top-level keys on
  * purpose (§3) and weakening that for one convenience field would weaken it for
  * every typo.
+ *
+ * `roleAddenda` is lifted for exactly the same reason: `capabilities.roles`
+ * says which seats an agent can fill and is a definition field, while the
+ * `roles/<role>.md` bodies are files beside `persona.md` and are not.
  */
 function splitBody(body: unknown): {
   readonly record: Record<string, unknown>;
   readonly personaText: string | undefined;
+  readonly roleAddenda: RoleAddendaPatch | undefined;
   readonly acceptedSkills: readonly AcceptedSkill[];
 } {
   const record = asRecord(body);
@@ -1171,11 +1196,48 @@ function splitBody(body: unknown): {
       'personaText',
     );
   }
+  const roleAddenda = readRoleAddendaPatch(record['roleAddenda']);
   const acceptedSkills = readAcceptedSkills(record['acceptedSkills']);
   const rest = { ...record };
   delete rest['personaText'];
+  delete rest['roleAddenda'];
   delete rest['acceptedSkills'];
-  return { record: rest, personaText, acceptedSkills };
+  return { record: rest, personaText, roleAddenda, acceptedSkills };
+}
+
+/**
+ * `{ skeptic: "…", architect: null }` — the wire form of a role-addendum edit.
+ *
+ * The role must be one of §3's five. An unknown key is rejected rather than
+ * ignored, matching the definition schema's treatment of unknown top-level keys
+ * (§3): a typo'd role would otherwise write nothing and report success.
+ */
+function readRoleAddendaPatch(value: unknown): RoleAddendaPatch | undefined {
+  if (value === undefined) return undefined;
+  const record = asRecord(value);
+  if (record === undefined) {
+    throw new InvalidRosterRequestError(
+      '"roleAddenda" must be an object keyed by role, with a markdown body or null for each.',
+      'roleAddenda',
+    );
+  }
+  const patch: Partial<Record<Role, string | null>> = {};
+  for (const [key, body] of Object.entries(record)) {
+    if (!(ROLES as readonly string[]).includes(key)) {
+      throw new InvalidRosterRequestError(
+        `"${key}" is not a role; expected one of ${ROLES.join(', ')}.`,
+        `roleAddenda.${key}`,
+      );
+    }
+    if (body !== null && typeof body !== 'string') {
+      throw new InvalidRosterRequestError(
+        `"roleAddenda.${key}" must be the markdown body of roles/${key}.md, or null to remove it.`,
+        `roleAddenda.${key}`,
+      );
+    }
+    patch[key as Role] = body;
+  }
+  return patch;
 }
 
 /**

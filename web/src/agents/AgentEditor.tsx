@@ -251,6 +251,46 @@ export function AgentEditor({
         </label>
       </fieldset>
 
+      {/*
+        roster §4's second system-prompt slot. Its own fieldset rather than a
+        textarea under each checkbox, because the two answer different
+        questions — the boxes above say which seats this agent may take, and
+        these say how it behaves once it is in one. The lists are deliberately
+        not tied together: roster §4 lets a role carry an addendum without being
+        listed, and be listed without one.
+      */}
+      <fieldset>
+        <legend>Role addenda</legend>
+        <p className="editor__note">
+          Appended after the persona when the orchestrator seats this agent in that role — so one
+          agent can be a plain implementer solo and a sharpened skeptic inside a pair, without a
+          second definition. Empty means no addendum.
+        </p>
+        <Rationale text={rationale['roleAddenda']} />
+        {ROLES.map((role) => (
+          <div className="field" key={role}>
+            <label htmlFor={at(`role-addendum-${role}`)}>
+              {role}
+              {model.roles.includes(role) ? '' : ' (not a listed role)'}
+            </label>
+            <textarea
+              id={at(`role-addendum-${role}`)}
+              rows={3}
+              value={model.roleAddenda[role] ?? ''}
+              placeholder={`How this agent behaves as the ${role}…`}
+              onChange={(event) =>
+                onChange({
+                  // The key is kept even when the box is emptied: an absent key
+                  // means "leave the file alone" and an empty one means "delete
+                  // it", and clearing a textarea is the second (editorModel.ts).
+                  roleAddenda: { ...model.roleAddenda, [role]: event.target.value },
+                })
+              }
+            />
+          </div>
+        ))}
+      </fieldset>
+
       {suggestedSkills.length === 0 ? null : (
         <fieldset>
           <legend>Suggested skills</legend>
