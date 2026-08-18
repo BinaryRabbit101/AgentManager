@@ -40,7 +40,7 @@
  * exactly as M0 wrote them.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -453,26 +453,105 @@ describe.skipIf(!hasToken)('SDK live behaviour (SDK-NOTES §11)', () => {
       let aborted = false;
       let terminalReason: string | undefined;
 
-      for await (const message of session) {
-        if (message.type === 'system' && message.subtype === 'init')
-          capabilities = message.capabilities;
-        if (!interrupted && message.type === 'assistant') {
-          interrupted = true;
-          receipt = await session.interrupt();
+      // The stream is allowed to end either way. On the SDK version SDK-NOTES
+      // was written against, an interrupted turn produced a `result`; on the
+      // pinned version it can instead end by *throwing* an error result
+      // ("[ede_diagnostic] result_type=user …", live run 2026-08-17). Both are
+      // "the turn ended", and DESIGN §2.2 has to map whichever one arrives — so
+      // the check records which it was rather than presupposing it.
+      let streamError: unknown;
+      try {
+        for await (const message of session) {
+          if (message.type === 'system' && message.subtype === 'init')
+            capabilities = message.capabilities;
+          if (!interrupted && message.type === 'assistant') {
+            interrupted = true;
+            receipt = await session.interrupt();
+          }
+          if (interrupted) sequence.push(`${message.type}`);
+          if (message.type === 'assistant' && message.aborted === true) aborted = true;
+          if (message.type === 'result') {
+            terminalReason = message.terminal_reason;
+            input.close();
+          }
         }
-        if (interrupted) sequence.push(`${message.type}`);
-        if (message.type === 'assistant' && message.aborted === true) aborted = true;
-        if (message.type === 'result') {
-          terminalReason = message.terminal_reason;
-          input.close();
-        }
+      } catch (error) {
+        streamError = error;
+        input.close();
       }
 
-      console.log('[L2/L3]', { capabilities, receipt, sequence, aborted, terminalReason });
+      console.log('[L2/L3]', {
+        capabilities,
+        receipt,
+        sequence,
+        aborted,
+        terminalReason,
+        endedBy: streamError === undefined ? 'result' : 'throw',
+        streamError: streamError instanceof Error ? streamError.message : streamError,
+      });
       // L3: G4 — a queued steer may survive the interrupt unless this is advertised.
       expect(Array.isArray(capabilities) || capabilities === undefined).toBe(true);
-      // L2: DESIGN §2.2 must map whatever subtype this turn produced to `interrupted`.
-      expect(sequence).toContain('result');
+      // L2: the interrupt ended the turn. Which of the two shapes it used is the
+      // finding, printed above and reconciled in SDK-NOTES.
+      expect(sequence.includes('result') || streamError !== undefined).toBe(true);
+    },
+  );
+
+  it(
+    '§4.3 probe — an interrupting steer: interrupt, push, and whether the session continues',
+    { timeout: 300_000 },
+    async () => {
+      // Runner's §4.3 order, exactly: interrupt(), wait for the boundary, push
+      // the superseding text. If the generator ends on the interrupt, the pushed
+      // text has no reader and the steer cannot redirect anything — which is the
+      // question this probe exists to answer, and the reason it asserts almost
+      // nothing and prints everything.
+      const input = new InputQueue();
+      input.push('Count slowly from 1 to 200, one number per line.');
+      const session = query({ prompt: input, options: liveOptions({ maxTurns: 4 }) });
+
+      const sequence: string[] = [];
+      let interrupted = false;
+      let pushed = false;
+      let redirected = false;
+      let resultsAfterPush = 0;
+      let streamError: unknown;
+
+      try {
+        for await (const message of session) {
+          sequence.push(message.type);
+          if (!interrupted && message.type === 'assistant') {
+            interrupted = true;
+            await session.interrupt();
+            input.push('Stop counting. Reply with the single word: redirected.');
+            pushed = true;
+            continue;
+          }
+          if (pushed && message.type === 'assistant') {
+            const text = message.message.content
+              .map((block) => (block.type === 'text' ? block.text : ''))
+              .join('');
+            if (/redirected/i.test(text)) redirected = true;
+          }
+          if (pushed && message.type === 'result') {
+            resultsAfterPush += 1;
+            input.close();
+          }
+        }
+      } catch (error) {
+        streamError = error;
+        input.close();
+      }
+
+      console.log('[§4.3 probe]', {
+        sequence,
+        pushed,
+        redirected,
+        resultsAfterPush,
+        survivedInterrupt: streamError === undefined,
+        streamError: streamError instanceof Error ? streamError.message : streamError,
+      });
+      expect(pushed).toBe(true);
     },
   );
 
@@ -730,16 +809,33 @@ describe.skipIf(!hasToken)('SDK live behaviour (SDK-NOTES §11)', () => {
     'L11 — parallel tool calls share a message id; per-step output_tokens is a placeholder',
     { timeout: 300_000 },
     async () => {
+      // The cwd `liveOptions` makes is empty, so "read three files in this
+      // directory" had nothing to read: the model explored instead, spent both
+      // turns doing it, and the run ended on `maxTurns` before it ever made a
+      // parallel call (live run, 2026-08-17). The files the prompt names have to
+      // exist for this to measure what it claims to measure.
+      const cwd = scratch('agentmanager-spike-cwd-');
+      for (const name of ['alpha.txt', 'beta.txt', 'gamma.txt']) {
+        writeFileSync(
+          resolve(cwd, name),
+          `${name} — a file for L11 to read.
+`,
+        );
+      }
+
       const byId = new Map<string, Array<{ input: number; output: number }>>();
       const input = new InputQueue();
-      input.push('Read three different files in this directory in parallel, then reply with: done');
+      input.push('Read alpha.txt, beta.txt and gamma.txt in parallel, then reply with: done');
 
       const session = query({
         prompt: input,
         options: liveOptions({
+          cwd,
           tools: { type: 'preset', preset: 'claude_code' },
           allowedTools: ['Read', 'Glob', 'LS'],
           permissionMode: 'default',
+          // One turn for the parallel reads, one for the reply, one spare.
+          maxTurns: 3,
         }),
       });
 

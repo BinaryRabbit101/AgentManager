@@ -735,6 +735,42 @@ the answer.
 | L15 | A session killed mid-tool-call: does `resume` work, and does the SDK transcript show the dangling `tool_use`? | M9 (A6, §9.3) | Engine + timing. |
 | L16 | Peak RSS of one `claude` child across a real session (G9). | M5 (§6.1) | Not a declaration. |
 
+### 11.1 Recorded results — live run, 2026-08-17
+
+Pinned SDK 0.3.233, subscription auth, Windows 11, via `npm run test:live`. Eleven of the sixteen
+ran green; what follows is what the three interesting ones actually said. L12 stays behind
+`AGENTMANAGER_SPIKE_AUTH_FAILURE=1`, and L15/L16 remain unrun.
+
+**L2 — answered, and A2 is confirmed as declared.** An interrupted turn *does* produce a `result`.
+Observed from the interrupt onward: `assistant`, `assistant`, `user`, `result`, with
+`SDKAssistantMessage.aborted: true` and `result.terminal_reason: 'aborted_streaming'`. §2.2 therefore
+has a real result to map, and "map the subtype to `interrupted`, not `failed`" stands as written.
+
+**New, and the reason L2 first came back red.** After that result the generator **throws** —
+`Claude Code returned an error result: [ede_diagnostic] result_type=user last_content_type=n/a
+stop_reason=null` — when the interrupt is *not* followed by another input and the queue is left open.
+The throw arrives strictly after the result, which is precisely `launch.ts`'s
+`stream_error_after_result` path: the result is authoritative for status, the throw is recorded so
+the reason is not lost. The Stop path never sees it at all (§9.1 closes the input and stops reading —
+M6 passes on the same run). No design change follows; what needed correcting was the spike's
+assumption that the stream ends cleanly.
+
+**L3 — answered.** `init.capabilities` on this CLI build: `interrupt_receipt_v1`,
+`interrupt_cancel_queued_v1`, `msg_lifecycle_v1`. `interrupt()` answered with a receipt of
+`{ still_queued: [] }` — so G4's "this CLI may not be able to tell us" is not this build's behaviour,
+and the receipt is real rather than assumed.
+
+**§4.3 probed directly** (new check, `§4.3 probe` in the spike). Runner's exact order —
+`interrupt()`, then push the superseding text, then keep reading — leaves the session **alive**: the
+pushed message gets its own turn, the model answers the new instruction, and nothing throws
+(`survivedInterrupt: true`, `redirected: true`, `resultsAfterPush: 2`). The interrupting steer works
+as designed on this build. The difference from L2 is the push: an interrupt with nothing behind it is
+what produces the diagnostic throw.
+
+**L11 — the fixture was wrong, not the SDK.** `liveOptions` hands each session a freshly-made empty
+scratch `cwd`, so "read three different files in this directory" named files that did not exist; the
+model explored instead and hit `maxTurns`. The check now seeds three files and names them.
+
 ---
 
 ## 12. Implementation notes (no design impact)
