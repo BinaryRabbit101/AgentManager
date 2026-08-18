@@ -91,6 +91,72 @@ export function askedAgo(createdAt: string, now: number): string {
   return `asked ${String(Math.floor(hours / 24))}d ago`;
 }
 
+/**
+ * The call the card is gating, as the two lines a human needs to decide it.
+ *
+ * "Allow the agent to use Bash?" is not a decision anyone can make: the whole
+ * question is *which* Bash. orchestrator §11.1 carries the call on the card as
+ * `context.toolName` / `context.toolInput` precisely so the answer can be an
+ * informed one, and until now the inbox dropped it on the floor.
+ *
+ * The value is the agent's own tool input and is therefore untrusted (§1.4), so
+ * it goes into the DOM as text — never markup — and the renderer puts it in a
+ * `<pre>` that scrolls in its own container (§15).
+ */
+export interface GatedCall {
+  readonly toolName: string;
+  /** One line for the header — the command, the path, the URL (§9.2's preview). */
+  readonly summary: string | undefined;
+  /** The whole input, pretty-printed, for the expandable detail. */
+  readonly detail: string | undefined;
+}
+
+/** The fields worth promoting to the one-line summary, most specific first. */
+const SUMMARY_FIELDS: readonly string[] = [
+  'command',
+  'file_path',
+  'path',
+  'url',
+  'pattern',
+  'query',
+  'description',
+  'prompt',
+];
+
+export function gatedCall(card: QuestionCard): GatedCall | undefined {
+  const toolName = card.context?.toolName;
+  if (toolName === undefined || toolName === '') return undefined;
+  const input = card.context?.toolInput;
+  return { toolName, summary: callSummary(input), detail: callDetail(input) };
+}
+
+function callSummary(input: unknown): string | undefined {
+  if (typeof input === 'string') return firstLine(input);
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return undefined;
+  const record = input as Record<string, unknown>;
+  for (const field of SUMMARY_FIELDS) {
+    const value = record[field];
+    if (typeof value === 'string' && value.trim() !== '') return firstLine(value);
+  }
+  return undefined;
+}
+
+function callDetail(input: unknown): string | undefined {
+  if (input === undefined || input === null) return undefined;
+  if (typeof input === 'string') return input;
+  try {
+    return JSON.stringify(input, null, 2);
+  } catch {
+    // A tool input the agent made circular costs the detail, not the card.
+    return undefined;
+  }
+}
+
+function firstLine(value: string): string {
+  const line = value.split('\n')[0] ?? '';
+  return line.length <= 160 ? line : `${line.slice(0, 159)}…`;
+}
+
 /** What the answer POST carries. The UI never invents an option (§4, §11.2). */
 export interface AnswerDraft {
   readonly optionIds: readonly string[];

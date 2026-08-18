@@ -149,3 +149,99 @@
     align-items: stretch;
   }
 }
+
+/* --- the sessions and assignments indexes (§2.1) ------------------------- */
+
+/*
+  Both destinations render the same shape: a row is a link, a badge strip, an
+  optional line of prose and a meta line. One rule set rather than two, because
+  they are the same list of the same kind of record — differing only in what the
+  server put in it.
+*/
+.record-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.record-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  padding: 0.6rem 0.8rem;
+  min-width: 0;
+}
+
+.record-row__name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.record-row__name:hover {
+  text-decoration: underline;
+}
+
+.record-row__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+
+.record-row__summary {
+  margin: 0.4rem 0 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.record-row__seats {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.record-row__seats li {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.record-row__seat-role {
+  color: var(--text-muted);
+}
+
+.record-row__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/*
+  Launch seats one agent; the pair dialog seats two. Both live on the card,
+  because a project screen that offers only Launch offers no way to point two
+  agents at the project at all (§10.4, §10.5).
+*/
+.project-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}

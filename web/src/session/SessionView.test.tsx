@@ -17,7 +17,12 @@ import { describe, expect, it } from 'vitest';
 
 import { anAgent, json, mount, type Responder } from '../../test/harness';
 import { App } from '../App';
-import type { SessionRecord, SessionUsageTotals, TranscriptLine } from '../api/types';
+import type {
+  QuestionCard,
+  SessionRecord,
+  SessionUsageTotals,
+  TranscriptLine,
+} from '../api/types';
 
 import { FORBIDDEN_USAGE_STRINGS } from './UsageRail';
 
@@ -72,15 +77,48 @@ interface Options {
   readonly lines?: readonly TranscriptLine[];
   readonly pruned?: boolean;
   readonly control?: (verb: string) => { status: number; body: unknown };
+  /** §9.3: the assignment's open cards, answered on this screen. */
+  readonly questions?: readonly QuestionCard[];
+}
+
+function aQuestionCard(overrides: Partial<QuestionCard> = {}): QuestionCard {
+  return {
+    id: 'q1',
+    kind: 'question',
+    status: 'open',
+    prompt: 'Allow the agent to use Bash?',
+    options: [
+      { id: 'allow', label: 'Allow once' },
+      { id: 'deny', label: 'Deny' },
+    ],
+    multiSelect: false,
+    allowFreeText: false,
+    context: { toolName: 'Bash', toolInput: { command: 'npx prisma migrate reset' } },
+    createdAt: '2026-08-17T09:04:00.000Z',
+    holdUntil: null,
+    expiresAt: null,
+    assignmentId: 'a1',
+    projectId: 'lpm',
+    sessionId: 's1',
+    recommendations: [],
+    disagreement: false,
+    contested: false,
+    answeredVia: null,
+    answeredAt: null,
+    answer: null,
+    ...overrides,
+  };
 }
 
 function serving(options: Options = {}): {
   respond: Responder;
   transcriptQueries: string[];
   controlCalls: { verb: string; body: unknown }[];
+  answerCalls: { id: string; body: unknown }[];
 } {
   const transcriptQueries: string[] = [];
   const controlCalls: { verb: string; body: unknown }[] = [];
+  const answerCalls: { id: string; body: unknown }[] = [];
   let session = options.session ?? aSession();
 
   const respond: Responder = (url, init) => {
@@ -128,6 +166,15 @@ function serving(options: Options = {}): {
       session = { ...session, ...next };
       return json({ sessionId: 's1', ...next, changed: true });
     }
+    if (path === '/api/questions') return json({ questions: options.questions ?? [] });
+    if (path.startsWith('/api/questions/') && path.endsWith('/answer')) {
+      const id = path.slice('/api/questions/'.length, -'/answer'.length);
+      answerCalls.push({
+        id,
+        body: typeof init.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined,
+      });
+      return json({ ...aQuestionCard({ id }), status: 'answered', answeredVia: 'local' });
+    }
     if (path === '/api/roster/agents') {
       return json({ agents: [anAgent({ id: 'priya', name: 'Priya' })], diagnostics: [] });
     }
@@ -135,7 +182,7 @@ function serving(options: Options = {}): {
     if (path.endsWith('/avatar')) return new Response(new Blob(['png']), { status: 200 });
     return json({ error: 'not_found', message: `No fixture for ${path}.` }, 404);
   };
-  return { respond, transcriptQueries, controlCalls };
+  return { respond, transcriptQueries, controlCalls, answerCalls };
 }
 
 async function open(options: Options = {}): Promise<ReturnType<typeof mount>> {
@@ -551,5 +598,65 @@ describe('Load earlier (§9.2, §9.4)', () => {
     expect(view.calls.some((url) => url.includes('/transcript?from='))).toBe(true);
     // The tail is still there: paging back widens, it does not replace.
     expect(screen.getByText('the tail')).toBeInTheDocument();
+  });
+});
+
+describe('Enter steers, and the field says so (§9.3)', () => {
+  it('submits the steer on Enter, without reaching for the button', async () => {
+    const view = await open({});
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Steer'), 'check the logs first{Enter}');
+
+    const calls = (view as unknown as { controlCalls: { verb: string; body: unknown }[] })
+      .controlCalls;
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({
+      verb: 'steer',
+      body: { text: 'check the logs first', interrupt: false },
+    });
+  });
+
+  it('does not post an empty steer', async () => {
+    const view = await open({});
+    await userEvent.setup().type(screen.getByLabelText('Steer'), '{Enter}');
+    const calls = (view as unknown as { controlCalls: { verb: string }[] }).controlCalls;
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('a card is answered where it is seen (§9.3, §11.3)', () => {
+  it('renders the session’s open card in place, with the call it is gating', async () => {
+    await open({
+      session: aSession({ status: 'paused', exitReason: 'awaiting_answer' }),
+      questions: [aQuestionCard()],
+    });
+    const card = await screen.findByText('Allow the agent to use Bash?');
+    expect(card).toBeTruthy();
+    // §11.2: the whole question is *which* Bash.
+    expect(screen.getByText('npx prisma migrate reset')).toBeTruthy();
+  });
+
+  it('answers it with one POST to the one endpoint', async () => {
+    const view = await open({
+      session: aSession({ status: 'paused', exitReason: 'awaiting_answer' }),
+      questions: [aQuestionCard()],
+    });
+    await screen.findByText('Allow the agent to use Bash?');
+    await userEvent.setup().click(screen.getByRole('button', { name: /Allow once/u }));
+
+    const answers = (view as unknown as { answerCalls: { id: string; body: unknown }[] })
+      .answerCalls;
+    await waitFor(() => expect(answers).toHaveLength(1));
+    expect(answers[0]).toEqual({ id: 'q1', body: { optionIds: ['allow'] } });
+  });
+
+  it('shows another session’s card nowhere near this one', async () => {
+    await open({
+      session: aSession({ status: 'paused', exitReason: 'awaiting_answer' }),
+      questions: [aQuestionCard({ id: 'q2', sessionId: 's9', prompt: 'Someone else’s card' })],
+    });
+    await waitFor(() => expect(screen.queryByText('Someone else’s card')).toBeNull());
+    // With no card of its own the banner is what points at the inbox (§9.3).
+    expect(screen.getByText(/Waiting for your answer/u)).toBeTruthy();
   });
 });

@@ -32,7 +32,7 @@ import { Link } from 'react-router-dom';
 import { useProjects, useRoster } from '../api/queries';
 import { failureOf } from '../api/result';
 import { projectLaunchRefusal, type Project } from '../api/types';
-import { useServices } from '../app/AppContext';
+import { useHasOrchestrator, useServices } from '../app/AppContext';
 import { BoardDndContext } from '../board/BoardDndContext';
 import { agentTarget, projectTarget, type DropOutcome } from '../board/dnd';
 import { Icon } from '../icons/Sprite';
@@ -43,6 +43,8 @@ import { QuickAddDialog } from './QuickAddDialog';
 
 function ProjectCard({ project }: { readonly project: Project }): ReactElement {
   const openLaunch = useAppStore((store) => store.openLaunch);
+  const openPair = useAppStore((store) => store.openPair);
+  const hasOrchestrator = useHasOrchestrator();
   const clone = useAppStore((store) => store.clones[project.id]);
   const refusal = projectLaunchRefusal(project);
   const { setNodeRef, isOver } = useDroppable({
@@ -100,13 +102,26 @@ function ProjectCard({ project }: { readonly project: Project }): ReactElement {
       )}
 
       {refusal === undefined ? (
-        <button
-          type="button"
-          className="button project-card__launch"
-          onClick={() => openLaunch({ agentId: null, projectId: project.id, origin: 'project' })}
-        >
-          Launch an agent…
-        </button>
+        <div className="project-card__actions">
+          <button
+            type="button"
+            className="button project-card__launch"
+            onClick={() => openLaunch({ agentId: null, projectId: project.id, origin: 'project' })}
+          >
+            Launch an agent…
+          </button>
+          {/* §10.4's dialog — see the note on the project page's own copy. */}
+          {hasOrchestrator ? (
+            <button
+              type="button"
+              className="button"
+              data-action="pair"
+              onClick={() => openPair({ agentId: null, withAgentId: null, projectId: project.id })}
+            >
+              Start a pair…
+            </button>
+          ) : null}
+        </div>
       ) : (
         <p className="project-card__refusal">Can’t launch: {refusal}.</p>
       )}

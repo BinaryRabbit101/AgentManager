@@ -20,7 +20,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import { queryKeys, useRoster, useSession } from '../api/queries';
+import { queryKeys, useAssignmentQuestions, useRoster, useSession } from '../api/queries';
 import { failureOf, type ApiFailure } from '../api/result';
 import type {
   EventFrame,
@@ -31,6 +31,8 @@ import type {
 import { useServices } from '../app/AppContext';
 import { Avatar } from '../board/Avatar';
 import { Icon } from '../icons/Sprite';
+import { useAnswering } from '../questions/QuestionInbox';
+import { QuestionCardView } from '../questions/QuestionCardView';
 import { useAppStore } from '../state/store';
 
 import {
@@ -59,6 +61,10 @@ export function SessionView(): ReactElement {
   const detail = useSession(client, id);
   const roster = useRoster(client);
   const pushToast = useAppStore((store) => store.pushToast);
+  // §11.3's one answer path, borrowed from the inbox rather than reimplemented.
+  const answering = useAnswering(client, queryClient);
+  const assignmentId = detail.data?.session.assignmentId ?? '';
+  const questions = useAssignmentQuestions(client, assignmentId);
 
   const [transcript, setTranscript] = useState<TranscriptState>(EMPTY_TRANSCRIPT);
   const [liveUsage, setLiveUsage] = useState<SessionUsageTotals | null>(null);
@@ -115,6 +121,14 @@ export function SessionView(): ReactElement {
       onFrame: (frame: EventFrame) => {
         if (frame.type === 'session.question.answered') {
           setTranscript((current) => applyAnswered(current, frame));
+          void queryClient.invalidateQueries({ queryKey: ['questions'] });
+          return;
+        }
+        if (frame.type === 'session.question.raised') {
+          // The card is answerable here (§11.3), so the list backing it must
+          // arrive with the block rather than one global frame later.
+          void queryClient.invalidateQueries({ queryKey: ['questions'] });
+          setTranscript((current) => applyEvent(current, frame));
           return;
         }
         if (frame.type === 'session.usage') {
@@ -170,6 +184,12 @@ export function SessionView(): ReactElement {
     if (page !== undefined) setTranscript((current) => applyPage(current, page));
   }, [readPage, transcript.from]);
 
+  /** §9.3's Steer, from the button and from Enter in the field alike. */
+  function submitSteer(): void {
+    if (steerText.trim() === '') return;
+    void control('steer');
+  }
+
   async function control(control: keyof typeof CONTROL_PATHS): Promise<void> {
     setFailure(undefined);
     const body =
@@ -219,138 +239,197 @@ export function SessionView(): ReactElement {
   const awaiting = isAwaitingAnswer(status ?? session.status, exitReason);
   const controls = controlStates(status ?? session.status, exitReason, session.pinned);
   const usage = liveUsage ?? detail.data?.usage ?? null;
+  // The assignment's open cards, narrowed to this session. The projection
+  // carries `sessionId` denormalised (§11.1), so this is a filter, not a join.
+  const openCards = (questions.data?.questions ?? []).filter(
+    (card) => card.sessionId === id && card.status === 'open',
+  );
+  const now = Date.now();
 
   return (
     <div className="session">
       <section className="session__main" aria-labelledby="session-heading">
-        <header className="session__header">
-          <h2 id="session-heading">
-            {agent === undefined ? (
-              'deleted agent'
-            ) : (
-              <>
-                <Avatar
-                  agentId={agent.definition.id}
-                  name={agent.definition.name}
-                  avatar={agent.definition.avatar}
-                />
-                {agent.definition.name}
-              </>
-            )}
-          </h2>
-          <p className="session__meta">
-            {/* runner's status vocabulary, verbatim (§9.2). */}
-            <span className="badge" data-status={status}>
-              {status}
-            </span>
-            {session.model === null ? null : <span className="badge">{session.model}</span>}
-            {session.permissionMode === null ? null : (
-              <span className="badge">{session.permissionMode}</span>
-            )}
-            {start?.workspace?.kind === undefined ? null : (
-              <span className="badge">
-                {start.workspace.kind}
-                {start.workspace.branch === null || start.workspace.branch === undefined
-                  ? ''
-                  : ` · ${start.workspace.branch}`}
+        {/*
+          §9's header, controls and steer field, pinned together. A long run is
+          the case this screen exists for, and scrolling one is what puts Stop
+          and the steer field off the top of the window — the two things the
+          user reaches for *because* the run is long. They stay put; only the
+          transcript and the notices below scroll (§2.3, §9.3).
+        */}
+        <div className="session__pinned">
+          <header className="session__header">
+            <h2 id="session-heading">
+              {agent === undefined ? (
+                'deleted agent'
+              ) : (
+                <>
+                  <Avatar
+                    agentId={agent.definition.id}
+                    name={agent.definition.name}
+                    avatar={agent.definition.avatar}
+                  />
+                  {agent.definition.name}
+                </>
+              )}
+            </h2>
+            <p className="session__meta">
+              {/* runner's status vocabulary, verbatim (§9.2). */}
+              <span className="badge" data-status={status}>
+                {status}
               </span>
-            )}
-            <Link to={`/projects/${encodeURIComponent(session.projectId)}`}>project</Link>
-            <Link to={`/assignments/${encodeURIComponent(session.assignmentId)}`}>assignment</Link>
-          </p>
+              {session.model === null ? null : <span className="badge">{session.model}</span>}
+              {session.permissionMode === null ? null : (
+                <span className="badge">{session.permissionMode}</span>
+              )}
+              {start?.workspace?.kind === undefined ? null : (
+                <span className="badge">
+                  {start.workspace.kind}
+                  {start.workspace.branch === null || start.workspace.branch === undefined
+                    ? ''
+                    : ` · ${start.workspace.branch}`}
+                </span>
+              )}
+              <Link to={`/projects/${encodeURIComponent(session.projectId)}`}>project</Link>
+              <Link to={`/assignments/${encodeURIComponent(session.assignmentId)}`}>
+                assignment
+              </Link>
+            </p>
+          </header>
 
-          {/* The badges §9.2 says must never be missed. */}
-          {start?.elevation == null ? null : (
-            <p className="notice" data-tone="warn" data-badge="elevation">
-              Elevated permissions: {start.elevation.allow.join(', ')} — {start.elevation.reason}
-            </p>
-          )}
-          {session.origin === 'remote' ? (
-            <p className="notice" data-badge="remote">
-              Started remotely.
-            </p>
-          ) : null}
-          {start?.questionBridge === 'disabled' ? (
-            <p className="notice" data-tone="warn" data-badge="question-bridge">
-              Question bridge disabled — this agent cannot ask you anything mid-run, so a decision
-              it needs will end the turn instead.
-            </p>
-          ) : null}
-          {(start?.diagnostics ?? []).map((diagnostic, index) => (
-            <p
-              key={`${diagnostic.code ?? 'diagnostic'}-${String(index)}`}
-              className="notice"
-              data-tone={diagnostic.level === 'error' ? 'danger' : 'warn'}
-              data-badge="diagnostic"
+          <div className="session__controls" role="group" aria-label="Session controls">
+            {controls
+              .filter((one) => !one.hidden)
+              .map((one) => (
+                <button
+                  key={one.control}
+                  type="button"
+                  className="button"
+                  data-control={one.control}
+                  disabled={!one.enabled || one.control === 'relaunch'}
+                  // §9.3: shown disabled **with the reason**, never bare.
+                  title={one.reason}
+                  aria-describedby={one.enabled ? undefined : `reason-${one.control}`}
+                  onClick={() => {
+                    if (one.control === 'relaunch') return;
+                    void control(one.control);
+                  }}
+                >
+                  {one.label}
+                </button>
+              ))}
+            {controls
+              .filter((one) => !one.hidden && !one.enabled)
+              .map((one) => (
+                <span
+                  key={`${one.control}-reason`}
+                  id={`reason-${one.control}`}
+                  className="visually-hidden"
+                >
+                  {one.reason}
+                </span>
+              ))}
+          </div>
+
+          {status === 'running' ? (
+            /*
+              A form, so Enter in the field steers. It used to be a bare input
+              beside a button in the control group above, which is the one
+              layout where the obvious gesture does nothing at all.
+            */
+            <form
+              className="session__steer"
+              onSubmit={(event) => {
+                event.preventDefault();
+                submitSteer();
+              }}
             >
-              {diagnostic.message}
-            </p>
-          ))}
-          {transcript.pruned ? (
-            <p className="notice" data-badge="pruned">
-              Transcript pruned — projects’ retention removed this file, so there is nothing to read
-              back.
-            </p>
-          ) : null}
-          {awaiting ? (
-            <p className="notice" data-tone="warn" data-badge="awaiting-answer" role="status">
-              Waiting for your answer. <Link to="/questions">See the card</Link>
-            </p>
-          ) : null}
-        </header>
-
-        <div className="session__controls" role="group" aria-label="Session controls">
-          {controls
-            .filter((one) => !one.hidden)
-            .map((one) => (
+              <label htmlFor="steer-text">Steer</label>
+              <input
+                id="steer-text"
+                value={steerText}
+                placeholder="Say something to the agent, then press Enter"
+                onChange={(event) => setSteerText(event.target.value)}
+              />
+              <label className="launch__toggle">
+                <input
+                  type="checkbox"
+                  checked={interrupt}
+                  onChange={(event) => setInterrupt(event.target.checked)}
+                />
+                interrupt the current turn
+              </label>
+              {/* Submits the form; the Steer control above posts the same body. */}
               <button
-                key={one.control}
-                type="button"
+                type="submit"
                 className="button"
-                data-control={one.control}
-                disabled={!one.enabled || one.control === 'relaunch'}
-                // §9.3: shown disabled **with the reason**, never bare.
-                title={one.reason}
-                aria-describedby={one.enabled ? undefined : `reason-${one.control}`}
-                onClick={() => {
-                  if (one.control === 'relaunch') return;
-                  void control(one.control);
-                }}
+                data-variant="primary"
+                disabled={steerText.trim() === ''}
               >
-                {one.label}
+                Send
               </button>
-            ))}
-          {controls
-            .filter((one) => !one.hidden && !one.enabled)
-            .map((one) => (
-              <span
-                key={`${one.control}-reason`}
-                id={`reason-${one.control}`}
-                className="visually-hidden"
-              >
-                {one.reason}
-              </span>
-            ))}
+            </form>
+          ) : null}
         </div>
 
-        {status === 'running' ? (
-          <div className="session__steer">
-            <label htmlFor="steer-text">Steer</label>
-            <input
-              id="steer-text"
-              value={steerText}
-              onChange={(event) => setSteerText(event.target.value)}
-            />
-            <label className="launch__toggle">
-              <input
-                type="checkbox"
-                checked={interrupt}
-                onChange={(event) => setInterrupt(event.target.checked)}
-              />
-              interrupt the current turn
-            </label>
-          </div>
+        {/* The badges §9.2 says must never be missed. */}
+        {start?.elevation == null ? null : (
+          <p className="notice" data-tone="warn" data-badge="elevation">
+            Elevated permissions: {start.elevation.allow.join(', ')} — {start.elevation.reason}
+          </p>
+        )}
+        {session.origin === 'remote' ? (
+          <p className="notice" data-badge="remote">
+            Started remotely.
+          </p>
         ) : null}
+        {start?.questionBridge === 'disabled' ? (
+          <p className="notice" data-tone="warn" data-badge="question-bridge">
+            Question bridge disabled — this agent cannot ask you anything mid-run, so a decision it
+            needs will end the turn instead.
+          </p>
+        ) : null}
+        {(start?.diagnostics ?? []).map((diagnostic, index) => (
+          <p
+            key={`${diagnostic.code ?? 'diagnostic'}-${String(index)}`}
+            className="notice"
+            data-tone={diagnostic.level === 'error' ? 'danger' : 'warn'}
+            data-badge="diagnostic"
+          >
+            {diagnostic.message}
+          </p>
+        ))}
+        {transcript.pruned ? (
+          <p className="notice" data-badge="pruned">
+            Transcript pruned — projects’ retention removed this file, so there is nothing to read
+            back.
+          </p>
+        ) : null}
+        {awaiting && openCards.length === 0 ? (
+          <p className="notice" data-tone="warn" data-badge="awaiting-answer" role="status">
+            Waiting for your answer. <Link to="/questions">See the card</Link>
+          </p>
+        ) : null}
+
+        {/*
+          §11.3: one answer endpoint, one card component, wherever the card is
+          seen. A run that stopped to ask is answered here rather than by a trip
+          to the inbox and back — the same `QuestionCardView` the inbox renders,
+          driven by the same `useAnswering`, so the two cannot drift.
+        */}
+        {openCards.length === 0 ? null : (
+          <ul className="question-list" data-region="session-questions">
+            {openCards.map((card) => (
+              <QuestionCardView
+                key={card.id}
+                card={card}
+                now={now}
+                busy={answering.busyId === card.id}
+                failureMessage={answering.failures[card.id]}
+                onAnswer={answering.answer}
+              />
+            ))}
+          </ul>
+        )}
 
         {failure === undefined ? null : (
           <p className="notice" data-tone="danger" role="alert">

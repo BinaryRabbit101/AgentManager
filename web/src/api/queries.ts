@@ -34,6 +34,7 @@ import type {
   RosterListView,
   SessionDetailView,
   SessionListView,
+  SessionStatus,
   WorkItemListView,
   WorkspaceListView,
 } from './types';
@@ -53,7 +54,16 @@ export const queryKeys = {
   workspaces: (id: string) => ['projects', 'one', id, 'workspaces'] as const,
   agent: (id: string) => ['roster', 'agents', id] as const,
   agentSessions: (id: string) => ['sessions', { agentId: id }] as const,
+  sessions: (status: string) => ['sessions', { status }] as const,
   questions: (status: QuestionStatus) => ['questions', { status }] as const,
+  /**
+   * The open cards belonging to one assignment — what §9's session view answers
+   * inline. Keyed under `questions` on purpose: §3.4's map invalidates the whole
+   * `['questions']` prefix on `assignment.question.raised` / `.answered`, so this
+   * follows the inbox without a second entry in the map.
+   */
+  assignmentQuestions: (assignmentId: string) =>
+    ['questions', { assignmentId, status: 'open' }] as const,
   question: (id: string) => ['questions', 'one', id] as const,
   assignments: (status: string) => ['assignments', { status }] as const,
   assignment: (id: string) => ['assignments', 'one', id] as const,
@@ -171,6 +181,34 @@ export function useQuestion(client: ApiClient, id: string): UseQueryResult<Quest
 }
 
 /**
+ * `GET /api/questions?status=open&assignmentId=…` — the session view's cards.
+ *
+ * §11.3 pins one answer endpoint and one card component "local and remote
+ * alike", and §11 pins that a card is answered where it is *seen*. The session
+ * view is one of those places: a run that stops to ask should not require a trip
+ * to the inbox and back, so it reads its own assignment's open cards and renders
+ * the same {@link QuestionCardView} the inbox does. The filter is the server's
+ * (`assignmentId`); narrowing to this session is a `sessionId` comparison on the
+ * projection, which already carries it denormalised.
+ */
+export function useAssignmentQuestions(
+  client: ApiClient,
+  assignmentId: string,
+): UseQueryResult<QuestionListView> {
+  return useQuery({
+    queryKey: queryKeys.assignmentQuestions(assignmentId),
+    enabled: assignmentId !== '',
+    queryFn: async () =>
+      unwrap(
+        await client.request<QuestionListView>('/questions', {
+          query: { status: 'open', assignmentId },
+        }),
+      ),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/**
  * `GET /api/orchestrator/status` — the fleet view, and §2.2's badge count.
  *
  * This is the endpoint ui M2 and M5 both degraded around while it was still
@@ -237,6 +275,29 @@ export function useAgent(client: ApiClient, id: string): UseQueryResult<AgentVie
     queryKey: queryKeys.agent(id),
     queryFn: async () =>
       unwrap(await client.request<AgentView>(`/roster/agents/${encodeURIComponent(id)}`)),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/**
+ * `GET /api/sessions` — §2.1's sessions destination, newest first.
+ *
+ * The same route the agent page filters by `agentId`; here it is unfiltered
+ * except by `status`, and the server's order is kept (runner §11.1 returns
+ * newest first). Nothing here sorts.
+ */
+export function useSessions(
+  client: ApiClient,
+  status: SessionStatus | 'all',
+): UseQueryResult<SessionListView> {
+  return useQuery({
+    queryKey: queryKeys.sessions(status),
+    queryFn: async () =>
+      unwrap(
+        await client.request<SessionListView>('/sessions', {
+          query: status === 'all' ? {} : { status },
+        }),
+      ),
     staleTime: DEFAULT_STALE_TIME_MS,
   });
 }

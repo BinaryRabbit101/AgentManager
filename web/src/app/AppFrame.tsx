@@ -2,8 +2,8 @@
  * The app frame (DESIGN §2.2, §2.3).
  *
  * One component tree for all three viewports. Desktop gets a narrow left rail
- * plus a persistent top bar; the phone gets the same five destinations as a
- * bottom tab bar with 48px targets. The switch is a media query in `styles.css`,
+ * plus a persistent top bar; the phone gets the same destinations as a bottom
+ * tab bar with 48px targets. The switch is a media query in `styles.css`,
  * not a branch here — §2.3 says the layout is responsive from a single tree, and
  * a second tree is how the two delivery modes drift apart.
  *
@@ -28,9 +28,17 @@ interface Destination {
   readonly icon: IconName;
 }
 
+/*
+  §2.2's rail. Sessions and Assignments are destinations of their own: both had
+  a detail route and no index, so a run that stopped and the assignment it
+  belonged to could only be found again by walking back through a project page.
+  A screen with no way in is a screen that does not exist.
+*/
 const DESTINATIONS: readonly Destination[] = [
   { to: '/', label: 'Board', icon: 'board' },
   { to: '/projects', label: 'Projects', icon: 'folder' },
+  { to: '/sessions', label: 'Sessions', icon: 'sessions' },
+  { to: '/assignments', label: 'Assignments', icon: 'assignments' },
   { to: '/questions', label: 'Questions', icon: 'questions' },
   { to: '/usage', label: 'Usage', icon: 'usage' },
   { to: '/settings', label: 'Settings', icon: 'settings' },

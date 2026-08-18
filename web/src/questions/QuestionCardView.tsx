@@ -29,6 +29,7 @@ import {
   answerBody,
   canSubmit,
   expiryLabel,
+  gatedCall,
   isEngineRaised,
   KIND_LABELS,
   STRENGTH_EMPHASIS,
@@ -53,7 +54,11 @@ export function QuestionCardView({
   failureMessage,
 }: QuestionCardViewProps): ReactElement {
   const [draft, setDraft] = useState<AnswerDraft>({ optionIds: [], text: '' });
+  const [showCall, setShowCall] = useState(false);
   const answered = card.status !== 'open';
+  // The call being gated (§11.1's `context`). "Allow the agent to use Bash?" is
+  // not answerable without it.
+  const call = gatedCall(card);
   const expires = expiryLabel(card.expiresAt, now);
   const asker = askedBy(card);
 
@@ -92,6 +97,32 @@ export function QuestionCardView({
       <h3 className="question-card__prompt">
         <Link to={`/questions/${encodeURIComponent(card.id)}`}>{card.prompt}</Link>
       </h3>
+
+      {call === undefined ? null : (
+        <div className="question-card__call" data-tool={call.toolName}>
+          <p className="question-card__call-head">
+            <span className="badge" data-tool-name="true">
+              {call.toolName}
+            </span>
+            {call.summary === undefined ? null : (
+              <code className="question-card__call-summary">{call.summary}</code>
+            )}
+          </p>
+          {call.detail === undefined || call.detail === call.summary ? null : (
+            <details
+              open={showCall}
+              onToggle={(event) => setShowCall(event.currentTarget.open)}
+            >
+              <summary>Show the whole call</summary>
+              {/*
+                §1.4: the agent's own tool input is untrusted, so it lands as a
+                text node inside a container that scrolls itself (§15).
+              */}
+              <pre className="question-card__call-detail">{call.detail}</pre>
+            </details>
+          )}
+        </div>
+      )}
 
       <p className="question-card__asked">
         {askedAgo(card.createdAt, now)}

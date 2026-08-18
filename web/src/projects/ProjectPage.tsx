@@ -51,7 +51,7 @@ import {
   type WorkItem,
   type WorkspaceListEntry,
 } from '../api/types';
-import { useServices } from '../app/AppContext';
+import { useHasOrchestrator, useServices } from '../app/AppContext';
 import { BoardDndContext } from '../board/BoardDndContext';
 import { agentTarget, projectTarget, workItemTarget, type DropOutcome } from '../board/dnd';
 import { useAppStore } from '../state/store';
@@ -171,6 +171,8 @@ function ProjectHeader({ project }: { readonly project: ProjectDetail }): ReactE
   const { client } = useServices();
   const queryClient = useQueryClient();
   const openLaunch = useAppStore((store) => store.openLaunch);
+  const openPair = useAppStore((store) => store.openPair);
+  const hasOrchestrator = useHasOrchestrator();
   const [relocating, setRelocating] = useState(false);
   const [newPath, setNewPath] = useState('');
   const [failure, setFailure] = useState<string | undefined>();
@@ -221,14 +223,33 @@ function ProjectHeader({ project }: { readonly project: ProjectDetail }): ReactE
       </div>
 
       {refusal === undefined ? (
-        <button
-          type="button"
-          className="button"
-          data-variant="primary"
-          onClick={() => openLaunch({ agentId: null, projectId: project.id, origin: 'project' })}
-        >
-          Launch an agent…
-        </button>
+        <div className="project-card__actions">
+          <button
+            type="button"
+            className="button"
+            data-variant="primary"
+            onClick={() => openLaunch({ agentId: null, projectId: project.id, origin: 'project' })}
+          >
+            Launch an agent…
+          </button>
+          {/*
+            §10.4's dialog, reached from here as well as from the board. Launch
+            seats **one** agent — that is what a solo assignment is — so a project
+            screen offering only Launch offers no way at all to point two agents
+            at the project unless the user already knows to drag one card onto
+            another on the board. Same dialog, same seats; only the way in is new.
+          */}
+          {hasOrchestrator ? (
+            <button
+              type="button"
+              className="button"
+              data-action="pair"
+              onClick={() => openPair({ agentId: null, withAgentId: null, projectId: project.id })}
+            >
+              Start a pair…
+            </button>
+          ) : null}
+        </div>
       ) : (
         <p className="project-card__refusal">Can’t launch: {refusal}.</p>
       )}

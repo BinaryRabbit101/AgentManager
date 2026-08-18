@@ -275,3 +275,67 @@ describe('the collapsed one-line preview (§9.2)', () => {
     expect(inputPreview('Weird', { a: 1, b: 2, c: 3, d: 4 })).toBe('a, b, c');
   });
 });
+
+describe('a message with no text of its own is not a block (§9.2)', () => {
+  it('drops the user message that carries only tool results', () => {
+    // Runner emits this for every tool round-trip: the `seq` the tool events
+    // number from. Rendered, it is an empty "you said" card beside every call.
+    const state = applyEvent(
+      EMPTY_TRANSCRIPT,
+      frame('session.message', {
+        seq: 12,
+        role: 'user',
+        text: '',
+        contentBlocks: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }],
+      }),
+    );
+    expect(state.blocks).toHaveLength(0);
+  });
+
+  it('drops the assistant message that carries only tool calls', () => {
+    const state = applyEvent(
+      EMPTY_TRANSCRIPT,
+      frame('session.message', {
+        seq: 20,
+        role: 'assistant',
+        text: '',
+        contentBlocks: [{ type: 'tool_use', id: 't2', name: 'Bash', input: {} }],
+      }),
+    );
+    expect(state.blocks).toHaveLength(0);
+  });
+
+  it('matches the replay, which never built those blocks either', () => {
+    // The bug this closes: the live stream and the transcript disagreed, so
+    // **Load earlier** appeared to repair the view.
+    const live = applyEvent(
+      EMPTY_TRANSCRIPT,
+      frame('session.message', { seq: 12, role: 'user', text: '', contentBlocks: [] }),
+    );
+    const replayed = applyPage(EMPTY_TRANSCRIPT, page([line(12, 'user', { content: [] })]));
+    expect(renderedSeqs(live)).toEqual(renderedSeqs(replayed));
+  });
+
+  it('settles a streamed block rather than dropping the text it accumulated', () => {
+    const streaming = applyEvent(
+      EMPTY_TRANSCRIPT,
+      frame('session.delta', { seq: 30, text: 'thinking about it' }),
+    );
+    const settled = applyEvent(
+      streaming,
+      frame('session.message', { seq: 30, role: 'assistant', text: '', contentBlocks: [] }),
+    );
+    const block = settled.blocks[0];
+    expect(block?.kind).toBe('assistant');
+    expect(block).toMatchObject({ text: 'thinking about it', streaming: false });
+  });
+
+  it('still renders a real message', () => {
+    const state = applyEvent(
+      EMPTY_TRANSCRIPT,
+      frame('session.message', { seq: 40, role: 'user', text: 'try the other branch' }),
+    );
+    expect(state.blocks).toHaveLength(1);
+    expect(state.blocks[0]).toMatchObject({ kind: 'prompt', text: 'try the other branch' });
+  });
+});

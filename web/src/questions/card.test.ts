@@ -18,6 +18,7 @@ import {
   canSubmit,
   ENGINE_ATTRIBUTION,
   expiryLabel,
+  gatedCall,
   isEngineRaised,
   KIND_LABELS,
   STRENGTH_EMPHASIS,
@@ -165,5 +166,49 @@ describe('the answer body is the server’s options, never an invention (§11.2)
     expect(canSubmit(aCard(), { optionIds: [], text: 'x' })).toBe(true);
     expect(canSubmit(aCard({ allowFreeText: false }), { optionIds: [], text: 'x' })).toBe(false);
     expect(canSubmit(aCard({ allowFreeText: false }), { optionIds: ['db'], text: '' })).toBe(true);
+  });
+});
+
+describe('the call being gated (§11.2)', () => {
+  it('promotes the command, so "use Bash?" says which Bash', () => {
+    const call = gatedCall(
+      aCard({
+        prompt: 'Allow the agent to use Bash?',
+        context: { toolName: 'Bash', toolInput: { command: 'rm -rf dist', description: 'clean' } },
+      }),
+    );
+    expect(call).toMatchObject({ toolName: 'Bash', summary: 'rm -rf dist' });
+    expect(call?.detail).toContain('rm -rf dist');
+  });
+
+  it('prefers the most specific field, not the first one present', () => {
+    expect(
+      gatedCall(aCard({ context: { toolName: 'Edit', toolInput: { description: 'a', file_path: 'src/x.ts' } } }))
+        ?.summary,
+    ).toBe('src/x.ts');
+  });
+
+  it('summarises only the first line, and caps it', () => {
+    const call = gatedCall(
+      aCard({ context: { toolName: 'Bash', toolInput: { command: `git log\n--oneline` } } }),
+    );
+    expect(call?.summary).toBe('git log');
+  });
+
+  it('survives an input it cannot summarise, and one it cannot serialise', () => {
+    expect(gatedCall(aCard({ context: { toolName: 'Task', toolInput: { n: 1 } } }))).toMatchObject({
+      toolName: 'Task',
+      summary: undefined,
+    });
+    const circular: Record<string, unknown> = {};
+    circular['self'] = circular;
+    expect(gatedCall(aCard({ context: { toolName: 'Task', toolInput: circular } }))?.detail).toBe(
+      undefined,
+    );
+  });
+
+  it('is absent when the card is not gating a call at all', () => {
+    expect(gatedCall(aCard({ context: null }))).toBe(undefined);
+    expect(gatedCall(aCard({ context: { toolInput: { command: 'ls' } } }))).toBe(undefined);
   });
 });

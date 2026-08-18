@@ -476,12 +476,31 @@ export function applyEvent(state: TranscriptState, frame: EventFrame): Transcrip
     }
     case 'session.message': {
       const text = str(payload['text']) ?? resultText(payload['contentBlocks']) ?? '';
-      if (str(payload['role']) === 'user') {
+      const role = str(payload['role']);
+      const key = role === 'user' ? `prompt:${String(seq)}` : `assistant:${String(seq)}`;
+      // A message whose content is only `tool_use` / `tool_result` parts carries
+      // no text of its own, and runner emits it anyway because the tool events
+      // that follow number their `seq` from it (runner §10). Rendering it would
+      // put an empty "you said" card beside every tool call — so it is skipped
+      // here exactly as `blockOfLine` skips the transcript line it becomes, which
+      // is also why **Load earlier** used to "fix" the view: the replay never
+      // produced these blocks in the first place. A block already at this `seq` —
+      // a `session.delta` that streamed real text — is settled, not dropped.
+      if (text.trim() === '') {
+        const streamed = state.blocks.find((block) => block.key === key);
+        if (streamed === undefined || streamed.kind !== 'assistant') return state;
+        return cap({
+          ...state,
+          lastSeq: Math.max(state.lastSeq, seq),
+          blocks: upsert(state.blocks, { ...streamed, streaming: false }),
+        });
+      }
+      if (role === 'user') {
         return cap({
           ...state,
           lastSeq: Math.max(state.lastSeq, seq),
           blocks: upsert(state.blocks, {
-            key: `prompt:${String(seq)}`,
+            key,
             seq,
             seqs: [seq],
             ts,
@@ -496,7 +515,7 @@ export function applyEvent(state: TranscriptState, frame: EventFrame): Transcrip
         ...state,
         lastSeq: Math.max(state.lastSeq, seq),
         blocks: upsert(state.blocks, {
-          key: `assistant:${String(seq)}`,
+          key,
           seq,
           seqs: [seq],
           ts,

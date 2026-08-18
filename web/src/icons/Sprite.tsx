@@ -26,7 +26,9 @@ export type IconName =
   | 'plus'
   | 'grip'
   | 'tool'
-  | 'clock';
+  | 'clock'
+  | 'sessions'
+  | 'assignments';
 
 export function Sprite(): ReactElement {
   return (
@@ -145,6 +147,30 @@ export function Sprite(): ReactElement {
           d="M10.5 2.2a3.5 3.5 0 0 0-4.3 4.5L2 11l3 3 4.3-4.2a3.5 3.5 0 0 0 4.5-4.3l-2.2 2.2-2-2z"
           strokeLinejoin="round"
         />
+      </symbol>
+      {/* A transcript: the session view's own shape, in miniature. */}
+      <symbol
+        id="icon-sessions"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5" />
+        <path d="M4.5 6h4M4.5 8.5h7M4.5 11h5" strokeLinecap="round" />
+      </symbol>
+      {/* Two seats facing each other — §10's pair, which is what an assignment is. */}
+      <symbol
+        id="icon-assignments"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <circle cx="5" cy="5" r="2.25" />
+        <circle cx="11" cy="5" r="2.25" />
+        <path d="M1.75 13.25c0-2 1.45-3.25 3.25-3.25s3.25 1.25 3.25 3.25" strokeLinecap="round" />
+        <path d="M8.75 13.25c0-2 1.45-3.25 3.25-3.25s2.25.8 2.25 2.4" strokeLinecap="round" />
       </symbol>
       <symbol
         id="icon-clock"

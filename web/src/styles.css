@@ -102,15 +102,35 @@ button {
 
 /* --- frame ------------------------------------------------------------- */
 
+/*
+  The app shell owns the scroll, the document does not.
+
+  §2.2 puts the rail and the top bar around every screen; if the page scrolls as
+  one document then both leave with the content, which on a long session view
+  means the navigation and the run's own controls scroll off the top. Fixing the
+  shell to the viewport and scrolling `.frame__main` instead keeps them where
+  §2.2 puts them and gives every screen a scrollport of its own to be sticky
+  inside (see `.session__pinned`).
+
+  The rows are named because the offline banner (§3.2) is only sometimes there,
+  and an absent named row collapses to nothing rather than eating the `1fr`.
+*/
 .frame {
   display: grid;
   grid-template-columns: 13rem 1fr;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto 1fr;
+  grid-template-areas:
+    'topbar topbar'
+    'banner banner'
+    'rail   main';
   min-height: 100vh;
+  height: 100vh;
+  /* Phone browsers whose toolbars change the viewport height. */
+  height: 100dvh;
 }
 
 .frame__topbar {
-  grid-column: 1 / -1;
+  grid-area: topbar;
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -127,8 +147,11 @@ button {
 }
 
 .frame__rail {
+  grid-area: rail;
   border-right: 1px solid var(--border);
   padding: 1rem 0.5rem;
+  /* Its own scrollport, so a long destination list never pushes the page. */
+  overflow-y: auto;
 }
 
 .frame__rail ul {
@@ -158,12 +181,15 @@ button {
 }
 
 .frame__main {
+  grid-area: main;
   padding: 1rem;
   min-width: 0;
+  /* The one scrollport. Everything sticky on a screen is sticky inside this. */
+  overflow-y: auto;
 }
 
 .frame__banner {
-  grid-column: 1 / -1;
+  grid-area: banner;
   padding: 0.5rem 1rem;
   background: var(--danger);
   color: var(--accent-contrast);
@@ -173,17 +199,20 @@ button {
 @media (width <= 640px) {
   .frame {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: auto auto 1fr auto;
+    grid-template-areas:
+      'topbar'
+      'banner'
+      'main'
+      'rail';
   }
 
   .frame__rail {
-    grid-row: 3;
     border-right: 0;
     border-top: 1px solid var(--border);
     padding: 0.25rem;
-    position: sticky;
-    bottom: 0;
     background: var(--surface-raised);
+    overflow-y: visible;
   }
 
   .frame__rail ul {

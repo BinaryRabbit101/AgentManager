@@ -32,7 +32,7 @@ import { useAppStore } from '../state/store';
 
 import { QuestionCardView } from './QuestionCardView';
 
-interface Answering {
+export interface Answering {
   readonly busyId: string | null;
   readonly failures: Readonly<Record<string, string>>;
   readonly answer: (card: QuestionCard, body: Record<string, unknown>) => void;
@@ -46,8 +46,12 @@ interface Answering {
  * the optimism is about **when** the screen changes rather than about **what** it
  * claims. The session the card belongs to is invalidated, because §11.3's real
  * consequence — an inline resolve or an auto-resume — happens over there.
+ *
+ * Exported because §9's session view answers cards too, and "one answer
+ * endpoint, one shape" (§11.3) is only true if there is also one client path to
+ * it. A second copy of this hook is how the two screens would drift.
  */
-function useAnswering(client: ApiClient, queryClient: QueryClient): Answering {
+export function useAnswering(client: ApiClient, queryClient: QueryClient): Answering {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [failures, setFailures] = useState<Readonly<Record<string, string>>>({});
   const setOpenQuestions = useAppStore((store) => store.setOpenQuestions);
@@ -83,6 +87,12 @@ function useAnswering(client: ApiClient, queryClient: QueryClient): Answering {
         );
         const open = useAppStore.getState().openQuestions;
         if (open !== null) setOpenQuestions(Math.max(0, open - 1));
+        // §9's session view answers its own cards inline; that list is keyed by
+        // assignment, so it has to be dropped here as well as in the two inbox
+        // tabs above — otherwise the card stays on screen until the event lands.
+        await queryClient.invalidateQueries({
+          queryKey: queryKeys.assignmentQuestions(card.assignmentId),
+        });
         if (card.sessionId !== null) {
           await queryClient.invalidateQueries({ queryKey: queryKeys.session(card.sessionId) });
         }

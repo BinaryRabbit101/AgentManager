@@ -146,26 +146,40 @@ MSI/Squirrel, global hotkeys, multiple windows, deep OS integration.
 | `/agents/new` | Agent wizard | Draft-from-description → edit → save (§6). |
 | `/projects` | **Projects** | The project list: status, health, and the agent→project drop target (§5.1). |
 | `/projects/:id` | Project page | Activity timeline, work items, workspaces ("review needed"), defaults, health. |
+| `/sessions` | **Sessions** | Every session, newest first, filtered by status — the run history (§9.5). |
 | `/sessions/:id` | Session view | Live transcript, controls, usage (§9). |
+| `/assignments` | **Assignments** | Open and closed assignments with their seats, phase and token budget (§10.5). |
 | `/assignments/:id` | Assignment view | The pair conversation, phase, rounds, budget (§10). |
 | `/questions` | **Question inbox** | Every card the user must answer (§11). |
 | `/questions/:id` | One card, focused | The ntfy deep-link target. |
 | `/usage` | Usage | Plan-window local estimate, queue, per-assignment spend (§12). |
 | `/settings` | Settings | Remote access, capacity, notifications, logs, health, about (§13). |
 
-Eleven routes. Every one is deep-linkable and survives a reload, because the ntfy notification and the
-Electron toast both navigate by URL.
+Thirteen routes. Every one is deep-linkable and survives a reload, because the ntfy notification and
+the Electron toast both navigate by URL.
+
+**Sessions and assignments are destinations, not just detail routes.** Both started with a `:id` route
+and no index, which meant a session that had stopped, and the assignment it belonged to, could only be
+found again by walking back through a project page's activity timeline. A record with no index is a
+record the user cannot look up, and the session history is exactly what someone reaches for after a
+run ends.
 
 ### 2.2 Navigation
 
-**Desktop (≥ 900px)**: a narrow left rail — Board · Projects · Questions (badge) · Usage · Settings — plus a
-persistent top bar carrying the connection indicator, the global search-free "New agent" and "Add
-project" buttons, and the theme toggle. Detail screens open as full pages, not modals, so they can be
-linked and shared.
+**Desktop (≥ 900px)**: a narrow left rail — Board · Projects · Sessions · Assignments · Questions
+(badge) · Usage · Settings — plus a persistent top bar carrying the connection indicator, the global
+search-free "New agent" and "Add project" buttons, and the theme toggle. Detail screens open as full
+pages, not modals, so they can be linked and shared.
 
-**Phone / narrow (< 640px)**: a bottom tab bar with the same five destinations (thumb-reachable, 48px
+**Phone / narrow (< 640px)**: a bottom tab bar with the same seven destinations (thumb-reachable, 48px
 targets), the top bar collapsed to a title and a single overflow menu. Detail screens push; modals
 become **bottom sheets**.
+
+**The shell owns the scroll, the document does not.** The top bar and the rail are fixed to the
+viewport and the content region is the scrollport. A page that scrolls as one document takes the
+navigation with it, and on a long session view it takes the run's own controls too — which is the one
+case where the user is reaching for Stop *because* the page is long. Every screen's sticky element is
+therefore sticky inside the content region rather than inside the window.
 
 **Tablet (640–900px)**: the desktop rail collapses to icons.
 
@@ -646,7 +660,12 @@ block type.
 
 ### 9.2 Anatomy
 
-**Header** (sticky): agent avatar + name, project, a link to the assignment, status pill (runner's
+**Header, controls and steer field are pinned together** to the top of the content region, not just
+the header. Scrolling a long transcript must not take Stop, Pause and the steer field with it: those
+are the controls the user reaches for *because* the run is long. The notices below them (elevation,
+diagnostics, pruned transcript) scroll with the body — they are read once, not operated.
+
+**Header** (pinned): agent avatar + name, project, a link to the assignment, status pill (runner's
 vocabulary verbatim: `queued | running | paused | done | failed | interrupted | orphaned`), model,
 permission mode, workspace kind + branch, and the badges that must never be missed —
 **elevated permissions (with the reason)**, **started remotely**, **question bridge disabled** (from
@@ -667,6 +686,18 @@ permission mode, workspace kind + branch, and the badges that must never be miss
 Rendering is capped at the most recent 500 blocks with a **Load earlier** control; there is no
 virtualisation library in v1 (a cap is simpler and the transcript is paged anyway).
 
+**A message with no text of its own is not a block.** An assistant message whose content is only
+`tool_use` parts, and a user message whose content is only `tool_result` parts, carry no prose —
+runner emits `session.message` for both anyway, because the `session.tool.*` events that follow
+number their `seq` from it (runner §10). The tool block *is* the rendering of that exchange, so the
+message beside it is dropped. Rendering it produces an empty card beside every tool call, and the live
+stream and the replayed transcript disagree about the transcript's shape — the replay never built
+those blocks, which is why **Load earlier** appeared to repair the view.
+
+**Nothing widens the column.** The transcript column can shrink below its content's intrinsic width;
+a long command line or tool preview wraps, ellipsises or scrolls inside its own block. A block that
+sets the page's width pushes the whole layout — including the usage rail — off the right edge.
+
 **Usage rail** (right on desktop, collapsed under the header on phone): live input/output tokens from
 `session.usage`, the assignment budget bar in **tokens** (`tokens_used / token_budget`, orchestrator
 §16.8), and — labelled exactly — **"estimated model cost"** for `session_usage.cost_usd`, with a
@@ -679,7 +710,7 @@ Mapped one-to-one onto runner §11.1, all idempotent, all identical over the tai
 
 | Control | Call | Shown when |
 |---|---|---|
-| **Steer** | `POST /api/sessions/:id/steer { text, interrupt }` — a text field with an "interrupt the current turn" toggle, defaulting off | `running` |
+| **Steer** | `POST /api/sessions/:id/steer { text, interrupt }` — a text field with an "interrupt the current turn" toggle, defaulting off. The field is a form: **Enter submits it**, and a Send button beside it does the same thing. A text field whose obvious gesture does nothing is a field the user types into twice. | `running` |
 | **Pause** | `POST …/pause` | `running` |
 | **Resume** | `POST …/resume` | `paused` |
 | **Stop** | `POST …/stop` | `queued`, `running`, `paused` |
@@ -689,8 +720,25 @@ Mapped one-to-one onto runner §11.1, all idempotent, all identical over the tai
 
 A control that does not apply is **shown disabled with the reason**, not hidden — "paused sessions
 can't be steered; resume first". A `paused` session whose `exit_reason` is `awaiting_answer` shows
-"waiting for your answer" with a link to the card, and **no Resume button**, because runner
-auto-resumes on the answer and a second resumer is the bug runner §15.1 #7 warns about.
+**the card itself**, answerable in place, and **no Resume button**, because runner auto-resumes on the
+answer and a second resumer is the bug runner §15.1 #7 warns about.
+
+**Open cards are answered here, not only in the inbox.** §11.3 pins one answer endpoint and one card
+shape "local and remote alike"; the same rule says a card is answered where it is *seen*. A run that
+stopped to ask is looked at on this screen, so the screen reads its assignment's open cards
+(`GET /api/questions?status=open&assignmentId=…`, narrowed to this session by the projection's
+denormalised `sessionId`) and renders the **same component and the same answer hook** the inbox uses.
+A second implementation is how the two would drift; the link to the inbox remains for the cards this
+session did not raise.
+
+### 9.5 The sessions index
+
+`/sessions` lists every session, newest first, filtered by runner's status vocabulary with an **All**
+tab. One request per tab (`GET /api/sessions?status=`), the server's order preserved, and no join: the
+row's project and assignment ids come denormalised on the record and the roster is read only for the
+name and avatar behind an `agentId`. A session whose agent has since been deleted still renders — the
+transcript is the record, not the roster entry — and a pruned transcript says so on the row rather
+than at the end of a click.
 
 ### 9.4 Live streaming, replay, and the byte-offset contract
 
@@ -787,6 +835,17 @@ and a returned `gate` renders as "waiting for your approval" with a link to the 
 Dragging one agent card onto another opens this dialog pre-filled (§5.3) — the visual, direct path to
 the app's headline feature.
 
+### 10.5 The assignments index
+
+`/assignments` lists Open and Closed assignments — one request per tab
+(`GET /api/assignments?status=`), the server's order preserved. A row carries the goal, the phase as
+**the word** (§10.2's table), the pattern, the seats in the server's member order, the round count and
+the budget in **tokens** — the same `budgetLine` the assignment view uses, so no currency figure can
+appear on one screen and not the other (orchestrator §16.8).
+
+The assignment outlives the sessions under it, which is what makes this the durable handle on "what
+was this fleet doing". Without it the unit of work was the one record in the app with no index.
+
 ---
 
 ## 11. The question inbox
@@ -836,6 +895,7 @@ and the client joins nothing: no roster, project or assignment fetch stands betw
 | Element | Rule |
 |---|---|
 | **Kind chip** | `question` / `approval_gate` / `budget_halt`, one inbox, three kinds (orchestrator §16.3) |
+| **The call being gated** | `context.toolName` and `context.toolInput` (orchestrator §11.1), directly under the prompt: the tool name as a chip and a one-line summary of the input — the command, the path, the URL — with the whole input behind a disclosure. **"Allow the agent to use Bash?" is not a decision anyone can make**; the whole question is *which* Bash, and a card that withholds it is asking the user to approve something they cannot see. The input is the agent's own and therefore untrusted (§1.4): it goes into the DOM as text, in a container that scrolls itself (§15). |
 | **Attribution** | every recommendation carries its `agentId` **and the role it held**; an engine-raised gate is attributed to **"AgentManager"**, never to an agent (orchestrator §16.2) |
 | **Stance ladder** | `blocking | strong | lean | defer` rendered **as the word** — never a number, never a bar, never a percentage (orchestrator §16.1). `blocking` is uppercase and red-marked, `strong` bold, `lean` normal, `defer` muted. Colour is always secondary to the word. |
 | **Order** | the server's order (strength rank, then seat order). The UI does not sort. |

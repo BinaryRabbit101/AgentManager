@@ -1,7 +1,7 @@
 /**
  * The app root: routes (§2.1), the frame (§2.2) and the boot gate (§3.5).
  *
- * Eleven routes, every one deep-linkable and every one surviving a reload — the
+ * Thirteen routes, every one deep-linkable and every one surviving a reload — the
  * ntfy notification and the Electron toast both navigate by URL, and
  * foundation §6.4's history fallback is what makes a cold `GET /questions/abc`
  * arrive here rather than at a 404.
@@ -13,6 +13,7 @@ import { Route, Routes } from 'react-router-dom';
 import { AgentDetail } from './agents/AgentDetail';
 import { AgentWizard } from './agents/AgentWizard';
 import { AssignmentPage } from './assignments/AssignmentPage';
+import { AssignmentsPage } from './assignments/AssignmentsPage';
 import { PatternCreateHost } from './assignments/PatternCreateDialog';
 import { Board } from './board/Board';
 import { AppFrame } from './app/AppFrame';
@@ -29,6 +30,7 @@ import { LaunchFlowHost } from './launch/LaunchFlow';
 import { ProjectPage } from './projects/ProjectPage';
 import { ProjectsPage } from './projects/ProjectsPage';
 import { QuestionInbox } from './questions/QuestionInbox';
+import { SessionsPage } from './session/SessionsPage';
 import { SessionView } from './session/SessionView';
 
 export function App(): ReactElement {
@@ -50,7 +52,9 @@ export function App(): ReactElement {
           <Route path="/agents/:id" element={<AgentDetail />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:id" element={<ProjectPage />} />
+          <Route path="/sessions" element={<SessionsPage />} />
           <Route path="/sessions/:id" element={<SessionView />} />
+          <Route path="/assignments" element={<AssignmentsPage />} />
           <Route path="/assignments/:id" element={<AssignmentPage />} />
           <Route path="/questions" element={<QuestionInbox />} />
           {/* The ntfy deep-link target (§2.1, orchestrator §10). */}
