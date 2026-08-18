@@ -37,6 +37,7 @@ import { fetchPermissionPreview, type PermissionPreview } from '../launch/permis
 
 import { AgentEditor } from './AgentEditor';
 import { fromAgent, toCreateBody, type EditorModel } from './editorModel';
+import { integrationSummaries } from './integrationsModel';
 
 export function AgentDetail(): ReactElement {
   const { id = '' } = useParams();
@@ -93,7 +94,11 @@ export function AgentDetail(): ReactElement {
     if (model === undefined) return;
     setSaving(true);
     setFailure(undefined);
-    const body = toCreateBody(model);
+    // `mode: 'patch'` so an emptied integrations list is sent as `null` — the
+    // wire spelling of "remove this field" (roster `service.patch`). Without it
+    // deleting the agent's last connector would be a no-op, because an absent
+    // key means "leave it alone".
+    const body = toCreateBody(model, { mode: 'patch' });
     // PATCH rather than POST: the id and `meta.createdAt` are immutable and the
     // definition already exists (roster §9.3). The body is still exactly the
     // form, with no merge on either side.
@@ -142,9 +147,13 @@ export function AgentDetail(): ReactElement {
     <section aria-labelledby="agent-heading">
       <h2 id="agent-heading">{view.definition.name}</h2>
 
+      <IntegrationsSummary view={view} />
+
       <AgentEditor
         model={model}
         onChange={(patch) => setModel({ ...model, ...patch })}
+        credentials={view.credentials ?? []}
+        diagnostics={view.diagnostics}
         idPrefix="agent"
       >
         {view.definition.meta.duplicatedFrom === undefined ||
@@ -159,17 +168,21 @@ export function AgentDetail(): ReactElement {
             This agent is archived. Its history and transcripts are kept and its id is never reused.
           </p>
         )}
-        {/* roster's own diagnostics, verbatim (roster §2.3). */}
-        {view.diagnostics.map((diagnostic, index) => (
-          <p
-            key={`${diagnostic.code}-${String(index)}`}
-            className="notice"
-            data-tone={diagnostic.level === 'error' ? 'danger' : 'warn'}
-            data-diagnostic-code={diagnostic.code}
-          >
-            {diagnostic.message}
-          </p>
-        ))}
+        {/* roster's own diagnostics, verbatim (roster §2.3) — minus the ones
+            scoped to an integration, which the integrations panel renders
+            beside the server they are about rather than as a page banner. */}
+        {view.diagnostics
+          .filter((diagnostic) => !(diagnostic.path?.startsWith('integrations.') ?? false))
+          .map((diagnostic, index) => (
+            <p
+              key={`${diagnostic.code}-${String(index)}`}
+              className="notice"
+              data-tone={diagnostic.level === 'error' ? 'danger' : 'warn'}
+              data-diagnostic-code={diagnostic.code}
+            >
+              {diagnostic.message}
+            </p>
+          ))}
       </AgentEditor>
 
       <div className="launch__actions">
@@ -273,6 +286,57 @@ export function AgentDetail(): ReactElement {
           </ul>
         )}
       </section>
+    </section>
+  );
+}
+
+/**
+ * "What can this agent reach?", answerable without scrolling into a form (§7.3).
+ *
+ * The editable panel is further down inside the editor; this is the glance
+ * version, and it exists because the question an owner actually arrives with —
+ * *does this agent have the mailbox connector or not* — was previously only
+ * answerable by opening `agent.json`.
+ *
+ * It reads `definition.integrations`, which is the server's copy rather than
+ * the form's, so it says what is **saved** and not what is being typed. Names
+ * and refs only: there is no value in the definition to show (roster §10).
+ */
+function IntegrationsSummary({ view }: { readonly view: AgentView }): ReactElement {
+  const summaries = integrationSummaries(view.definition.integrations);
+  const unresolved = new Set(
+    (view.credentials ?? []).filter((one) => !one.resolved).map((one) => one.secretRef),
+  );
+
+  return (
+    <section className="integrations-summary" aria-labelledby="agent-connectors-heading">
+      <h3 id="agent-connectors-heading">Connectors</h3>
+      {summaries.length === 0 ? (
+        <p className="empty">
+          None. This agent has its built-in tools only — it does not inherit your personal Claude
+          config, so anything else has to be added under Integrations below.
+        </p>
+      ) : (
+        <ul className="integrations-summary__list">
+          {summaries.map((summary) => (
+            <li key={summary.name} data-connector={summary.name}>
+              <strong>{summary.name}</strong> <span className="badge">{summary.transport}</span>{' '}
+              <code>{summary.toolPrefix}*</code>
+              <div className="integrations-summary__target">{summary.target}</div>
+              {summary.secretRefs.map((ref) => (
+                <span key={ref} className="integrations-summary__ref" data-secret-ref={ref}>
+                  <code>{ref}</code>{' '}
+                  {unresolved.has(ref) ? (
+                    <span className="badge" data-status="halted">
+                      needs credential
+                    </span>
+                  ) : null}
+                </span>
+              ))}
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

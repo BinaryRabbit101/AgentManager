@@ -655,6 +655,15 @@ Servers report `pending | connected | failed | needs-auth | disabled` in the ses
 message; roster exposes the mapping so the runner can surface `needs-auth` as an actionable card
 rather than a generic failure.
 
+**Where an owner edits this.** The agent editor's integrations panel (ui §7.3.1) — add/edit/remove
+plus paste-import from a `.mcp.json`, which is the only sanctioned way to give an agent a connector,
+since §7.3 keeps `settingSources` off the host owner's personal config. The panel restates this
+section's `integrationNameProblem` and credential-shaped-key rules so a mistake is caught in the
+field rather than as a 400, and its tests validate what the form posts against `integrationsSchema`
+here so the restatement cannot drift. Everything the UI shows for a credential is a `secretRef`
+*name*; storing the value stays with `agentmanager secrets set <key> --stdin` (foundation §3.5),
+and no HTTP route exists — or should be added — that would accept or return one.
+
 ---
 
 ## 11. What makes an agent overseer-capable

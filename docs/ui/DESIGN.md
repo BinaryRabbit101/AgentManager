@@ -544,7 +544,8 @@ a collaborator rather than a slot machine:
 | Roles | checkboxes over the pinned five — which seats this agent may be given |
 | Role addenda | one markdown textarea per role, holding `roles/<role>.md` verbatim (roster §4) — how it behaves *once it is in* a seat. Not tied to the checkboxes above: a role may carry an addendum without being listed, and vice versa, so every box is always shown and an unlisted one is labelled as such. Emptying a box deletes the file. Drafting never fills these in |
 | Suggested skills | checkboxes; accepting one creates the stub `SKILL.md` on save (roster §12.4). Bodies are not authored here. |
-| Suggested integrations | listed read-only with their `secretRef` placeholders and a "you will need to supply this credential" note; wiring an MCP server is the editor's job, not the wizard's |
+| Suggested integrations | listed read-only with their `secretRef` placeholders and a "you will need to supply this credential" note; wiring an MCP server is the editor's job, not the wizard's — the list says so and points at the **Integrations** group below it |
+| Integrations | the editable per-agent MCP servers of roster §10 — add/edit/remove, plus paste-import from a `.mcp.json`. Specified in §7.3 below, because it is a field group an owner returns to rather than fills in once. Present in every entrance to the editor (wizard, duplicate, agent page), like every other group |
 
 `warnings[]` render as a dismissible list at the top. `degraded: true` renders a plain "Claude couldn't
 finish this draft — here's what it produced; fill in the rest" banner and keeps every partial field
@@ -576,6 +577,72 @@ diagnostics, the effective-permissions preview against a chosen project, the rem
 expiry, and Archive/Export. Archive is a confirm dialog naming what is retained ("history and
 transcripts are kept; the id is never reused"); hard purge is offered only when roster reports it is
 possible (no sessions reference the agent) and is a typed confirmation.
+
+#### 7.3.1 The integrations panel — per-agent MCP servers
+
+**Decision: `integrations` is an ordinary editable field group, and paste-import is how a real
+`.mcp.json` gets in.**
+
+An agent that cannot reach anything is the default and will stay the default: roster §7.3 pins
+`settingSources` to `["project"]` and rejects `"user"`/`"local"` precisely so that an agent never
+inherits the host owner's personal Claude Code configuration — "their memory, their hooks, their
+MCP servers … config leakage across an identity boundary". That boundary is right. What was wrong
+was that the sanctioned way across it, roster §10's per-agent `integrations`, existed only in the
+schema, so the honest instruction for "give this agent our connector" was *hand-edit `agent.json`* —
+the everyday config-file editing the north star forbids. The panel closes that, and the rationale is
+stated **on screen**, not only here: *"Agents don't inherit your personal Claude config — not your
+memory, your hooks or your MCP servers. Give each agent its own connectors here. (A project's own
+`.mcp.json` still applies when the agent is pointed at that project.)"*
+
+**The panel.** One card per server, in the editor's own field-group idiom:
+
+| Control | Notes |
+|---|---|
+| Server name | the `mcp__<server>__` tool prefix is derived and shown beside it, with the reminder that `acceptEdits` does not auto-approve MCP tools (roster §10) |
+| Transport | `stdio` \| `sse` \| `http`. **Three, never four** — `streamable-http` is a `.mcp.json`-only alias the programmatic option does not accept (§10 rule 4) |
+| stdio: command, arguments | one argument per line, like the permission rule lists |
+| sse/http: URL | http(s) only |
+| `env` (stdio) / `headers` (sse/http) | key + value rows, each with a **secret** toggle |
+
+**Credentials are references, never values.** A row's secret toggle stores `{ "secretRef": "<key>" }`
+and the box then holds a *key name* (`mcp.gmail.token`); an existing ref renders as its name, which
+is all there is to render — the API returns `{ secretRef, resolved }` and no route anywhere returns a
+value (roster §10). `resolved: false` shows roster's "needs credential" badge next to the only way
+to fix it: `agentmanager secrets set <ref> --stdin`. **No HTTP write route for secrets is added**;
+foundation §3.5 requires the value to arrive over stdin — "never a command line (visible in Task
+Manager), never a temp file" — so the panel shows the documented CLI verb (the same one
+`Setup-Auth.ps1` feeds) and never carries the value itself.
+
+The panel also says, in the field, what roster's schema would say in a 400: a credential-shaped key
+carrying a literal, a ref that is not a valid secret key, a name containing `__`, a duplicate name,
+a missing command or URL. It is a warning and not a gate — roster is still the authority and still
+refuses. roster's `integrations.*` diagnostics (`roster.integration.no-allow-rule`) render beside
+the server they are about instead of as a page banner.
+
+**Paste-import.** A textarea takes a whole `.mcp.json` or just its `mcpServers` object, parses it in
+the browser, and shows the mapping **before** anything is added. Four rules, all of them cases where
+a faithful copy would be the wrong answer:
+
+1. **Credential-shaped keys become refs, always.** roster §10's own definition (`*TOKEN*`, `*KEY*`,
+   `*SECRET*`, `*PASSWORD*`, `AUTH*`) — the schema refuses a literal there, so the "keep the literal"
+   escape is not offered at all, and the pasted value never enters a draft.
+2. **`${VAR}` is converted.** It expands in `.mcp.json` and **not** in the programmatic `mcpServers`
+   option (§10), so copying it through would produce a connector that 401s. It becomes a `secretRef`
+   by default; the owner may untick and type a real value — and gets an *empty* box, not the
+   placeholder back.
+3. **`streamable-http` → `http`,** with the rewrite stated in the preview.
+4. **Names are normalised** to what can be an `mcp__<server>__` prefix, and the rename is stated.
+
+Every other value is offered as a ref with the literal one click away, so accepting a literal is
+something the owner does knowingly. Generated refs follow foundation §3.3's `mcp.<server>.<field>`
+namespace. **Nothing is written until the editor is saved** — the import appends drafts to the form,
+and the form posts through the same whole-agent `POST`/`PATCH` every other field takes. An emptied
+list is sent as `integrations: null`, which is how roster's `patch` spells "clear this field".
+
+**On the agent page**, a small read-only **Connectors** summary above the editor answers "what can
+this agent reach" without scrolling into a form: server names, transports, tool prefixes, the
+command or URL, and the `secretRef` names with their badges. It reads the saved definition, not the
+form, so it says what *is* rather than what is being typed.
 
 **Avatar upload is not in v1 — by choice, not for want of an API.** Roster ships
 `PUT /api/roster/agents/:id/avatar` (roster §9.5, closing §19's R7): multipart, size- and type-capped,

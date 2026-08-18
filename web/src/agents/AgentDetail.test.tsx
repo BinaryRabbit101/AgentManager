@@ -9,7 +9,11 @@
  * - **Archive confirms with what is retained**;
  * - **purge is offered only when no session references the agent**;
  * - the effective-permissions preview against a chosen project comes from
- *   roster's `/validate` and nothing else (§4).
+ *   roster's `/validate` and nothing else (§4);
+ * - **integrations are visible and editable** (§7.3, roster §10) — add, edit and
+ *   remove round-trip through the same whole-agent PATCH every other field
+ *   takes, a `secretRef` is rendered as a *name* and never as a value, and the
+ *   connectors summary answers "what can this agent reach" at a glance.
  */
 
 import { screen, waitFor, within } from '@testing-library/react';
@@ -243,6 +247,256 @@ describe('the session history (§7.3)', () => {
     open({ sessions: [] });
     const history = await screen.findByRole('region', { name: 'Sessions' });
     expect(within(history).getByText('This agent has not run yet.')).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integrations (§7.3, roster §10)
+// ---------------------------------------------------------------------------
+
+const GMAIL = {
+  transport: 'stdio',
+  command: 'npx',
+  args: ['-y', 'server-gmail'],
+  env: { GMAIL_TOKEN: { secretRef: 'mcp.gmail.token' }, GMAIL_USER: 'me@example.com' },
+  toolPrefixHint: 'mcp__gmail__',
+};
+
+function withGmail(extra: Partial<Parameters<typeof anAgent>[0]> = {}) {
+  return anAgent({ id: 'priya', name: 'Priya', integrations: { gmail: GMAIL }, ...extra });
+}
+
+/** The `integrations` object from the last PATCH the page sent. */
+function patchedIntegrations(calls: { path: string; method: string; body: unknown }[]): unknown {
+  const patch = calls.filter((call) => call.method === 'PATCH').at(-1);
+  return (patch?.body as Record<string, unknown> | undefined)?.['integrations'];
+}
+
+describe('the integrations panel (§7.3)', () => {
+  it('shows the agent’s servers, their tool prefix, and the ref by name only', async () => {
+    open({ agent: withGmail() });
+
+    const panel = await screen.findByRole('group', { name: 'Integrations' });
+    expect(within(panel).getByLabelText('Server name')).toHaveValue('gmail');
+    expect(within(panel).getByLabelText('Command')).toHaveValue('npx');
+    expect(within(panel).getByLabelText('Arguments (one per line)')).toHaveValue(
+      '-y\nserver-gmail',
+    );
+    // The prefix every permission rule for this server has to start with.
+    expect(panel.textContent).toContain('mcp__gmail__*');
+    // A ref renders as its own name; there is no value in the wire shape to render.
+    expect(within(panel).getByLabelText('Secret reference')).toHaveValue('mcp.gmail.token');
+    expect(within(panel).getByLabelText('Value')).toHaveValue('me@example.com');
+  });
+
+  it('says out loud that an agent does not inherit the owner’s personal Claude config (roster §7.3)', async () => {
+    open({ agent: withGmail() });
+    const panel = await screen.findByRole('group', { name: 'Integrations' });
+    expect(panel.textContent).toContain('don’t inherit your personal Claude config');
+  });
+
+  it('badges an unresolved ref and offers the stdin command, never a value', async () => {
+    open({
+      agent: withGmail({
+        credentials: [{ integration: 'gmail', secretRef: 'mcp.gmail.token', resolved: false }],
+      }),
+    });
+
+    const panel = await screen.findByRole('group', { name: 'Integrations' });
+    expect(within(panel).getByText('needs credential')).toBeInTheDocument();
+    expect(panel.textContent).toContain('agentmanager secrets set mcp.gmail.token --stdin');
+  });
+
+  it('edits a server and posts the exact shape roster’s schema wants', async () => {
+    const view = open({ agent: withGmail() });
+    const user = userEvent.setup();
+
+    const panel = await screen.findByRole('group', { name: 'Integrations' });
+    await user.clear(within(panel).getByLabelText('Command'));
+    await user.type(within(panel).getByLabelText('Command'), 'node');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(patchedIntegrations(view.calls)).toBeDefined());
+    expect(patchedIntegrations(view.calls)).toEqual({
+      gmail: { ...GMAIL, command: 'node' },
+    });
+  });
+
+  it('adds a connector with a secret header and posts a ref, not a value', async () => {
+    const view = open({ agent: anAgent({ id: 'priya', name: 'Priya' }) });
+    const user = userEvent.setup();
+
+    const panel = await screen.findByRole('group', { name: 'Integrations' });
+    expect(within(panel).getByText(/No connectors/u)).toBeInTheDocument();
+
+    await user.click(within(panel).getByRole('button', { name: 'Add a connector' }));
+    const card = await screen.findByRole('group', { name: 'New connector' });
+    await user.type(within(card).getByLabelText('Server name'), 'docs');
+    await user.selectOptions(within(card).getByLabelText('Transport'), 'http');
+
+    const named = await screen.findByRole('group', { name: 'docs' });
+    await user.type(within(named).getByLabelText('URL'), 'https://mcp.example.com/mcp');
+    await user.click(within(named).getByRole('button', { name: 'Add header' }));
+    await user.type(within(named).getByLabelText('Header'), 'Authorization');
+    // Ticking `secret` proposes the conventional ref rather than reusing a
+    // literal that was typed into a value box.
+    await user.click(within(named).getByRole('checkbox', { name: 'secret' }));
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(patchedIntegrations(view.calls)).toBeDefined());
+    expect(patchedIntegrations(view.calls)).toEqual({
+      docs: {
+        transport: 'http',
+        url: 'https://mcp.example.com/mcp',
+        headers: { Authorization: { secretRef: 'mcp.docs.authorization' } },
+        toolPrefixHint: 'mcp__docs__',
+      },
+    });
+  });
+
+  it('removes the last connector by sending null, which is how roster spells "clear"', async () => {
+    const view = open({ agent: withGmail() });
+    const user = userEvent.setup();
+
+    const panel = await screen.findByRole('group', { name: 'Integrations' });
+    await user.click(within(panel).getByRole('button', { name: 'Remove connector' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(view.calls.some((call) => call.method === 'PATCH')).toBe(true));
+    expect(patchedIntegrations(view.calls)).toBeNull();
+  });
+
+  it('warns in the field about a credential-shaped literal, where roster would refuse it', async () => {
+    const view = open({ agent: withGmail() });
+    const user = userEvent.setup();
+
+    const panel = await screen.findByRole('group', { name: 'Integrations' });
+    // Untick `secret` on the token: the value box empties, and the warning names
+    // the key rather than waiting for a 400 after Save.
+    await user.click(within(panel).getAllByRole('checkbox', { name: 'secret' })[0] as HTMLElement);
+
+    await waitFor(() =>
+      expect(within(panel).getByText(/GMAIL_TOKEN.*credential-shaped/su)).toBeInTheDocument(),
+    );
+    expect(view.calls.filter((call) => call.method === 'PATCH')).toEqual([]);
+  });
+
+  it('renders roster’s integration diagnostic beside the server rather than as a page banner', async () => {
+    open({
+      agent: withGmail({
+        diagnostics: [
+          {
+            level: 'warn',
+            code: 'roster.integration.no-allow-rule',
+            message:
+              'integration "gmail" is declared but no permission rule mentions mcp__gmail__*',
+            path: 'integrations.gmail',
+          },
+        ],
+      }),
+    });
+
+    const panel = await screen.findByRole('group', { name: 'Integrations' });
+    expect(
+      within(panel).getByText(/no permission rule mentions mcp__gmail__\*/u),
+    ).toBeInTheDocument();
+    // Once, not twice: the page-level list yields the ones it can place.
+    expect(screen.getAllByText(/no permission rule mentions mcp__gmail__\*/u)).toHaveLength(1);
+  });
+});
+
+describe('the paste-import (§7.3)', () => {
+  const PASTED = JSON.stringify({
+    mcpServers: {
+      docs: {
+        type: 'streamable-http',
+        url: 'https://mcp.example.com/mcp',
+        headers: { Authorization: 'Bearer sk-live-value', 'X-Tenant': '${TENANT}' },
+      },
+    },
+  });
+
+  it('previews the mapping before anything is applied, and applies nothing until Save', async () => {
+    const view = open({ agent: anAgent({ id: 'priya', name: 'Priya' }) });
+    const user = userEvent.setup();
+
+    const panel = await screen.findByRole('group', { name: 'Integrations' });
+    await user.click(within(panel).getByRole('button', { name: 'Import from .mcp.json' }));
+    const importer = await screen.findByRole('region', { name: 'Import from .mcp.json' });
+    await user.type(within(importer).getByLabelText('.mcp.json'), PASTED.replaceAll('{', '{{'));
+    await user.click(within(importer).getByRole('button', { name: 'Preview the mapping' }));
+
+    // The alias roster does not accept is rewritten, and the rewrite is stated.
+    expect(within(importer).getByText(/streamable-http is a .mcp.json alias/u)).toBeInTheDocument();
+    // A live-looking bearer never leaves the textarea the owner pasted it into:
+    // it is not in the mapping table, not in the flag copy, and not in the draft
+    // those describe. (The textarea itself still holds what was typed, which is
+    // the user's own text and not something the app repeated back.)
+    const mapping = importer.querySelector('[data-import-flags="docs"]');
+    expect(mapping?.textContent ?? '').not.toContain('sk-live-value');
+    expect(importer.querySelector('.import__table')?.textContent ?? '').not.toContain(
+      'sk-live-value',
+    );
+    // Nothing has been written, and nothing has even been added to the form yet.
+    expect(view.calls.filter((call) => call.method === 'PATCH')).toEqual([]);
+
+    await user.click(within(importer).getByRole('button', { name: 'Add 1 connector' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(patchedIntegrations(view.calls)).toBeDefined());
+    expect(patchedIntegrations(view.calls)).toEqual({
+      docs: {
+        transport: 'http',
+        url: 'https://mcp.example.com/mcp',
+        headers: {
+          // The credential-shaped key is a ref by force (roster §10)…
+          Authorization: { secretRef: 'mcp.docs.authorization' },
+          // …and the `${VAR}` is converted, because it does not expand in the
+          // programmatic option the compiler uses.
+          'X-Tenant': { secretRef: 'mcp.docs.x-tenant' },
+        },
+        toolPrefixHint: 'mcp__docs__',
+      },
+    });
+  });
+
+  it('will not let a credential-shaped key be kept as a literal, and will for a placeholder', async () => {
+    open({ agent: anAgent({ id: 'priya', name: 'Priya' }) });
+    const user = userEvent.setup();
+
+    const panel = await screen.findByRole('group', { name: 'Integrations' });
+    await user.click(within(panel).getByRole('button', { name: 'Import from .mcp.json' }));
+    const importer = await screen.findByRole('region', { name: 'Import from .mcp.json' });
+    await user.type(within(importer).getByLabelText('.mcp.json'), PASTED.replaceAll('{', '{{'));
+    await user.click(within(importer).getByRole('button', { name: 'Preview the mapping' }));
+
+    const required = importer.querySelector('[data-flag="Authorization"] input');
+    const optional = importer.querySelector('[data-flag="X-Tenant"] input');
+    expect(required).toBeDisabled();
+    expect(optional).toBeEnabled();
+  });
+});
+
+describe('the connectors summary (§7.3)', () => {
+  it('answers "what can this agent reach" without scrolling into the form', async () => {
+    open({
+      agent: withGmail({
+        credentials: [{ integration: 'gmail', secretRef: 'mcp.gmail.token', resolved: false }],
+      }),
+    });
+
+    const summary = await screen.findByRole('region', { name: 'Connectors' });
+    expect(within(summary).getByText('gmail')).toBeInTheDocument();
+    expect(within(summary).getByText('mcp__gmail__*')).toBeInTheDocument();
+    expect(within(summary).getByText('npx -y server-gmail')).toBeInTheDocument();
+    expect(within(summary).getByText('mcp.gmail.token')).toBeInTheDocument();
+    expect(within(summary).getByText('needs credential')).toBeInTheDocument();
+  });
+
+  it('says plainly when an agent has none, and why that is the default', async () => {
+    open({ agent: anAgent({ id: 'priya', name: 'Priya' }) });
+    const summary = await screen.findByRole('region', { name: 'Connectors' });
+    expect(summary.textContent).toContain('does not inherit your personal Claude config');
   });
 });
 

@@ -73,6 +73,7 @@ function form(overrides: Partial<EditorModel> = {}): EditorModel {
     overseer: false,
     roleAddenda: {},
     acceptedSkills: [],
+    integrations: [],
     ...overrides,
   };
 }

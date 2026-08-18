@@ -22,11 +22,14 @@ import {
   PERSONA_MODES,
   ROLES,
   SPECIALTIES,
+  type Diagnostic,
+  type IntegrationCredentialStatus,
   type SuggestedIntegration,
   type SuggestedSkill,
 } from '../api/types';
 
 import { REPLACE_PERSONA_WARNING, type EditorModel } from './editorModel';
+import { IntegrationsPanel } from './IntegrationsPanel';
 
 export interface AgentEditorProps {
   readonly model: EditorModel;
@@ -35,6 +38,10 @@ export interface AgentEditorProps {
   readonly rationale?: Readonly<Record<string, string>>;
   readonly suggestedSkills?: readonly SuggestedSkill[];
   readonly suggestedIntegrations?: readonly SuggestedIntegration[];
+  /** roster's `{ secretRef, resolved }` per integration credential (§10). */
+  readonly credentials?: readonly IntegrationCredentialStatus[];
+  /** roster's diagnostics; the panel picks out the `integrations.*` ones. */
+  readonly diagnostics?: readonly Diagnostic[];
   /** An id prefix, so two editors side by side (redraft) keep distinct labels. */
   readonly idPrefix?: string;
   /** Rendered above the form — the "cloned from" line, the degraded banner. */
@@ -56,6 +63,8 @@ export function AgentEditor({
   rationale = {},
   suggestedSkills = [],
   suggestedIntegrations = [],
+  credentials = [],
+  diagnostics = [],
   idPrefix = 'agent',
   children,
 }: AgentEditorProps): ReactElement {
@@ -334,8 +343,27 @@ export function AgentEditor({
               </li>
             ))}
           </ul>
+          {/* §7.1: "wiring an MCP server is the editor's job, not the wizard's".
+              It stays that way — but the editor is right here, so say where. */}
+          <p className="editor__note" data-manage-integrations="true">
+            Suggestions only. Wire one up under <strong>Integrations</strong> below — here now, or
+            later on the agent’s page.
+          </p>
         </fieldset>
       )}
+
+      {/*
+        Last, deliberately. Everything above describes who the agent *is*; this
+        says what it can reach outside the sandbox, which is the field group an
+        owner comes back to rather than fills in once (ui §7.3).
+      */}
+      <IntegrationsPanel
+        integrations={model.integrations}
+        onChange={(integrations) => onChange({ integrations })}
+        credentials={credentials}
+        diagnostics={diagnostics}
+        idPrefix={idPrefix}
+      />
     </div>
   );
 }

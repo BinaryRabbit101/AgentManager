@@ -114,6 +114,9 @@ export function anAgent(overrides: {
   readonly needsCredentials?: boolean;
   readonly lastUsedAt?: string | null;
   readonly roleAddenda?: AgentView['roleAddenda'];
+  /** Per-agent MCP servers, as roster returns them — refs, never values (§10). */
+  readonly integrations?: AgentView['definition']['integrations'];
+  readonly credentials?: AgentView['credentials'];
 }): AgentView {
   return {
     definition: {
@@ -126,6 +129,7 @@ export function anAgent(overrides: {
       ...(overrides.overseer === undefined
         ? {}
         : { capabilities: { overseer: overrides.overseer } }),
+      ...(overrides.integrations === undefined ? {} : { integrations: overrides.integrations }),
       meta: { createdAt: '2026-08-01T00:00:00.000Z' },
     },
     persona: '',
@@ -142,6 +146,7 @@ export function anAgent(overrides: {
     ...(overrides.needsCredentials === undefined
       ? {}
       : { needsCredentials: overrides.needsCredentials }),
+    ...(overrides.credentials === undefined ? {} : { credentials: overrides.credentials }),
   };
 }
 

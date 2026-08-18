@@ -257,7 +257,11 @@ Thin wrapper, seven responsibilities, nothing else.
 - Save via `POST /api/roster/agents`; the same editor component reused for
   `POST /api/roster/agents/:id/duplicate` and for `/agents/:id`.
 - Agent detail: session history, diagnostics, permission preview against a chosen project, remote grant
-  with expiry, Export, Archive (and hard purge only when roster says it is possible).
+  with expiry, Export, Archive (and hard purge only when roster says it is possible), plus the
+  read-only **Connectors** summary of DESIGN §7.3.1.
+- The integrations panel of DESIGN §7.3.1: add/edit/remove per-agent MCP servers (roster §10), the
+  secret-reference toggle, roster's `integrations.*` diagnostics shown in context, and paste-import
+  from a `.mcp.json`.
 
 **Acceptance**
 - **Under a minute** from clicking New agent to a saved card on the board, measured end to end with a
@@ -275,6 +279,13 @@ Thin wrapper, seven responsibilities, nothing else.
   credentials note; saving creates a second, independent folder.
 - `replace` persona mode surfaces roster's warning verbatim.
 - Archive confirms with what is retained; purge is offered only when no session references the agent.
+- An integration added, edited or removed in the panel round-trips through the same whole-agent save,
+  and the `integrations` object it posts validates against roster's own `integrationsSchema`
+  (asserted by importing the real schema, not a copy of it).
+- A `secretRef` is rendered as a **name** and never as a value, in the panel and in the summary; an
+  unresolved one shows the "needs credential" badge and the `secrets set … --stdin` command.
+- Paste-import maps stdio/sse/http fixtures, forces a credential-shaped key to a ref, converts
+  `${VAR}`, rewrites `streamable-http` to `http`, and writes nothing until the editor is saved.
 
 ## 9. Assignment and collaboration view
 

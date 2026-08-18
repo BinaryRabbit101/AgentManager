@@ -131,6 +131,65 @@ describe('the body is a projection of the form and nothing else', () => {
   });
 });
 
+describe('integrations (roster §10)', () => {
+  const GMAIL = {
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', 'server-gmail'],
+    env: { GMAIL_TOKEN: { secretRef: 'mcp.gmail.token' } },
+    toolPrefixHint: 'mcp__gmail__',
+  };
+
+  function withIntegrations(): AgentView {
+    return {
+      definition: { ...DRAFT.draft, integrations: { gmail: GMAIL } },
+      persona: '',
+      roleAddenda: {},
+    } as unknown as AgentView;
+  }
+
+  it('carries an agent’s servers into the form and back out unchanged', () => {
+    const model = fromAgent(withIntegrations());
+    expect(model.integrations).toHaveLength(1);
+    expect(toCreateBody(model)['integrations']).toEqual({ gmail: GMAIL });
+  });
+
+  it('is omitted entirely when the agent has none, so no default is invented', () => {
+    expect(toCreateBody({ ...EMPTY_MODEL, name: 'x' })).not.toHaveProperty('integrations');
+    expect(fromDraft(DRAFT).integrations).toEqual([]);
+  });
+
+  it('sends null under `patch` when the last connector is removed — the wire spelling of "clear"', () => {
+    // roster's `patch` reads an absent key as "leave it alone", so deleting the
+    // final integration would otherwise be a save that changes nothing.
+    const emptied = { ...fromAgent(withIntegrations()), integrations: [] };
+    expect(toCreateBody(emptied, { mode: 'patch' })['integrations']).toBeNull();
+    // `create` has nothing to clear and the schema has no `null` there.
+    expect(toCreateBody(emptied)).not.toHaveProperty('integrations');
+  });
+
+  it('never carries a credential value — only the ref name', () => {
+    const body = toCreateBody(fromAgent(withIntegrations()));
+    expect(JSON.stringify(body)).toContain('"secretRef":"mcp.gmail.token"');
+    expect(JSON.stringify(body)).not.toMatch(/GMAIL_TOKEN":"/u);
+  });
+
+  it('counts as an edit for the redraft guard', () => {
+    const baseline = fromDraft(DRAFT);
+    expect(
+      hasEdits(
+        {
+          ...baseline,
+          integrations: [
+            { name: 'gmail', transport: 'stdio', command: 'npx', args: '', url: '', fields: [] },
+          ],
+        },
+        baseline,
+      ),
+    ).toBe(true);
+  });
+});
+
 describe('the redraft guard (§7.1)', () => {
   it('knows an untouched form from an edited one', () => {
     const baseline = fromDraft(DRAFT);

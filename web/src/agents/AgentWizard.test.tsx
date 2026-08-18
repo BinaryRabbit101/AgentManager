@@ -155,6 +155,23 @@ describe('describe → draft → save (§7.1)', () => {
     expect(row?.textContent).toContain('you will need to supply this credential');
     expect(row?.querySelector('input')).toBeNull();
   });
+
+  it('points at the editor’s integrations panel, which is where a server is actually wired', async () => {
+    // §7.1 keeps wiring out of the wizard's *suggestion* list; it does not keep
+    // it out of the wizard, because the wizard renders the editor. Saying where
+    // is the difference between a read-only list and a dead end.
+    openWizard();
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText('Describe them in a sentence'), DESCRIPTION);
+    await user.click(screen.getByRole('button', { name: 'Draft this agent' }));
+
+    await screen.findByText('sentry');
+    expect(
+      document.querySelector('[data-manage-integrations="true"]')?.textContent ?? '',
+    ).toContain('Integrations');
+    // And the panel it points at is right there, on the same screen.
+    expect(await screen.findByRole('group', { name: 'Integrations' })).toBeInTheDocument();
+  });
 });
 
 describe('a degraded draft is still an agent (§7.1)', () => {

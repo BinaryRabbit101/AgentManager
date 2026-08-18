@@ -22,6 +22,8 @@
 
 import type { AgentDraft, AgentView, DraftResponse, Role, SuggestedSkill } from '../api/types';
 
+import { integrationsBody, integrationsOf, type IntegrationForm } from './integrationsModel';
+
 /**
  * Everything the form holds, as strings where the form holds strings.
  *
@@ -58,6 +60,15 @@ export interface EditorModel {
   readonly roleAddenda: Readonly<Partial<Record<Role, string>>>;
   /** Suggested skills the user ticked. Untouched ones write nothing (§12.4). */
   readonly acceptedSkills: readonly string[];
+  /**
+   * Per-agent MCP servers (roster §10), as a list rather than a record.
+   *
+   * A record keyed by name cannot be edited: renaming a server would have to
+   * delete one key and create another on every keystroke, and two half-typed
+   * names would collide on `''`. The list is the editable shape and
+   * {@link toCreateBody} turns it back into the record roster's schema wants.
+   */
+  readonly integrations: readonly IntegrationForm[];
 }
 
 export const EMPTY_MODEL: EditorModel = Object.freeze({
@@ -79,6 +90,7 @@ export const EMPTY_MODEL: EditorModel = Object.freeze({
   overseer: false,
   roleAddenda: {},
   acceptedSkills: [],
+  integrations: [],
 });
 
 /** One rule per line, blank lines dropped. The inverse of {@link linesOf}. */
@@ -120,6 +132,11 @@ export function fromDraft(response: DraftResponse): EditorModel {
     // writing skill bodies applies to these for the same reason).
     roleAddenda: {},
     acceptedSkills: [],
+    // Drafting *suggests* integrations and never configures one — `/draft`
+    // returns `suggestedIntegrations` with `secretRef` placeholders and no
+    // credential (roster §12.3), which is a read-only list, not a definition.
+    // Wiring a server is the editor's job (ui §7.1).
+    integrations: [],
   };
 }
 
@@ -146,6 +163,10 @@ export function fromAgent(agent: AgentView): EditorModel {
     overseer: definition.capabilities?.overseer ?? false,
     roleAddenda: { ...agent.roleAddenda },
     acceptedSkills: [],
+    // Refs only — `definition.integrations` is the API's copy, and roster never
+    // puts a resolved credential in it (§10). Whatever is in the form is
+    // therefore already safe to render.
+    integrations: integrationsOf(definition.integrations),
   };
 }
 
@@ -163,9 +184,25 @@ export function fromAgent(agent: AgentView): EditorModel {
  * - **It does not invent a default.** An empty model field means the key is
  *   absent, so roster's own schema defaults apply — one owner of a default.
  */
+export interface ToCreateBodyOptions {
+  readonly origin?: string;
+  readonly suggestedSkills?: readonly SuggestedSkill[];
+  /**
+   * Which request this body is for, and it changes exactly one key.
+   *
+   * roster's `patch` reads `null` as "clear this field" and an absent key as
+   * "leave it alone" (`service.ts`) — the distinction that makes removing a
+   * tagline possible at all. Removing an agent's *last* integration needs the
+   * same spelling, and `create` cannot take it (the schema has no `null` there,
+   * and there is nothing to clear on a definition that does not exist yet). So
+   * an empty list is `null` under `patch` and simply absent under `create`.
+   */
+  readonly mode?: 'create' | 'patch';
+}
+
 export function toCreateBody(
   model: EditorModel,
-  options: { readonly origin?: string; readonly suggestedSkills?: readonly SuggestedSkill[] } = {},
+  options: ToCreateBodyOptions = {},
 ): Record<string, unknown> {
   const tags = model.tags
     .split(',')
@@ -181,6 +218,8 @@ export function toCreateBody(
     model.acceptedSkills.includes(skill.name),
   );
   const roleAddenda = roleAddendaBody(model);
+  const integrations = integrationsBody(model.integrations);
+  const hasIntegrations = Object.keys(integrations).length > 0;
 
   return {
     name: model.name,
@@ -199,6 +238,11 @@ export function toCreateBody(
           },
         }),
     ...(Object.keys(permissions).length === 0 ? {} : { permissions }),
+    ...(hasIntegrations
+      ? { integrations }
+      : options.mode === 'patch'
+        ? { integrations: null }
+        : {}),
     ...(model.roles.length === 0 && !model.overseer
       ? {}
       : { capabilities: { overseer: model.overseer, roles: model.roles } }),

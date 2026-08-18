@@ -17,6 +17,10 @@ import './styles.css';
 // `styles.css` only so the two can be edited independently; the cascade is the
 // same, because this still lands after the sheet it builds on.
 import './home.css';
+// §7.3's integrations panel, beside home.css for the same reason: its own file
+// so the editor's connector UI can be edited without touching the base sheet,
+// and it lands after the utilities (`.field`, `.button`, `.badge`) it builds on.
+import './integrations.css';
 
 import { App } from './App';
 import { AvatarCache } from './api/avatars';

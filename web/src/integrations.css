@@ -1,0 +1,226 @@
+/*
+ * The integrations panel and the connectors summary (DESIGN §7.3).
+ *
+ * Semantic tokens only — no raw colour anywhere in this file (§14.2). What is
+ * left after the shared `.field`, `.button`, `.badge`, `.notice` and `.empty`
+ * utilities have done their work is: nesting a server inside the field group
+ * without the nesting becoming a wall of borders, laying one credential row out
+ * as a row on a desktop and a stack on a phone, and giving the two things this
+ * screen must not let anyone mistake for each other — a secret *reference* and
+ * a literal value — different weight.
+ *
+ * No fixed widths and no fixed grid tracks, for §2.3's reason: every one of
+ * these has to read at 390px and at 200% zoom, so the credential row wraps
+ * rather than shrinking below a 44px target.
+ */
+
+.integrations {
+  min-width: 0;
+}
+
+/*
+  A nested fieldset per server. The border is the *only* thing that says where
+  one connector ends and the next begins, and a connector is a group of fields
+  whose boundary matters — a header alone would let a header row float free of
+  the fields under it when the list is long.
+*/
+.integration {
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+
+.integration > legend {
+  padding: 0 var(--space-2);
+  font-weight: 600;
+  font-size: var(--font-size-subsection);
+}
+
+/* The `mcp__<server>__` prefix, said where the name it is derived from is. */
+.integration__prefix {
+  margin: calc(-1 * var(--space-2)) 0 var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--font-size-meta);
+}
+
+.integration__prefix code,
+.integrations code,
+.integrations-summary code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+/*
+  One `env` variable or header. Wraps to a stack rather than compressing: the
+  key and value inputs both need room to be read, and the secret toggle is a
+  target rather than an ornament.
+*/
+.credential {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  min-width: 0;
+}
+
+.credential > .field {
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+/*
+  The "needs credential" line takes the whole width under the row it belongs to:
+  it carries a command the owner has to be able to read and copy, and a command
+  that has been squeezed into a flex remainder is a command nobody can use.
+*/
+.credential__missing {
+  flex: 1 1 100%;
+  color: var(--text-muted);
+  font-size: var(--font-size-meta);
+}
+
+.integrations__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* ---------------------------------------------------------------------------
+   Paste-import
+   --------------------------------------------------------------------------- */
+
+.import {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+
+.import h4 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-subsection);
+}
+
+.import textarea {
+  font-family: var(--font-mono);
+}
+
+/*
+  The mapping preview. Scrolls inside itself rather than widening the page —
+  a command line is arbitrarily long and the page must not scroll sideways.
+*/
+.import__table {
+  display: block;
+  overflow-x: auto;
+  width: 100%;
+  margin: var(--space-3) 0;
+  border-collapse: collapse;
+  font-size: var(--font-size-meta);
+}
+
+.import__table caption {
+  text-align: left;
+  padding-bottom: var(--space-2);
+  color: var(--text-muted);
+}
+
+.import__table th,
+.import__table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.import__table th {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+/*
+  A flagged value. Warn-toned because it is a decision the owner has to make and
+  not merely something that happened — the whole point of the preview is that a
+  pasted credential does not slip through as a literal by inattention.
+*/
+.import__flags {
+  margin-top: var(--space-3);
+}
+
+.import__flags h5 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-body);
+}
+
+.import__flag {
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+
+.import__flag p {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-meta);
+}
+
+.import__ref {
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------------------
+   The connectors summary on the agent page
+   --------------------------------------------------------------------------- */
+
+.integrations-summary {
+  margin-bottom: var(--space-5);
+}
+
+.integrations-summary h3 {
+  font-size: var(--font-size-subsection);
+  margin-bottom: var(--space-2);
+}
+
+.integrations-summary__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.integrations-summary__list > li {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+
+.integrations-summary__target {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-meta);
+  overflow-wrap: anywhere;
+}
+
+.integrations-summary__ref {
+  display: inline-block;
+  margin-top: var(--space-1);
+  margin-right: var(--space-3);
+  font-size: var(--font-size-meta);
+}
