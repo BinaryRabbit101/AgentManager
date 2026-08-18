@@ -107,7 +107,31 @@ export interface AskQuestionRequest {
   readonly options?: readonly QuestionOptionView[] | undefined;
   readonly multiSelect?: boolean | undefined;
   readonly allowFreeText?: boolean | undefined;
-  readonly context?: { toolName?: string; toolInput?: unknown } | undefined;
+  /**
+   * §5.2's `context`, plus the fields runner adds to it.
+   *
+   * `toolName` and `toolInput` are §5.2's own. The rest are **additive** and
+   * ride through orchestrator verbatim — the envelope stores whatever object it
+   * was handed and `cardOf` returns it unchanged, so orchestrator needs no
+   * change to carry them (that "server-of-origin verbatim" property is the same
+   * one that already carries `matchedAskRule`, SDK-NOTES §5.1).
+   *
+   * - `durableRule` — the rule `ALLOW_ALWAYS_OPTION` would append to the agent's
+   *   `permissions.allow` (§5.1's 2026-08-18 decision). Present only on a tool
+   *   gate that offers the option, so its presence *is* the card's signal that
+   *   the third button is real.
+   * - `agentId` — who that rule would be added to. On the request already, but
+   *   the card projection does not surface it and the client's roster edit is
+   *   addressed to it.
+   */
+  readonly context?:
+    | {
+        toolName?: string;
+        toolInput?: unknown;
+        durableRule?: string;
+        agentId?: string;
+      }
+    | undefined;
   /** ISO deadline for the inline hold — stage 1 of §5.4. */
   readonly holdUntil: string;
   /** ISO deadline for the question itself, from `runner.question.expireHours`. */

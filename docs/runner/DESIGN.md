@@ -409,9 +409,44 @@ with roster's default-deny as the terminal fallback when no human is reachable. 
 rule patterns and consults no rule set; roster remains the only composer. This is recorded as a
 clarification to roster in §15.4, not a change to permission composition.
 
-**"Always allow" is deliberately not offered.** The SDK's `updatedPermissions` on an allow result
-would widen the session's permissions at runtime, which is precisely the composition roster owns. The
-card offers *Allow once* and *Deny*, and a persistent widening is a roster or project edit.
+**"Always allow" is offered, and it is a roster edit** *(owner decision, 2026-08-18 — supersedes
+this paragraph's original "deliberately not offered")*. The original rationale is unchanged and is
+now the reason for the *mechanism* rather than for the absence: the SDK's `updatedPermissions` on an
+allow result would widen the session's permissions at runtime, which is precisely the composition
+roster owns, so **runner still never sets `updatedPermissions`** and still matches no rule patterns.
+
+A tool gate therefore offers three options — *Allow once*, *Always allow*, *Deny* — and *Always
+allow* is two things that happen in order:
+
+1. **The pending call is allowed once.** The `PermissionResult` is byte for byte the one *Allow once*
+   produces (§5.3's tool-gate row): `{behavior:'allow', updatedInput: input}`, no
+   `updatedPermissions`, nothing about the live session changed.
+2. **A durable allow rule is appended to the agent's `permissions.allow` through roster**, by the
+   client that answered the card, against `POST /api/roster/agents/:id/permissions/allow` (roster
+   §6). Roster validates the rule against its own grammar, persists it through the same write path
+   the agent editor uses, and emits the same `roster.changed`. The rule is then visible in the
+   editor, and it is compiled into the session options at **launch** — so it applies from the
+   agent's **next** session, not from the rest of this one. The card says exactly that.
+
+The rule is **derived by runner and carried on the card** (`context.durableRule`, with
+`context.agentId`), so the client approves and posts a string it was shown rather than one it
+invented. Derivation is a pure function (`runner/permissionRules.ts`) and never writes a rule that
+merely *looks* scoped:
+
+| Call | Rule | Why |
+|---|---|---|
+| `Bash` | `Bash(<prefix>:*)` — the command's first token, or the first **two** for a program whose second token is the verb (`git`, `npm`, `npx`, `docker`, `cargo`, `gh`, …) | Never the whole command line. Approving `git status` is not approving `git push`. |
+| `Bash`, compound (`;` `&&` `\|` `` ` `` `$()` `>` newline) | *none* | The first token describes the first clause only; a prefix derived from it would grant what the user was not looking at. |
+| `Edit` / `Write` / `MultiEdit` / `NotebookEdit` | `Edit(<path>)`, slash-normalised | SDK-NOTES **C1**: the engine canonicalises file-permission checks onto `Edit`, so `Write(path)` parses, is accepted, and is *never consulted*. One `Edit(path)` covers every file-editing tool. |
+| a file tool with no usable path (or `*`) | *none* | A bare `Edit` auto-approves every edit anywhere ahead of `canUseTool`. No option is honest; a bare-name grant is not. |
+| `Read` / `Glob` / `Grep` / `WebFetch` / … | the bare tool name | And the card says "all `<Tool>` calls", because a bare name is exactly that. |
+| `mcp__server__tool` | the full tool name | |
+| `AskUserQuestion` | *none* | It is not a tool gate (§5.3), and roster would lift an allow on it back into `ask` (C2). |
+
+When derivation yields nothing, the card keeps the original two options — a missing third button is a
+correct outcome, not a degradation. `AskUserQuestion` cards carry the agent's own options verbatim
+and never gain this one; `budget_halt` and `approval_gate` cards are raised elsewhere (§15.1-8) and
+are not tool gates at all.
 
 ### 5.2 Raising and persisting
 

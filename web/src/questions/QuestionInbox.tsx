@@ -30,12 +30,73 @@ import type { QuestionCard, QuestionListView, QuestionStatus } from '../api/type
 import { useServices } from '../app/AppContext';
 import { useAppStore } from '../state/store';
 
+import {
+  alwaysAllowFailedMessage,
+  alwaysAllowRememberedMessage,
+  type DurableAllow,
+} from './card';
 import { QuestionCardView } from './QuestionCardView';
+
+/**
+ * A line about a card that is no longer on screen.
+ *
+ * "Always allow" is two writes, and the card leaves the Open tab the moment the
+ * first one lands — so the outcome of the *second* has nowhere to live on the
+ * card itself. It lives here instead, at the top of the screen, for both the
+ * success and the half-success (runner §5.1: the call ran, the remembering
+ * failed, and the UI must say exactly that).
+ */
+export interface AnswerNotice {
+  readonly id: string;
+  readonly tone: 'ok' | 'danger';
+  readonly message: string;
+}
 
 export interface Answering {
   readonly busyId: string | null;
   readonly failures: Readonly<Record<string, string>>;
-  readonly answer: (card: QuestionCard, body: Record<string, unknown>) => void;
+  /** Newest first. Rendered by {@link AnsweringNotices}. */
+  readonly notices: readonly AnswerNotice[];
+  readonly answer: (
+    card: QuestionCard,
+    body: Record<string, unknown>,
+    /**
+     * The roster edit to make **after** the answer lands (runner §5.1's owner
+     * decision). Passed by the card, never derived here: the rule is the
+     * server's, shown to the user before the click.
+     */
+    durable?: DurableAllow,
+  ) => void;
+}
+
+/**
+ * The notices, rendered.
+ *
+ * A component rather than a snippet each screen repeats, because the sentence
+ * "the call ran but the rule was not saved" is exactly the sentence a copy-paste
+ * eventually drops from one of them.
+ */
+export function AnsweringNotices({
+  notices,
+}: {
+  readonly notices: readonly AnswerNotice[];
+}): ReactElement | null {
+  if (notices.length === 0) return null;
+  return (
+    <>
+      {notices.map((notice) => (
+        <p
+          key={notice.id}
+          className="notice"
+          data-tone={notice.tone}
+          data-answer-notice={notice.tone}
+          role={notice.tone === 'danger' ? 'alert' : 'status'}
+        >
+          {notice.message}
+        </p>
+      ))}
+    </>
+  );
 }
 
 /**
@@ -54,10 +115,11 @@ export interface Answering {
 export function useAnswering(client: ApiClient, queryClient: QueryClient): Answering {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [failures, setFailures] = useState<Readonly<Record<string, string>>>({});
+  const [notices, setNotices] = useState<readonly AnswerNotice[]>([]);
   const setOpenQuestions = useAppStore((store) => store.setOpenQuestions);
 
   const answer = useCallback(
-    (card: QuestionCard, body: Record<string, unknown>) => {
+    (card: QuestionCard, body: Record<string, unknown>, durable?: DurableAllow) => {
       setBusyId(card.id);
       void (async () => {
         const result = await client.request<QuestionCard>(
@@ -67,9 +129,41 @@ export function useAnswering(client: ApiClient, queryClient: QueryClient): Answe
         setBusyId(null);
         if (result.kind !== 'ok') {
           // The server's message, verbatim — a `question_not_open` 409 is the
-          // honest answer to "someone answered this on the phone first".
+          // honest answer to "someone answered this on the phone first". No
+          // roster edit follows a call that did not run.
           setFailures((current) => ({ ...current, [card.id]: result.message }));
           return;
+        }
+
+        /*
+          The durable half, second and separate (runner §5.1's owner decision).
+
+          Order matters and is not an accident: the answer is what releases the
+          agent, and a roster write that failed must never hold up a tool call a
+          human already approved. So the rule is written *after*, and its failure
+          is reported as its own sentence rather than folded into the answer's.
+        */
+        if (durable !== undefined) {
+          const saved = await client.request<unknown>(
+            `/roster/agents/${encodeURIComponent(durable.agentId)}/permissions/allow`,
+            { method: 'POST', body: { rule: durable.rule } },
+          );
+          setNotices((current) => [
+            saved.kind === 'ok'
+              ? { id: card.id, tone: 'ok', message: alwaysAllowRememberedMessage(durable) }
+              : {
+                  id: card.id,
+                  tone: 'danger',
+                  message: alwaysAllowFailedMessage(durable, saved.message),
+                },
+            ...current.filter((one) => one.id !== card.id),
+          ]);
+          if (saved.kind === 'ok') {
+            // The rule is now in the definition the editor renders and the board
+            // reads, so both are stale.
+            await queryClient.invalidateQueries({ queryKey: queryKeys.roster });
+            await queryClient.invalidateQueries({ queryKey: queryKeys.agent(durable.agentId) });
+          }
         }
 
         const settled: QuestionCard =
@@ -101,7 +195,7 @@ export function useAnswering(client: ApiClient, queryClient: QueryClient): Answe
     [client, queryClient, setOpenQuestions],
   );
 
-  return { busyId, failures, answer };
+  return { busyId, failures, notices, answer };
 }
 
 /** `/questions` — the list, one request for the tab being shown. */
@@ -110,7 +204,7 @@ function InboxList(): ReactElement {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<QuestionStatus>('open');
   const list = useQuestions(client, tab);
-  const { busyId, failures, answer } = useAnswering(client, queryClient);
+  const { busyId, failures, notices, answer } = useAnswering(client, queryClient);
   const setOpenQuestions = useAppStore((store) => store.setOpenQuestions);
 
   const openCount = tab === 'open' ? list.data?.questions.length : undefined;
@@ -152,6 +246,9 @@ function InboxList(): ReactElement {
         </p>
       ) : null}
 
+      {/* An answered card leaves this tab; what its roster edit did stays. */}
+      <AnsweringNotices notices={notices} />
+
       {!list.isPending && cards.length === 0 ? (
         <p className="empty">
           {tab === 'open' ? 'Nothing is waiting on you.' : 'No answered questions yet.'}
@@ -180,7 +277,7 @@ function InboxOne({ id }: { readonly id: string }): ReactElement {
   const { client } = useServices();
   const queryClient = useQueryClient();
   const card = useQuestion(client, id);
-  const { busyId, failures, answer } = useAnswering(client, queryClient);
+  const { busyId, failures, notices, answer } = useAnswering(client, queryClient);
   const now = Date.now();
 
   return (
@@ -195,6 +292,8 @@ function InboxOne({ id }: { readonly id: string }): ReactElement {
           {failureOf(card.error)?.message ?? 'That question could not be read.'}
         </p>
       ) : null}
+
+      <AnsweringNotices notices={notices} />
 
       {card.isPending ? <p className="empty">Loading the card…</p> : null}
 

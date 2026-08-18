@@ -31,7 +31,7 @@ import type {
 import { useServices } from '../app/AppContext';
 import { Avatar } from '../board/Avatar';
 import { Icon } from '../icons/Sprite';
-import { useAnswering } from '../questions/QuestionInbox';
+import { AnsweringNotices, useAnswering } from '../questions/QuestionInbox';
 import { QuestionCardView } from '../questions/QuestionCardView';
 import { useAppStore } from '../state/store';
 
@@ -416,6 +416,10 @@ export function SessionView(): ReactElement {
           to the inbox and back — the same `QuestionCardView` the inbox renders,
           driven by the same `useAnswering`, so the two cannot drift.
         */}
+        {/* An "Always allow" answer is two writes; the second one reports here,
+            because the card it belongs to is gone by the time it lands. */}
+        <AnsweringNotices notices={answering.notices} />
+
         {openCards.length === 0 ? null : (
           <ul className="question-list" data-region="session-questions">
             {openCards.map((card) => (

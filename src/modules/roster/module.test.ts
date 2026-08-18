@@ -164,13 +164,16 @@ describe('module registration', () => {
       'PATCH /api/roster/agents/:id/ui-state',
       'POST /api/roster/agents',
       'POST /api/roster/agents/:id/duplicate',
+      'POST /api/roster/agents/:id/permissions/allow',
       'POST /api/roster/agents/:id/validate',
       'POST /api/roster/draft',
       'POST /api/roster/import',
       'PUT /api/roster/agents/:id/avatar',
       'PUT /api/roster/board-order',
     ]);
-    // The whole of §9.1's table, M9's two pack endpoints included.
+    // The whole of §9.1's table, M9's two pack endpoints included, plus §6.2's
+    // `/permissions/allow` — the durable half of the question card's "Always
+    // allow" (runner §5.1, owner decision 2026-08-18).
     expect(mine.every((route) => route.remote === 'allow')).toBe(true);
   });
 

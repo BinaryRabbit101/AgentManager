@@ -375,6 +375,22 @@ the element, and it is the **only** composer in the system: projects and orchest
 hand over raw rule inputs, and neither computes an effective set of its own. Two implementations of
 this table would disagree, and the disagreement would be a permission bug.
 
+**One narrow write, for the question card's "Always allow."**
+`POST /api/roster/agents/:id/permissions/allow` with `{ rule }` appends a single rule to the agent's
+baseline `permissions.allow`. It exists because runner's tool-gate card offers *Always allow* (runner
+§5.1, owner decision 2026-08-18) and the SDK's `updatedPermissions` — which would widen a live
+session at runtime — is exactly the composition this element owns: so "remember this" is expressed as
+an **explicit roster edit** and §6.2's "the only composer" survives intact. Underneath it is the
+ordinary `PATCH`, so the rule is validated, persisted, hashed, visible in the agent editor and
+announced by the same `roster.changed` a save from the editor emits. It is a route rather than a
+`PATCH` from the card because the card knows one rule and nothing else about the agent, and a `PATCH`
+carrying a whole `permissions` block assembled from a stale read is how one client's answer silently
+reverts another's edit. Appending a rule the agent already allows is a **no-op success** — a user taps
+twice, and two clients answer one card. A rule the schema refuses, or one §6.1's normaliser would
+rewrite, drop or lift into `ask` (an inert `Write(path)`, a collapsing `Edit(*)`, an
+`AskUserQuestion` grant), is **refused with that normaliser's own diagnostic** rather than quietly
+stored as something else: the rule shown to the human has to be the rule that takes effect.
+
 ### 6.3 `ask` rules
 
 `ask` rules cannot be expressed through `allowedTools`/`disallowedTools`; they only exist in
@@ -475,6 +491,7 @@ with no roster-specific work.
 | `GET` | `/agents/:id` | full definition + resolved persona text + resolved `roleAddenda` |
 | `POST` | `/agents` | create; id derived from name if absent, collision-suffixed |
 | `PATCH` | `/agents/:id` | partial update; `id` immutable |
+| `POST` | `/agents/:id/permissions/allow` | `{ rule }` — append one rule to `permissions.allow` (§6.2). Idempotent; writes through `PATCH`; refuses a rule the SDK would not honour |
 | `DELETE` | `/agents/:id` | archive (soft); `?purge=true` only when no sessions reference it |
 | `POST` | `/agents/:id/duplicate` | see below |
 | `GET` | `/agents/:id/export` | `.agentpack` (zip) download |

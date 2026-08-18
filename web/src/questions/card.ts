@@ -157,6 +157,73 @@ function firstLine(value: string): string {
   return line.length <= 160 ? line : `${line.slice(0, 159)}…`;
 }
 
+// ---------------------------------------------------------------------------
+// "Always allow" — runner §5.1's third option (owner decision 2026-08-18)
+// ---------------------------------------------------------------------------
+
+/** Runner's option id. The UI matches it; it never invents it (§11.2). */
+export const ALLOW_ALWAYS_OPTION_ID = 'allow-always';
+
+/**
+ * The agent and rule an **Always allow** click would write, or `undefined`.
+ *
+ * Both halves come off the card, and both must be there. Runner puts
+ * `context.durableRule` on a tool gate only when a rule can be written that
+ * honestly describes the call, and puts the option in `options` at the same
+ * time — so a card carrying the option but not the rule (an older core, a
+ * hand-rolled fixture) yields nothing here and the button is not rendered.
+ * Guessing the rule client-side is the one thing this must never do: the user
+ * approves the string they were shown, and a second derivation would eventually
+ * show them a different one.
+ */
+export interface DurableAllow {
+  readonly agentId: string;
+  readonly rule: string;
+}
+
+export function durableAllow(card: QuestionCard): DurableAllow | undefined {
+  const rule = card.context?.durableRule;
+  const agentId = card.context?.agentId;
+  if (rule === undefined || rule === '' || agentId === undefined || agentId === '') {
+    return undefined;
+  }
+  if (!card.options.some((option) => option.id === ALLOW_ALWAYS_OPTION_ID)) return undefined;
+  return { agentId, rule };
+}
+
+/**
+ * What the card says **before** the click.
+ *
+ * §11.2's whole argument about the gated call applies twice over here: a button
+ * labelled only "Always allow" asks the user to approve a scope they cannot see.
+ * The rule is the scope, so the rule is on the button.
+ */
+export function alwaysAllowPreview(target: DurableAllow): string {
+  return `adds ${target.rule} to ${target.agentId}`;
+}
+
+/** The success line. It says *when* the rule applies, because it is not now. */
+export function alwaysAllowRememberedMessage(target: DurableAllow): string {
+  return (
+    `Allowed, and remembered for ${target.agentId}: ${target.rule} — applies from its next ` +
+    'session. Manage in the agent editor.'
+  );
+}
+
+/**
+ * The half-success line.
+ *
+ * The call ran; the remembering did not. Saying so — with the server's own
+ * message — is the only honest option: a user who believes a rule was saved
+ * stops watching for the card to come back.
+ */
+export function alwaysAllowFailedMessage(target: DurableAllow, serverMessage: string): string {
+  return (
+    `The call was allowed, but the standing permission was not saved for ${target.agentId}: ` +
+    `${target.rule} — ${serverMessage}`
+  );
+}
+
 /** What the answer POST carries. The UI never invents an option (§4, §11.2). */
 export interface AnswerDraft {
   readonly optionIds: readonly string[];

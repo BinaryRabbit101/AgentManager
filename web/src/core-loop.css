@@ -1190,3 +1190,30 @@
     margin-left: 0;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   "Always allow" — runner DESIGN §5.1's third option (owner decision 2026-08-18)
+
+   Appended at the end of the question section rather than woven into the option
+   rules above, so that what this feature added is one readable block.
+
+   Only one new rule is needed. The button, its pressed state and its phone
+   full-width behaviour are all `.question-card__option`, unchanged; the rule
+   string is an extra line inside it. It is set in the mono face and sits above
+   the description because it is the *scope being approved* — the same argument
+   §11.2 makes for showing the gated call, applied to the standing permission the
+   click would write.
+   --------------------------------------------------------------------------- */
+.question-card__option-rule {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-micro);
+  font-weight: var(--weight-normal);
+  color: var(--text);
+  /* A long Edit(path) rule must not widen the card past its column (§15). */
+  overflow-wrap: anywhere;
+}
+
+.question-card__option[aria-pressed='true'] .question-card__option-rule {
+  color: var(--accent);
+}

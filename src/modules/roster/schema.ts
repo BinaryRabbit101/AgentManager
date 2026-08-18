@@ -90,7 +90,7 @@ const folderRelativeFile = z
  * scope — because a rule that never matches is a permission that was believed
  * to be in force and was not.
  */
-const permissionRule = z
+export const permissionRuleSchema = z
   .string()
   .min(1)
   .max(200)
@@ -100,7 +100,16 @@ const permissionRule = z
     return open === -1 ? !value.includes(')') : value.endsWith(')') && open > 0;
   }, 'a scoped rule must look like Tool(pattern)');
 
-const ruleList = z.array(permissionRule);
+/**
+ * Exported for the one caller outside a definition parse: §6's
+ * `POST /api/roster/agents/:id/permissions/allow`, which takes a single rule
+ * from a question card and must judge it by exactly the grammar an `agent.json`
+ * is judged by. A second, laxer check on that route is how a rule the editor
+ * would reject ends up in `permissions.allow` anyway.
+ */
+export type PermissionRule = z.infer<typeof permissionRuleSchema>;
+
+const ruleList = z.array(permissionRuleSchema);
 
 // ---------------------------------------------------------------------------
 // Secret references (§10)

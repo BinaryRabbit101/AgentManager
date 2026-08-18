@@ -426,6 +426,7 @@ export type {
 export { createRosterService } from './service.js';
 export type {
   AgentView,
+  AllowRuleResult,
   DeleteResult,
   ExportedPack,
   ImportPreview,

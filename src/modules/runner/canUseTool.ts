@@ -42,6 +42,7 @@ import type {
   QuestionOptionView,
   QuestionOutcomeView,
 } from './contracts.js';
+import { durableAllowRule } from './permissionRules.js';
 import { ASK_USER_QUESTION_TOOL, describeAnswer, parkMessage } from './questionBridge.js';
 
 export interface DefaultDenyDeps {
@@ -81,11 +82,39 @@ export function createDefaultDenyCanUseTool(deps: DefaultDenyDeps): CanUseTool {
 // M7 — the question bridge (§5.1 → §5.4)
 // ---------------------------------------------------------------------------
 
-/** The two choices §5.1 pins for a tool gate. "Always allow" is not offered. */
+/** The choice §5.1 pins for every tool gate, whatever else the card offers. */
 export const ALLOW_ONCE_OPTION: QuestionOptionView = {
   id: 'allow',
   label: 'Allow once',
   description: 'Run this call. The permission is not widened for the rest of the session.',
+};
+
+/**
+ * §5.1's third choice, added by owner decision on **2026-08-18**.
+ *
+ * The original §5.1 offered only *Allow once* and *Deny*, on the reasoning that
+ * the SDK's `updatedPermissions` would widen the session's permissions at
+ * runtime and that widening is the composition roster owns. **That reasoning is
+ * intact and it is why this option is built the way it is.** Nothing here sets
+ * `updatedPermissions`, and nothing here changes the live session:
+ *
+ * - the pending call resolves as an ordinary allow, byte for byte the same
+ *   `PermissionResult` *Allow once* produces;
+ * - the durable half is a **roster edit**, made by the client against
+ *   `POST /api/roster/agents/:id/permissions/allow`, which appends the derived
+ *   rule to the agent's `permissions.allow` through the same write path the
+ *   agent editor uses. Roster stays the only composer (roster DESIGN §6).
+ *
+ * The consequence is honest and the description says it out loud: the standing
+ * permission is compiled into the agent's options at *launch*, so it takes
+ * effect from the agent's **next** session, not from the rest of this one.
+ */
+export const ALLOW_ALWAYS_OPTION: QuestionOptionView = {
+  id: 'allow-always',
+  label: 'Always allow',
+  description:
+    'Run this call now, and add a standing permission to this agent. The rule is saved on the ' +
+    'agent and applies from its next session — not to the rest of this one.',
 };
 
 export const DENY_OPTION: QuestionOptionView = {
@@ -93,6 +122,13 @@ export const DENY_OPTION: QuestionOptionView = {
   label: 'Deny',
   description: 'Refuse this call. Any text you add is given to the agent as the reason.',
 };
+
+/**
+ * The two ids that mean "run it". Both resolve to the *same* allow (§5.3's
+ * tool-gate row); the difference between them is entirely a roster edit the
+ * client makes afterwards, which is why runner treats them identically here.
+ */
+const ALLOWING_OPTIONS: readonly QuestionOptionView[] = [ALLOW_ONCE_OPTION, ALLOW_ALWAYS_OPTION];
 
 /** What a raised card told runner, for the `session.question.raised` event (§10). */
 export interface RaisedQuestion {
@@ -103,6 +139,14 @@ export interface RaisedQuestion {
   readonly toolName: string;
   readonly holdUntil: string;
   readonly expiresAt: string;
+  /**
+   * The rule {@link ALLOW_ALWAYS_OPTION} would add, when the card offers it.
+   *
+   * Carried rather than left to be re-derived: the client that answers the card
+   * is the client that makes the roster edit, and two implementations of the
+   * derivation would eventually disagree about what the user approved.
+   */
+  readonly durableRule?: string | undefined;
 }
 
 /** How a pending call was resolved, for `session.question.answered` (§10). */
@@ -113,6 +157,8 @@ export interface SettledQuestion {
   readonly delivery: 'inline';
   readonly decision: QuestionAnswerView;
   readonly behavior: 'allow' | 'deny';
+  /** The rule the answer asked to be remembered, when it asked (§5.1). */
+  readonly durableRule?: string | undefined;
 }
 
 export interface QuestionCanUseToolDeps {
@@ -235,7 +281,24 @@ export function createQuestionCanUseTool(deps: QuestionCanUseToolDeps): CanUseTo
     const askedAt = deps.clock().getTime();
     const holdUntil = new Date(askedAt + deps.holdMs).toISOString();
     const expiresAt = new Date(askedAt + deps.expireHours * 3_600_000).toISOString();
-    const cardOptions = spec?.options ?? [ALLOW_ONCE_OPTION, DENY_OPTION];
+    /**
+     * §5.1's owner decision, applied to **tool gates only**.
+     *
+     * An `AskUserQuestion` card carries the agent's own options verbatim (§5.3),
+     * and `budget_halt` / `approval_gate` cards are raised elsewhere entirely —
+     * by runner's budget path and by orchestrator (§15.1-8) — so neither can
+     * reach this line. Within tool gates the option appears only when a rule can
+     * be written that honestly describes the call: `durableAllowRule` returns
+     * `undefined` for a compound shell command, for a file edit with no usable
+     * path, and for anything else it cannot describe without over-granting, and
+     * the card then keeps the original two options.
+     */
+    const durableRule = spec === undefined ? durableAllowRule(toolName, input) : undefined;
+    const cardOptions =
+      spec?.options ??
+      (durableRule === undefined
+        ? [ALLOW_ONCE_OPTION, DENY_OPTION]
+        : [ALLOW_ONCE_OPTION, ALLOW_ALWAYS_OPTION, DENY_OPTION]);
 
     let questionId: string | null = null;
     const request: AskQuestionRequest = {
@@ -254,6 +317,11 @@ export function createQuestionCanUseTool(deps: QuestionCanUseToolDeps): CanUseTo
         toolInput: input,
         ...(options.matchedAskRule === undefined ? {} : { matchedAskRule: options.matchedAskRule }),
         ...(options.description === undefined ? {} : { description: options.description }),
+        // The two facts a client needs to act on ALLOW_ALWAYS_OPTION, carried on
+        // the card so it can show the rule *before* the click: the user approves
+        // a rule, not a vibe. `agentId` is already on the request, but the card
+        // projection does not surface it and the roster edit is addressed to it.
+        ...(durableRule === undefined ? {} : { durableRule, agentId: deps.agentId }),
       },
       holdUntil,
       expiresAt,
@@ -267,6 +335,7 @@ export function createQuestionCanUseTool(deps: QuestionCanUseToolDeps): CanUseTo
           toolName,
           holdUntil,
           expiresAt,
+          ...(durableRule === undefined ? {} : { durableRule }),
         });
       },
     };
@@ -333,6 +402,11 @@ export function createQuestionCanUseTool(deps: QuestionCanUseToolDeps): CanUseTo
       delivery: 'inline',
       decision: outcome.answer,
       behavior: result.behavior,
+      // Only when the answer actually chose it: the event records what the user
+      // asked to be remembered, not what they could have.
+      ...(durableRule !== undefined && chose(outcome.answer, ALLOW_ALWAYS_OPTION)
+        ? { durableRule }
+        : {}),
     });
     return result;
   }
@@ -400,9 +474,10 @@ export function createQuestionCanUseTool(deps: QuestionCanUseToolDeps): CanUseTo
       };
     }
 
-    const allowed =
-      (answer.optionIds ?? []).includes(ALLOW_ONCE_OPTION.id) ||
-      (answer.labels ?? []).some((label) => label === ALLOW_ONCE_OPTION.label);
+    // Both allowing options resolve identically. "Always allow" adds nothing to
+    // *this* result — its durable half is the client's roster edit (§5.1's
+    // 2026-08-18 decision), which is what keeps roster the only composer.
+    const allowed = ALLOWING_OPTIONS.some((option) => chose(answer, option));
     if (allowed) {
       // Input echoed unchanged, and **no `updatedPermissions`**: widening the
       // session's permissions at runtime is the composition roster owns (§5.1).
@@ -488,6 +563,20 @@ export function readAskUserQuestion(
     options,
     multiSelect: first['multiSelect'] === true,
   };
+}
+
+/**
+ * Did this answer pick that option?
+ *
+ * By id *or* by label, because the two answer channels disagree about which one
+ * they carry: a client posting `optionIds` gives the id, while an answer that
+ * came back through the SDK's own label-keyed map (§5.3) gives the label.
+ */
+function chose(answer: QuestionAnswerView, option: QuestionOptionView): boolean {
+  return (
+    (answer.optionIds ?? []).includes(option.id) ||
+    (answer.labels ?? []).some((label) => label === option.label)
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

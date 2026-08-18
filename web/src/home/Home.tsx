@@ -41,7 +41,7 @@ import { phaseWord } from '../assignments/conversation';
 import { Avatar } from '../board/Avatar';
 import { Icon } from '../icons/Sprite';
 import { QuestionCardView } from '../questions/QuestionCardView';
-import { useAnswering } from '../questions/QuestionInbox';
+import { AnsweringNotices, useAnswering } from '../questions/QuestionInbox';
 import { useAppStore } from '../state/store';
 
 import { attentionAssignments, elapsedLabel, recentlyFinished } from './regions';
@@ -123,7 +123,7 @@ export function Home(): ReactElement {
   const roster = useRoster(client);
   const projects = useProjects(client);
 
-  const { busyId, failures, answer } = useAnswering(client, queryClient);
+  const { busyId, failures, notices, answer } = useAnswering(client, queryClient);
 
   const agentsById = useMemo(() => {
     const map = new Map<string, AgentView>();
@@ -160,6 +160,10 @@ export function Home(): ReactElement {
             {failureOf(questions.error)?.message ?? 'The open questions could not be read.'}
           </p>
         ) : null}
+
+        {/* An "Always allow" answer is two writes; the second reports here,
+            because its card has left this region by the time it lands. */}
+        <AnsweringNotices notices={notices} />
 
         {/* The inbox's own card and the inbox's own answer path (§11.3). */}
         <ul className="question-list">

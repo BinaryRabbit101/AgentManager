@@ -68,13 +68,17 @@ interface Options {
   readonly answered?: readonly QuestionCard[];
   readonly one?: QuestionCard;
   readonly answer?: { status: number; body: unknown };
+  /** The roster half of "Always allow" (runner §5.1), when a test varies it. */
+  readonly allow?: { status: number; body: unknown };
 }
 
 function serving(options: Options = {}): {
   respond: Responder;
   answerCalls: { id: string; body: unknown }[];
+  allowCalls: { agentId: string; body: unknown }[];
 } {
   const answerCalls: { id: string; body: unknown }[] = [];
+  const allowCalls: { agentId: string; body: unknown }[] = [];
   // The fixture keeps the server's own record, because "the card moves to
   // Answered" is a fact about the server's lists as much as about the cache.
   let openCards = [...(options.open ?? [])];
@@ -118,12 +122,23 @@ function serving(options: Options = {}): {
         ? json({ error: 'question_not_found', message: `No question ${id} exists.` }, 404)
         : json(card);
     }
+    if (path.endsWith('/permissions/allow')) {
+      const agentId = path.slice(
+        '/api/roster/agents/'.length,
+        -'/permissions/allow'.length,
+      );
+      const body: unknown =
+        typeof init.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined;
+      allowCalls.push({ agentId, body });
+      if (options.allow !== undefined) return json(options.allow.body, options.allow.status);
+      return json({ agent: { definition: { id: agentId } }, rule: '', added: true });
+    }
     if (path === '/api/roster/agents') return json({ agents: [], diagnostics: [] });
     if (path === '/api/projects') return json({ projects: [] });
     if (path.startsWith('/api/sessions/')) return json({ error: 'nope', message: 'no' }, 404);
     return json({ error: 'not_found', message: `No fixture for ${path}.` }, 404);
   };
-  return { respond, answerCalls };
+  return { respond, answerCalls, allowCalls };
 }
 
 function inbox(
@@ -131,10 +146,14 @@ function inbox(
   route = '/questions',
 ): ReturnType<typeof mount> & {
   answerCalls: { id: string; body: unknown }[];
+  allowCalls: { agentId: string; body: unknown }[];
 } {
   const fixture = serving(options);
   const view = mount(<App />, { respond: fixture.respond, route });
-  return Object.assign(view, { answerCalls: fixture.answerCalls });
+  return Object.assign(view, {
+    answerCalls: fixture.answerCalls,
+    allowCalls: fixture.allowCalls,
+  });
 }
 
 describe('one request, cold (§11.1, IMPLEMENTATION §5)', () => {
@@ -452,5 +471,198 @@ describe('the rail badge (§2.2, IMPLEMENTATION §5)', () => {
       await Promise.resolve();
     });
     await waitFor(() => expect(document.querySelector('[data-badge="questions"]')).toBeNull());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "Always allow" — runner DESIGN §5.1's third option (owner decision 2026-08-18)
+// ---------------------------------------------------------------------------
+
+/**
+ * A tool gate carrying the server's derived rule.
+ *
+ * Every field here is the *server's*: runner puts the option in `options` and
+ * the rule and agent in `context`. The UI derives none of it, which is the
+ * property the first test below asserts and the reason the rest are possible.
+ */
+function aToolGate(overrides: Partial<QuestionCard> = {}): QuestionCard {
+  return aCard({
+    id: 'tg1',
+    prompt: 'Claude wants to run npm run build',
+    options: [
+      { id: 'allow', label: 'Allow once' },
+      { id: 'allow-always', label: 'Always allow' },
+      { id: 'deny', label: 'Deny' },
+    ],
+    context: {
+      toolName: 'Bash',
+      toolInput: { command: 'npm run build' },
+      durableRule: 'Bash(npm run:*)',
+      agentId: 'priya',
+    },
+    ...overrides,
+  });
+}
+
+async function clickAlways(): Promise<void> {
+  await act(async () => {
+    await userEvent.setup().click(screen.getByRole('button', { name: /Always allow/u }));
+  });
+}
+
+describe('Always allow (runner §5.1, owner decision 2026-08-18)', () => {
+  it('shows the rule on the button BEFORE the click', async () => {
+    inbox({ open: [aToolGate()] });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Always allow/u })).toBeInTheDocument(),
+    );
+
+    // §11.2's argument about the gated call, applied to the standing permission:
+    // a button that names no scope asks the user to approve what they cannot see.
+    const button = screen.getByRole('button', { name: /Always allow/u });
+    expect(button.textContent).toContain('Bash(npm run:*)');
+    expect(button.textContent).toContain('priya');
+    expect(button.getAttribute('data-durable-rule')).toBe('Bash(npm run:*)');
+  });
+
+  it('makes two calls in order: the answer, then the roster edit', async () => {
+    const view = inbox({ open: [aToolGate()] });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Always allow/u })).toBeInTheDocument(),
+    );
+
+    await clickAlways();
+
+    await waitFor(() => expect(view.allowCalls).toHaveLength(1));
+    expect(view.answerCalls).toEqual([{ id: 'tg1', body: { optionIds: ['allow-always'] } }]);
+    // The rule the server put on the card, sent back verbatim — the UI never
+    // composes one of its own.
+    expect(view.allowCalls[0]).toEqual({
+      agentId: 'priya',
+      body: { rule: 'Bash(npm run:*)' },
+    });
+    // Order is load-bearing: the answer is what releases the agent, and a roster
+    // write must never hold up a call a human already approved.
+    const order = view.calls.filter(
+      (url) => url.endsWith('/answer') || url.endsWith('/permissions/allow'),
+    );
+    expect(order).toEqual([
+      '/api/questions/tg1/answer',
+      '/api/roster/agents/priya/permissions/allow',
+    ]);
+  });
+
+  it('says what was remembered, for whom, and when it applies', async () => {
+    inbox({ open: [aToolGate()] });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Always allow/u })).toBeInTheDocument(),
+    );
+    await clickAlways();
+
+    const notice = await screen.findByText(/remembered for priya/u);
+    // "applies from its next session" is the honest part: the rule is compiled
+    // into the agent's options at launch, so it does nothing to the run that
+    // just continued.
+    expect(notice.textContent).toContain('Bash(npm run:*)');
+    expect(notice.textContent).toContain('applies from its next session');
+    expect(notice.textContent).toContain('Manage in the agent editor');
+    expect(notice.getAttribute('data-answer-notice')).toBe('ok');
+  });
+
+  it('says the call ran and the remembering failed, in the server’s own words', async () => {
+    const view = inbox({
+      open: [aToolGate()],
+      allow: {
+        status: 400,
+        body: {
+          error: 'permission_rule_not_enforceable',
+          message: '"Bash(npm run:*)" was refused: the rule engine would not honour it',
+        },
+      },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Always allow/u })).toBeInTheDocument(),
+    );
+    await clickAlways();
+
+    const notice = await screen.findByText(/was not saved for priya/u);
+    // Never "saved". The call ran; the rule did not land; the user has to know
+    // the card will be back.
+    expect(notice.textContent).toContain('The call was allowed');
+    expect(notice.textContent).toContain('would not honour it');
+    expect(notice.getAttribute('data-answer-notice')).toBe('danger');
+    // And the answer itself still went through, exactly once.
+    expect(view.answerCalls).toHaveLength(1);
+  });
+
+  it('makes no roster call when the answer itself failed', async () => {
+    const view = inbox({
+      open: [aToolGate()],
+      answer: {
+        status: 409,
+        body: { error: 'question_not_open', message: 'That question was already answered.' },
+      },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Always allow/u })).toBeInTheDocument(),
+    );
+    await clickAlways();
+
+    await waitFor(() =>
+      expect(screen.getByText('That question was already answered.')).toBeInTheDocument(),
+    );
+    // Nothing ran, so there is nothing to remember.
+    expect(view.allowCalls).toEqual([]);
+  });
+
+  it('answers once, with no roster call, when the option carries no rule', async () => {
+    // An older core, or a call no rule honestly describes: the option is there
+    // but `context` names no rule, so the click is an ordinary allow-once. It is
+    // never a click that silently drops the remembering it advertised — because
+    // without a rule there is nothing on the button advertising it.
+    const view = inbox({
+      open: [aToolGate({ context: { toolName: 'Bash', toolInput: { command: 'x' } } })],
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Always allow/u })).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole('button', { name: /Always allow/u }).getAttribute('data-durable-rule'),
+    ).toBeNull();
+
+    await clickAlways();
+    await waitFor(() => expect(view.answerCalls).toHaveLength(1));
+    expect(view.allowCalls).toEqual([]);
+  });
+
+  it('leaves a card with only two options alone', async () => {
+    inbox({
+      open: [
+        aToolGate({
+          options: [
+            { id: 'allow', label: 'Allow once' },
+            { id: 'deny', label: 'Deny' },
+          ],
+        }),
+      ],
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Allow once/u })).toBeInTheDocument(),
+    );
+    // The UI never invents an option (§11.2), so a card the server did not
+    // widen stays two buttons even though its context names a rule.
+    expect(screen.queryByRole('button', { name: /Always allow/u })).toBeNull();
+  });
+
+  it('works the same on the deep-link route', async () => {
+    const card = aToolGate();
+    const view = inbox({ one: card }, `/questions/${card.id}`);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Always allow/u })).toBeInTheDocument(),
+    );
+    await clickAlways();
+
+    await waitFor(() => expect(view.allowCalls).toHaveLength(1));
+    expect(await screen.findByText(/remembered for priya/u)).toBeInTheDocument();
   });
 });

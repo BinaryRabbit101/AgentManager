@@ -12,10 +12,15 @@ import type { QuestionCard as Card } from '../api/types';
 import { QUESTION_STRENGTHS } from '../api/types';
 
 import {
+  ALLOW_ALWAYS_OPTION_ID,
+  alwaysAllowFailedMessage,
+  alwaysAllowPreview,
+  alwaysAllowRememberedMessage,
   answerBody,
   askedAgo,
   askedBy,
   canSubmit,
+  durableAllow,
   ENGINE_ATTRIBUTION,
   expiryLabel,
   gatedCall,
@@ -210,5 +215,88 @@ describe('the call being gated (§11.2)', () => {
   it('is absent when the card is not gating a call at all', () => {
     expect(gatedCall(aCard({ context: null }))).toBe(undefined);
     expect(gatedCall(aCard({ context: { toolInput: { command: 'ls' } } }))).toBe(undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "Always allow" — runner §5.1's third option (owner decision 2026-08-18)
+// ---------------------------------------------------------------------------
+
+const ALWAYS_OPTIONS: Card['options'] = [
+  { id: 'allow', label: 'Allow once' },
+  { id: ALLOW_ALWAYS_OPTION_ID, label: 'Always allow' },
+  { id: 'deny', label: 'Deny' },
+];
+
+function aToolGate(overrides: Partial<Card> = {}): Card {
+  return aCard({
+    options: ALWAYS_OPTIONS,
+    context: {
+      toolName: 'Bash',
+      toolInput: { command: 'npm run build' },
+      durableRule: 'Bash(npm run:*)',
+      agentId: 'priya',
+    },
+    ...overrides,
+  });
+}
+
+describe('durableAllow — the rule is the server’s, never derived here', () => {
+  it('reads the rule and the agent off the card', () => {
+    expect(durableAllow(aToolGate())).toEqual({ agentId: 'priya', rule: 'Bash(npm run:*)' });
+  });
+
+  it('is absent unless the server offered the option', () => {
+    // §11.2: the UI never invents an option, and it never invents the write
+    // behind one either.
+    expect(
+      durableAllow(
+        aToolGate({
+          options: [
+            { id: 'allow', label: 'Allow once' },
+            { id: 'deny', label: 'Deny' },
+          ],
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('is absent unless the server named both halves', () => {
+    // Half a target is not a target: guessing the missing half is the one thing
+    // this must never do, because the user approved a specific string.
+    expect(durableAllow(aToolGate({ context: null }))).toBeUndefined();
+    expect(
+      durableAllow(aToolGate({ context: { toolName: 'Bash', agentId: 'priya' } })),
+    ).toBeUndefined();
+    expect(
+      durableAllow(aToolGate({ context: { toolName: 'Bash', durableRule: 'Read' } })),
+    ).toBeUndefined();
+    expect(
+      durableAllow(aToolGate({ context: { durableRule: '', agentId: 'priya' } })),
+    ).toBeUndefined();
+    expect(
+      durableAllow(aToolGate({ context: { durableRule: 'Read', agentId: '' } })),
+    ).toBeUndefined();
+  });
+
+  it('phrases the preview, the success and the half-success', () => {
+    const target = { agentId: 'priya', rule: 'Bash(npm run:*)' };
+
+    expect(alwaysAllowPreview(target)).toBe('adds Bash(npm run:*) to priya');
+
+    const remembered = alwaysAllowRememberedMessage(target);
+    expect(remembered).toContain('remembered for priya');
+    expect(remembered).toContain('Bash(npm run:*)');
+    // The honest half: the rule is compiled at launch, so it does nothing to
+    // the session that just continued.
+    expect(remembered).toContain('applies from its next session');
+    expect(remembered).toContain('Manage in the agent editor');
+
+    const failed = alwaysAllowFailedMessage(target, 'the library is read-only');
+    // Never a word that implies the rule landed.
+    expect(failed).toContain('The call was allowed');
+    expect(failed).toContain('was not saved for priya');
+    expect(failed).toContain('the library is read-only');
+    expect(failed).not.toMatch(/remembered/u);
   });
 });

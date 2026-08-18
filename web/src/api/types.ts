@@ -769,7 +769,22 @@ export interface QuestionCard {
   readonly options: readonly QuestionOption[];
   readonly multiSelect: boolean;
   readonly allowFreeText: boolean;
-  readonly context: { readonly toolName?: string; readonly toolInput?: unknown } | null;
+  /**
+   * The call being gated, plus what remembering it would cost.
+   *
+   * `toolName`/`toolInput` are orchestrator §11.1's. `durableRule` and `agentId`
+   * are runner's, added for the **Always allow** option (runner §5.1, owner
+   * decision 2026-08-18) and carried through orchestrator verbatim — the
+   * envelope stores the context object it was handed and gives it back
+   * unchanged. `durableRule`'s presence is the card's signal that the option is
+   * real: runner omits it whenever no rule honestly describes the call.
+   */
+  readonly context: {
+    readonly toolName?: string;
+    readonly toolInput?: unknown;
+    readonly durableRule?: string;
+    readonly agentId?: string;
+  } | null;
   readonly createdAt: string;
   readonly holdUntil: string | null;
   readonly expiresAt: string | null;

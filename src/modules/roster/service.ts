@@ -54,7 +54,7 @@ import { projectRosterForOverseer, type OverseerRosterEntry } from './overseer.j
 import type { PermissionPolicy, RawPermissionSet } from './permissions.js';
 import type { ProjectContext, SessionToolsetProvider } from './sessionOptions.js';
 import { duplicateAgentId, duplicateDefinition } from './duplicate.js';
-import { RosterValidationError } from './errors.js';
+import { RosterValidationError, issuesFromZod } from './errors.js';
 import { agentIdProblem } from './ids.js';
 import { integrationCredentialStatus, type IntegrationCredentialStatus } from './integrations.js';
 import {
@@ -69,9 +69,11 @@ import {
   AGENT_SCHEMA_VERSION,
   ROLES,
   immutableFieldViolations,
+  permissionRuleSchema,
   type AgentDefinition,
   type Role,
 } from './schema.js';
+import { normaliseAllowRules } from './sdkRules.js';
 import {
   AgentArchivedError,
   AgentIdTakenError,
@@ -221,6 +223,15 @@ export interface ImportResult extends ImportPreview {
 }
 
 /** What `DELETE /agents/:id` answers with. */
+/** What {@link RosterService.allowRule} did, and to what. */
+export interface AllowRuleResult {
+  readonly agent: AgentView;
+  /** The rule as stored — byte for byte the one the caller asked for. */
+  readonly rule: string;
+  /** `false` when the agent already allowed it: a no-op success, not a failure. */
+  readonly added: boolean;
+}
+
 export interface DeleteResult {
   readonly agentId: string;
   /** Where it went, or `null` when it was purged outright. */
@@ -262,6 +273,24 @@ export interface RosterService {
   credentials(id: string): Promise<readonly IntegrationCredentialStatus[]>;
   create(body: unknown): AgentView;
   patch(id: string, body: unknown): AgentView;
+  /**
+   * `POST /agents/:id/permissions/allow` (§6) — append one rule to
+   * `permissions.allow`.
+   *
+   * The narrow write behind the question card's **Always allow** (runner DESIGN
+   * §5.1, owner decision 2026-08-18). Runner never widens a live session's
+   * permissions — `updatedPermissions` is set nowhere — so "remember this" is
+   * expressed as *an explicit roster edit*, which keeps §6.2's "the only
+   * composer" true. The edit goes through {@link RosterService.patch}, so the
+   * rule is validated, persisted, hashed and announced by exactly the code path
+   * the agent editor uses, and the rule shows up in the editor afterwards.
+   *
+   * **Idempotent.** Appending a rule the agent already allows is a success that
+   * writes nothing and emits nothing — a user who taps the card twice, or two
+   * clients answering the same card, must not produce a duplicate rule or a
+   * second `roster.changed`.
+   */
+  allowRule(id: string, body: unknown): AllowRuleResult;
   duplicate(id: string, body: unknown): AgentView;
   remove(id: string, options?: { readonly purge?: boolean }): DeleteResult;
   /**
@@ -721,6 +750,29 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
       const written = persist(next, personaText, roleAddenda);
       settle('updated', [id]);
       return viewOf(written);
+    },
+
+    allowRule(id, body) {
+      const existing = requireLive(id);
+      const rule = readAllowRule(body);
+      const permissions = existing.definition.permissions ?? {};
+      const allow = permissions.allow ?? [];
+
+      // Idempotent by identity, not by "would match the same calls": two rules
+      // that overlap are still two decisions the owner made, and collapsing them
+      // is a normalisation nobody asked this route to perform.
+      if (allow.includes(rule)) {
+        return { agent: viewOf(existing), rule, added: false };
+      }
+
+      // Straight through `patch`: the same validation, the same atomic write,
+      // the same content hash, the same `roster.changed`. A second write path
+      // for one field is how the editor and the card start disagreeing about
+      // what a saved agent looks like.
+      const agent = service.patch(id, {
+        permissions: { ...permissions, allow: [...allow, rule] },
+      });
+      return { agent, rule, added: true };
     },
 
     duplicate(id, body) {
@@ -1309,6 +1361,60 @@ function previewSecrets(secrets: SecretResolver | undefined): SecretResolver {
       return found ?? new Secret(`unresolved:${key}`);
     },
   };
+}
+
+/**
+ * `{ rule }` off the wire, judged by the same grammar an `agent.json` is.
+ *
+ * Three gates, narrowest first, and each one exists because a rule that gets
+ * past it is a permission the owner believes is in force and is not:
+ *
+ * 1. **the schema's** `permissionRuleSchema` — length, whitespace, a balanced
+ *    `Tool(pattern)`. Identical to what the editor's save would apply, so a rule
+ *    this route accepts is a rule the editor would have accepted;
+ * 2. **the engine's**, via {@link normaliseAllowRules}. That function is the
+ *    element's record of which allow rules the SDK *actually* enforces (§6.1's
+ *    fixes 1 and 2). If it would rewrite, drop, or lift the rule into `ask`,
+ *    then the rule the caller showed a human is not the rule that would take
+ *    effect — so this refuses with the normaliser's own diagnostic rather than
+ *    quietly storing something else. Runner's derivation
+ *    (`runner/permissionRules.ts`) is written to never produce one; this is the
+ *    backstop that catches the day it drifts, or a hand-rolled client;
+ * 3. **the definition parser's**, later, when {@link RosterService.patch} reparses
+ *    the whole agent — which is what makes this a real edit rather than a
+ *    special case.
+ */
+function readAllowRule(body: unknown): string {
+  const record = asRecord(body);
+  const raw = record?.['rule'];
+  if (typeof raw !== 'string') {
+    throw new InvalidRosterRequestError(
+      '"rule" is required and must be a permission rule string, for example "Bash(npm run:*)".',
+      'rule',
+    );
+  }
+
+  const parsed = permissionRuleSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new RosterValidationError(
+      'That permission rule is not one this roster can store.',
+      issuesFromZod(parsed.error.issues).map((issue) => ({ ...issue, path: 'rule' })),
+    );
+  }
+
+  const normalised = normaliseAllowRules([parsed.data], 'rule');
+  const kept = normalised.rules[0];
+  if (normalised.rules.length !== 1 || kept !== parsed.data) {
+    const why = normalised.diagnostics[0]?.message ?? 'the SDK’s rule engine would not honour it';
+    throw new RosterServiceError(
+      'permission_rule_not_enforceable',
+      `"${parsed.data}" was refused: ${why}`,
+      400,
+      { rule: parsed.data, ...(kept === undefined ? {} : { wouldBecome: kept }) },
+    );
+  }
+
+  return parsed.data;
 }
 
 /** The declared type for a stored avatar, from its name. `avatar.png` is the

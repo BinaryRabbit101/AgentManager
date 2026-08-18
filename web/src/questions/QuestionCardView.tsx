@@ -24,10 +24,13 @@ import { Link } from 'react-router-dom';
 import type { QuestionCard } from '../api/types';
 
 import {
+  ALLOW_ALWAYS_OPTION_ID,
+  alwaysAllowPreview,
   askedAgo,
   askedBy,
   answerBody,
   canSubmit,
+  durableAllow,
   expiryLabel,
   gatedCall,
   isEngineRaised,
@@ -35,13 +38,26 @@ import {
   STRENGTH_EMPHASIS,
   strengthWord,
   type AnswerDraft,
+  type DurableAllow,
 } from './card';
 
 export interface QuestionCardViewProps {
   readonly card: QuestionCard;
   readonly now: number;
-  /** Answering is one POST; the parent owns the optimistic state (§11.3). */
-  readonly onAnswer: (card: QuestionCard, body: Record<string, unknown>) => void;
+  /**
+   * Answering is one POST; the parent owns the optimistic state (§11.3).
+   *
+   * `durable` is the second, *separate* write behind **Always allow** (runner
+   * §5.1's owner decision 2026-08-18): the pending call is allowed exactly like
+   * *Allow once*, and the standing permission is a roster edit the parent makes
+   * afterwards. This component never composes a rule — it passes on the one the
+   * server put on the card, which is the same one it just showed the user.
+   */
+  readonly onAnswer: (
+    card: QuestionCard,
+    body: Record<string, unknown>,
+    durable?: DurableAllow,
+  ) => void;
   readonly busy?: boolean;
   readonly failureMessage?: string | undefined;
 }
@@ -59,6 +75,10 @@ export function QuestionCardView({
   // The call being gated (§11.1's `context`). "Allow the agent to use Bash?" is
   // not answerable without it.
   const call = gatedCall(card);
+  // Present only when the server offered the third option *and* named the rule
+  // it would add. The card shows that rule on the button, so the user approves a
+  // rule rather than a vibe (runner §5.1, §11.2's argument about the gated call).
+  const durable = durableAllow(card);
   const expires = expiryLabel(card.expiresAt, now);
   const asker = askedBy(card);
 
@@ -190,28 +210,45 @@ export function QuestionCardView({
       ) : (
         <div className="question-card__answer">
           {/* Options exactly as `options_json` gave them (§11.2). */}
-          {card.options.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              className="button question-card__option"
-              data-option-id={option.id}
-              aria-pressed={card.multiSelect ? draft.optionIds.includes(option.id) : undefined}
-              disabled={busy}
-              onClick={() => {
-                if (card.multiSelect) {
-                  toggle(option.id);
-                  return;
-                }
-                onAnswer(card, answerBody(card, { optionIds: [option.id], text: draft.text }));
-              }}
-            >
-              {option.label}
-              {option.description === undefined ? null : (
-                <span className="question-card__option-detail">{option.description}</span>
-              )}
-            </button>
-          ))}
+          {card.options.map((option) => {
+            // The one option that carries a second write. `durable` is undefined
+            // unless the server named both the rule and the agent, so a card
+            // that offers the option without them renders a button that answers
+            // once — never one that silently drops the remembering.
+            const remembering = option.id === ALLOW_ALWAYS_OPTION_ID ? durable : undefined;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                className="button question-card__option"
+                data-option-id={option.id}
+                {...(remembering === undefined ? {} : { 'data-durable-rule': remembering.rule })}
+                aria-pressed={card.multiSelect ? draft.optionIds.includes(option.id) : undefined}
+                disabled={busy}
+                onClick={() => {
+                  if (card.multiSelect) {
+                    toggle(option.id);
+                    return;
+                  }
+                  onAnswer(
+                    card,
+                    answerBody(card, { optionIds: [option.id], text: draft.text }),
+                    remembering,
+                  );
+                }}
+              >
+                {option.label}
+                {remembering === undefined ? null : (
+                  <span className="question-card__option-rule">
+                    {alwaysAllowPreview(remembering)}
+                  </span>
+                )}
+                {option.description === undefined ? null : (
+                  <span className="question-card__option-detail">{option.description}</span>
+                )}
+              </button>
+            );
+          })}
 
           {card.allowFreeText ? (
             <label className="field">

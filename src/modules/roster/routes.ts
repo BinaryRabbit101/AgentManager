@@ -7,6 +7,7 @@
  * POST   /api/roster/agents                 create; id derived from name
  * GET    /api/roster/agents/:id             definition + resolved persona
  * PATCH  /api/roster/agents/:id             partial update; id immutable
+ * POST   /api/roster/agents/:id/permissions/allow  append one rule to permissions.allow (§6)
  * DELETE /api/roster/agents/:id[?purge]     archive, or purge when nothing refers to it
  * POST   /api/roster/agents/:id/duplicate   deep copy + new id
  * GET    /api/roster/agents/:id/avatar      image, or a generated placeholder
@@ -20,7 +21,15 @@
  * POST   /api/roster/import[?commit=true]   preview, then write (§9.4, M9)
  * ```
  *
- * That is the whole of §9.1's table.
+ * That is §9.1's table, plus one route §9.1 does not list.
+ *
+ * `/permissions/allow` is the durable half of the question card's **Always
+ * allow** (runner DESIGN §5.1, owner decision 2026-08-18). It is a route rather
+ * than a `PATCH` from the card because the card knows one rule and nothing else
+ * about the agent, and a `PATCH` carrying a whole `permissions` block assembled
+ * from a stale read is how one client's answer silently reverts another's edit.
+ * Underneath it *is* the `PATCH` — see {@link RosterService.allowRule} — so
+ * there is still exactly one write path.
  *
  * `/import` is **two-phase and the phases share a route**, which is §9.4's
  * shape: the same bytes are read twice, once to describe what would happen and
@@ -178,6 +187,22 @@ export function createRosterRoutes(deps: RosterRoutesDeps): RouteDefinition[] {
       description: 'Partially updates an agent. The id and meta.createdAt are immutable.',
       handler: (req, res) =>
         answering(logger, req, res, () => res.json(service.patch(id(req), req.body))),
+    },
+
+    {
+      method: 'POST',
+      path: `${ROSTER_API_PREFIX}/agents/:id/permissions/allow`,
+      description:
+        'Appends one rule to permissions.allow. Idempotent; the write path is PATCH’s (§6).',
+      handler: (req, res) =>
+        answering(logger, req, res, () => {
+          const result = service.allowRule(id(req), req.body);
+          // 200 either way, and `added` says which happened. A 201 for the write
+          // and a 200 for the no-op would make an idempotent call look like two
+          // different outcomes to a client that only reads the status — and the
+          // whole point is that answering the same card twice is harmless.
+          return res.json(result);
+        }),
     },
 
     {

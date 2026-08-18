@@ -39,6 +39,7 @@ import {
 import { makeLaunchHarness, type LaunchHarness } from './__tests__/launchHarness.js';
 import type { RunnerConfig } from './config.js';
 import {
+  ALLOW_ALWAYS_OPTION,
   ALLOW_ONCE_OPTION,
   createQuestionCanUseTool,
   DENY_OPTION,
@@ -260,6 +261,12 @@ describe('AskUserQuestion answered inside the hold (M7 acceptance 1)', () => {
         'SQLite on disk',
         'Postgres',
       ]);
+      // §5.1's Always-allow is a *tool gate*'s option. An AskUserQuestion card
+      // carries the agent's own options verbatim, and adding one of ours would
+      // both corrupt the label-keyed `answers` map and offer to grant a
+      // permission for a call that is not a permission question at all.
+      expect(bridge.asks[0]?.options).not.toContainEqual(ALLOW_ALWAYS_OPTION);
+      expect(bridge.asks[0]?.context?.durableRule).toBeUndefined();
 
       bridge.answer({
         questionId: 'q-ask',
@@ -451,13 +458,20 @@ describe('a tool call the rules did not decide (M7 acceptance 2 and 3)', () => {
     }
   });
 
-  it('offers exactly Allow-once and Deny, and NO code path sets updatedPermissions', async () => {
+  it('offers Allow-once, Always-allow and Deny, and NO code path sets updatedPermissions', async () => {
     const bridge = manualBridge('q-two');
     const fix = await launch({ bridge });
     try {
       const pending = fix.canUseTool('Write', { file_path: 'x' }, callOptions());
       await settle();
-      expect(bridge.asks[0]?.options).toEqual([ALLOW_ONCE_OPTION, DENY_OPTION]);
+      // §5.1's owner decision of 2026-08-18 added the middle option. The
+      // *reasoning* that kept it off the card is unchanged and is asserted
+      // below: the durable half is a roster edit, never `updatedPermissions`.
+      expect(bridge.asks[0]?.options).toEqual([
+        ALLOW_ONCE_OPTION,
+        ALLOW_ALWAYS_OPTION,
+        DENY_OPTION,
+      ]);
 
       bridge.answer({
         questionId: 'q-two',
@@ -467,12 +481,109 @@ describe('a tool call the rules did not decide (M7 acceptance 2 and 3)', () => {
       });
       const result = (await pending) as Record<string, unknown>;
       expect(result['updatedPermissions']).toBeUndefined();
-      // The whole module, not just this result: "always allow" is a roster or
-      // project edit, never a runtime widening (§5.1).
+      // The whole module, not just this result: "always allow" is a roster
+      // edit, never a runtime widening (§5.1).
       const source = await import('node:fs').then((fs) =>
         fs.readFileSync(new URL('./canUseTool.ts', import.meta.url), 'utf8'),
       );
       expect(source).not.toMatch(/updatedPermissions\s*:/);
+    } finally {
+      fix.close();
+    }
+  });
+
+  it('offers only two options when no rule honestly describes the call', async () => {
+    const bridge = manualBridge('q-nodurable');
+    const fix = await launch({ bridge });
+    try {
+      // A compound command: its first token describes the first clause only, so
+      // there is no prefix rule to offer and the card keeps §5.1's original two.
+      const pending = fix.canUseTool(
+        'Bash',
+        { command: 'git status; rm -rf .' },
+        callOptions(),
+      );
+      await settle();
+      expect(bridge.asks[0]?.options).toEqual([ALLOW_ONCE_OPTION, DENY_OPTION]);
+      expect(bridge.asks[0]?.context?.durableRule).toBeUndefined();
+
+      bridge.answer({
+        questionId: 'q-nodurable',
+        answer: { optionIds: ['deny'] },
+        answeredVia: 'local',
+        answeredAt: new Date().toISOString(),
+      });
+      await pending;
+    } finally {
+      fix.close();
+    }
+  });
+
+  it('carries the derived rule and the agent on the card, so the client re-derives nothing', async () => {
+    const bridge = manualBridge('q-rule');
+    const fix = await launch({ bridge });
+    try {
+      const pending = fix.canUseTool('Bash', { command: 'npm run build' }, callOptions());
+      await settle();
+      expect(bridge.asks[0]?.context).toMatchObject({
+        toolName: 'Bash',
+        durableRule: 'Bash(npm run:*)',
+        agentId: fix.seed.agentId,
+      });
+
+      bridge.answer({
+        questionId: 'q-rule',
+        answer: { optionIds: ['deny'] },
+        answeredVia: 'local',
+        answeredAt: new Date().toISOString(),
+      });
+      await pending;
+    } finally {
+      fix.close();
+    }
+  });
+
+  it('Always-allow resolves as the same allow Allow-once does', async () => {
+    const bridge = manualBridge('q-always');
+    const fix = await launch({ bridge });
+    try {
+      const input = { command: 'npm run build' };
+      const pending = fix.canUseTool('Bash', input, callOptions());
+      await settle();
+      bridge.answer({
+        questionId: 'q-always',
+        answer: { optionIds: ['allow-always'] },
+        answeredVia: 'local',
+        answeredAt: new Date().toISOString(),
+      });
+
+      const result = (await pending) as Record<string, unknown>;
+      // Byte for byte an ordinary allow. The durable half is the client's
+      // roster edit; nothing about *this* session is widened (§5.1).
+      expect(result).toEqual({
+        behavior: 'allow',
+        updatedInput: input,
+        toolUseID: 'toolu_01',
+        decisionClassification: 'user_temporary',
+      });
+    } finally {
+      fix.close();
+    }
+  });
+
+  it('Always-allow chosen by label resolves as an allow too', async () => {
+    const bridge = manualBridge('q-always-label');
+    const fix = await launch({ bridge });
+    try {
+      const pending = fix.canUseTool('Read', { file_path: 'a.ts' }, callOptions());
+      await settle();
+      bridge.answer({
+        questionId: 'q-always-label',
+        answer: { labels: [ALLOW_ALWAYS_OPTION.label] },
+        answeredVia: 'local',
+        answeredAt: new Date().toISOString(),
+      });
+      expect(((await pending) as PermissionResult).behavior).toBe('allow');
     } finally {
       fix.close();
     }

@@ -229,7 +229,10 @@ hold → park → auto-resume sequence (§5.4), expiry, and the `dontAsk` diagno
   showing no intervening `result`.
 - A tool call matching an `ask` rule raises a question; Allow-once continues with the input echoed
   unchanged, Deny returns the user's reason and the transcript records the denial.
-- The card offers only Allow-once and Deny; no code path sets `updatedPermissions`.
+- The card offers Allow-once, Always-allow and Deny (§5.1's owner decision of 2026-08-18); no code
+  path sets `updatedPermissions`. Always-allow resolves as the *same* allow Allow-once does, carries
+  the derived rule on the card as `context.durableRule`, and is offered only when a rule can be
+  derived — never on an `AskUserQuestion` card, and never on a `budget_halt` or `approval_gate`.
 - Letting the hold expire parks the session: `paused` / `awaiting_answer`, slot released, lease kept,
   question still `open`, and the denial message instructs the agent to stop. The agent does not
   attempt a workaround in the remaining turn.
