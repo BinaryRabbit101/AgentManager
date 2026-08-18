@@ -4,3 +4,10 @@
 *.ico binary
 *.vbs text eol=crlf
 *.ps1 text eol=crlf
+
+# `packaging/` holds the transfer archive's setup guide as a template, with
+# `{{COMMIT}}`-style placeholders that `scripts/New-TransferPackage.ps1`
+# substitutes when it writes the stamped copy to the archive root. Shipping the
+# template inside the archive as well would just be a second, un-stamped copy of
+# a document whose whole job is to state which build the reader is holding.
+/packaging/ export-ignore
