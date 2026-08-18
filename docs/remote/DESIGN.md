@@ -15,8 +15,9 @@ Conforms to [architecture.md](../architecture.md) D1–D6 and consumes
 > grants, origin marking, the §6.3 published claim — is identical in both modes and the peer check
 > runs *before* bearer auth. `X-Forwarded-For` is never trusted for authorization. M1–M3's
 > IP-literal rejection stands for `remote.bind` itself (the mode is a keyword, the address lives
-> under `remote.proxy.*`). Implementation of the mode is a post-M6 follow-up; the work edition
-> still never starts any listener of any mode.
+> under `remote.proxy.*`). The mode also moves the phone’s front door to the *proxy host*, whose
+> scheme and port this process never sees; `remote.publicUrl` declares it (§4.2). Implementation of
+> the mode is a post-M6 follow-up; the work edition still never starts any listener of any mode.
 
 **The one-sentence shape of this element**: remote is a *transport*, not a policy layer. It adds a
 second socket, an authentication check, an origin marker, and a per-agent consent gate. It adds no
@@ -286,10 +287,20 @@ not a `SecretStore` read — remote never calls `.reveal()` at all (reconciliati
   deliberate act performed at the machine.
 - **Display-once**: the plaintext is in the creation response body and nowhere else. The UI shows it
   as copyable text **and as a QR code** encoding
-  `http://<magicdns-name>:7478/#t=<token>` — because typing 43 base64url characters into a phone is
+  `<client URL>/#t=<token>` — because typing 43 base64url characters into a phone is
   how a good security decision becomes a user who writes the token in a note app. The token rides in
   the URL **fragment**, which browsers never send to the server, never write to `access.log`, and
   which the client strips from `location` immediately after reading (§8.1).
+- **The client URL is the phone's front door, which is not always this socket.** In tailscale mode it
+  is `http://<magicdns-name>:7478` — the listener the phone opens directly. In proxy mode it is not:
+  `tailscale serve` on the proxy host terminates TLS on a port of its choosing and forwards through a
+  reverse proxy to this listener's LAN socket, so the scheme *and* the port belong to the proxy and
+  this process can discover neither. `remote.hostnameHint` cannot express that — it substitutes the
+  host and keeps this socket's scheme and port, which yields a QR code pointing at a closed port.
+  **`remote.publicUrl`** (§11) declares the whole origin instead and wins outright when set; its
+  hostname also joins §9.2 #8's allowlist, so the name the phone dials is a name this listener
+  answers to. Either way the URL is `null` while nothing is bound: a reachable proxy in front of an
+  unbound listener still leads nowhere.
 - **`maxActive`** (default 10) caps live tokens; the cap is a hygiene guard against accumulating
   forgotten devices, not a security control.
 
@@ -635,8 +646,9 @@ whole point.
 
 ### 8.1 Token acquisition and storage
 
-- **Pairing**: scan the QR from the local settings screen → the phone opens
-  `http://<magicdns>:7478/#t=<token>`. The client reads `location.hash`, stores the token, and calls
+- **Pairing**: scan the QR from the local settings screen → the phone opens the client URL of §4.2
+  with the token as its fragment (`http://<magicdns>:7478/#t=<token>` bound directly,
+  `remote.publicUrl`’s origin behind a proxy). The client reads `location.hash`, stores the token, and calls
   `history.replaceState` to strip it before anything can screenshot or bookmark it. Manual paste is
   always available.
 - **Storage**: `localStorage` under one key, alongside the label the server returned. Not
@@ -685,10 +697,13 @@ whole point.
 7. **`Tailscale-*` request headers are explicitly ignored.** We bind a raw socket rather than sitting
    behind `tailscale serve`, so any such header is attacker-supplied. Identity headers are a *deferred*
    feature (§9.3), and until then trusting them would be strictly worse than not having them.
-8. **`Host` header allowlist** — the bound IP, the MagicDNS name, and `remote.hostnameHint`; anything
-   else gets `421 Misdirected Request`. Defence in depth against DNS rebinding from a browser that is
-   itself on the tailnet. The bearer token already defends this, which is why it is a cheap second
-   layer rather than the primary one.
+8. **`Host` header allowlist** — the bound IP, the MagicDNS name, `remote.hostnameHint`, and
+   `remote.publicUrl`'s hostname; anything else gets `421 Misdirected Request`. Defence in depth
+   against DNS rebinding from a browser that is itself on the tailnet. The bearer token already
+   defends this, which is why it is a cheap second layer rather than the primary one. Both
+   declarations are kept because a proxy that preserves `Host` sends the name the phone dialled
+   (`publicUrl`'s) while one that rewrites it sends whatever the owner declared, and refusing the
+   pair would make one of those deployments unreachable.
 9. **No CORS headers, ever.** The client is served same-origin by this listener; `Access-Control-Allow-Origin`
    is never set. Plus `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a strict CSP
    with no third-party origins, and `Cache-Control: no-store` on every `/api` response.
@@ -760,6 +775,10 @@ listener must not take down a machine that is happily running agents locally.
                                   //   because a config-editable bind address is a hole through D5
   "port": 7478,                   // foundation §2.3
   "hostnameHint": null,           // foundation §2.3; MagicDNS name for the client URL / QR / Host allowlist
+  "publicUrl": null,              // the phone's front door when it is not this socket (§4.2):
+                                  //   a bare origin, e.g. "https://minipc.<tailnet>.ts.net:455".
+                                  //   Wins the client URL whole — scheme, host and port — and its
+                                  //   hostname joins §9.2 #8's allowlist. null = reached directly.
   "detect":      { "cli": null, "pollMs": 30000, "retryMaxMs": 120000 },
   "token":       { "ttlDays": 90, "maxActive": 10 },
   "auth":        { "maxFailures": 10, "failWindowMs": 300000, "blockMs": 900000 },
@@ -778,7 +797,8 @@ extension. `remote.enabled` is deliberately **not** here — it is `settings` (�
 
 Binding outputs the UI element designs against.
 
-1. **Token pairing**: QR encodes `http://<magicdns>:7478/#t=<token>`; the client reads
+1. **Token pairing**: QR encodes `<client URL>/#t=<token>` — `http://<magicdns>:7478` bound
+   directly, `remote.publicUrl` behind a proxy (§4.2); the client reads
    `location.hash`, stores the token in `localStorage`, and `history.replaceState`s it away
    immediately. Plaintext is shown once, at creation, on the local listener only, and is never
    rendered again anywhere (the list shows label + prefix + last-used).

@@ -15,6 +15,10 @@ import {
   REMOTE_BIND_LITERAL,
   REMOTE_BIND_MESSAGE,
   REMOTE_CONFIG_DEFAULTS,
+  REMOTE_PUBLIC_URL_MESSAGE,
+  parsePublicUrl,
+  publicHostname,
+  publicOrigin,
   remoteConfigSchema,
 } from './config.js';
 
@@ -77,6 +81,8 @@ describe('M1 — the namespace is remote-owned and complete (§11)', () => {
       bind: 'tailscale',
       port: 7478,
       hostnameHint: null,
+      // §4.2: null means "the phone reaches this socket directly".
+      publicUrl: null,
       // D5's 2026-08-17 amendment: proxy mode's own block, `null` in the shipped
       // default because the shipped mode is `"tailscale"` (`proxy.test.ts` owns the
       // cross-key rule).
@@ -121,5 +127,58 @@ describe('M1 — the namespace is remote-owned and complete (§11)', () => {
     // Re-asserted from remote's side, because remote is what the invariant protects
     // against (M10 pins it too).
     expect(issues(['--set', 'modules.remote.enabled=true'])).toContain('modules.remote.enabled');
+  });
+});
+
+describe('remote.publicUrl — the front door the core cannot discover (§4.2, §11)', () => {
+  it('accepts a bare origin with an explicit port', () => {
+    const loaded = load(['--set', 'remote.publicUrl=https://minipc.example-tailnet.ts.net:455']);
+
+    expect(loaded.config.remote.publicUrl).toBe('https://minipc.example-tailnet.ts.net:455');
+  });
+
+  it('defaults to null, so tailscale mode keeps building the URL it always built', () => {
+    expect(load().config.remote.publicUrl).toBeNull();
+    expect(REMOTE_CONFIG_DEFAULTS.publicUrl).toBeNull();
+  });
+
+  it.each([
+    ['a path', 'https://minipc.example-tailnet.ts.net:455/agentmanager'],
+    ['a query', 'https://minipc.example-tailnet.ts.net:455?x=1'],
+    ['a fragment — where the token goes', 'https://minipc.example-tailnet.ts.net:455/#t=abc'],
+    ['credentials', 'https://user:pw@minipc.example-tailnet.ts.net:455'],
+    ['a bare host with no scheme', 'minipc.example-tailnet.ts.net:455'],
+    ['a scheme this is not', 'ws://minipc.example-tailnet.ts.net:455'],
+  ])('refuses %s', (_label, value) => {
+    const report = issues(['--set', `remote.publicUrl=${value}`]);
+
+    expect(report).toContain('remote.publicUrl');
+    expect(report).toContain(REMOTE_PUBLIC_URL_MESSAGE);
+  });
+
+  it('parses into the origin the QR uses and the hostname the allowlist wants', () => {
+    expect(parsePublicUrl('https://minipc.example-tailnet.ts.net:455')).toEqual({
+      origin: 'https://minipc.example-tailnet.ts.net:455',
+      hostname: 'minipc.example-tailnet.ts.net',
+    });
+    // A trailing slash is the same origin, and the default port is spelled one way.
+    expect(publicOrigin('https://minipc.example-tailnet.ts.net/')).toBe(
+      'https://minipc.example-tailnet.ts.net',
+    );
+    expect(publicOrigin('https://minipc.example-tailnet.ts.net:443')).toBe(
+      'https://minipc.example-tailnet.ts.net',
+    );
+    expect(publicHostname(null)).toBeNull();
+  });
+
+  it('is orthogonal to the bind mode: a tailscale-mode install may declare one too', () => {
+    const loaded = load([
+      '--set',
+      `remote.bind=${REMOTE_BIND_LITERAL}`,
+      '--set',
+      'remote.publicUrl=https://workstation.example-tailnet.ts.net',
+    ]);
+
+    expect(loaded.config.remote.publicUrl).toBe('https://workstation.example-tailnet.ts.net');
   });
 });

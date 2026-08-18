@@ -454,7 +454,7 @@ export async function createRemoteStreamHarness(
         poll: () => Promise.resolve(),
       },
       settings: storage.store.settings,
-      hostnameHint: null,
+      clientHints: { publicUrl: null, hostnameHint: null },
       logger: quiet(),
       streams,
       grants,

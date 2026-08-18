@@ -15,6 +15,7 @@
     "proxy": null,
     "port": 7478,
     "hostnameHint": null,
+    "publicUrl": null,
     "detect": {
       "cli": null,
       "pollMs": 30000,

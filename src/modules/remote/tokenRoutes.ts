@@ -45,7 +45,7 @@ import type { RouteDefinition } from '../types.js';
 import type { GrantStore } from './grants.js';
 import type { RemoteListener } from './listener.js';
 import { ROUTE_DENIED_CODE } from './policy.js';
-import { clientUrl } from './routes.js';
+import { clientUrl, type RemoteClientHints } from './routes.js';
 import type { StreamRegistry } from './streams.js';
 import { RemoteTokenError, type MintRequest, type RemoteTokenService } from './tokens.js';
 
@@ -53,7 +53,8 @@ export interface TokenRouteDeps {
   readonly tokens: RemoteTokenService;
   readonly listener: RemoteListener;
   readonly settings: SettingsRepository;
-  readonly hostnameHint: string | null;
+  /** §4.2: which origin the QR points at — the front door, or this socket. */
+  readonly clientHints: RemoteClientHints;
   readonly logger: Logger;
   /**
    * §4.5's other half: "Revocation is effective immediately and **also**
@@ -188,7 +189,7 @@ export function createTokenRoutes(deps: TokenRouteDeps): readonly RouteDefinitio
           'minted a remote access token; its plaintext is in this response and nowhere else',
         );
 
-        const base = clientUrl(deps.listener.status(), deps.hostnameHint);
+        const base = clientUrl(deps.listener.status(), deps.clientHints);
         return response.json(
           {
             id: minted.view.id,

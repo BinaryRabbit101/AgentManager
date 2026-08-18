@@ -1017,6 +1017,11 @@ export interface RemoteStatus {
   readonly recentBindFailures: number;
   readonly detectionSource: 'cli' | 'interface' | null;
   readonly mode: string;
+  /**
+   * The origin a phone opens, assembled by the core (remote §4.2): this socket when the phone
+   * reaches it directly, `remote.publicUrl` when a proxy fronts it. Rendered verbatim — the UI
+   * never rebuilds it from `magicDnsName` and `port`, which are wrong behind a proxy.
+   */
   readonly clientUrl: string | null;
   readonly activeTokenCount: number;
   readonly deniedRemotely: readonly DenyListEntry[];

@@ -157,6 +157,57 @@ export const REMOTE_PROXY_UNEXPECTED_MESSAGE =
   'remote.bind to "proxy" to use it, or remove remote.proxy to bind the Tailscale interface ' +
   '(architecture D5, amended 2026-08-17).';
 
+/**
+ * The refusal a `remote.publicUrl` that is not a bare origin produces.
+ *
+ * Named rather than generic, because the reader who typed a path or a token into
+ * this key was describing the same thing the key exists for — where the phone
+ * goes — and needs to be told which part of that this key holds.
+ */
+export const REMOTE_PUBLIC_URL_MESSAGE =
+  'remote.publicUrl must be a bare origin — scheme, host and optional port, nothing else — such ' +
+  'as "https://minipc.example-tailnet.ts.net:455". A path, a query, a fragment or credentials are ' +
+  'refused: this key names the front door a phone opens, and the mint route appends the pairing ' +
+  'token to it as a fragment (§4.2). Leave it null when the phone reaches this listener directly, ' +
+  'which is what tailscale mode does.';
+
+/**
+ * `remote.publicUrl` split into the two facts the rest of the module wants: the
+ * normalised origin the client URL is built from (§4.2), and the hostname that
+ * joins §9.2 #8's `Host` allowlist.
+ *
+ * `null` for anything the key does not accept, which is also what the schema
+ * refines on — one parser, so the validation and the two uses cannot drift.
+ */
+export function parsePublicUrl(
+  value: string,
+): { readonly origin: string; readonly hostname: string } | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  if (url.hostname.length === 0) return null;
+  if (url.username.length > 0 || url.password.length > 0) return null;
+  if (url.pathname !== '/' && url.pathname.length > 0) return null;
+  if (url.search.length > 0 || url.hash.length > 0) return null;
+  // `origin` is the normalised spelling: lower-cased host, and a default port
+  // dropped, so `https://host:443` and `https://host` produce one string.
+  return { origin: url.origin, hostname: url.hostname };
+}
+
+/** The declared origin, or `null` when the key is unset or unparseable. */
+export function publicOrigin(value: string | null): string | null {
+  return value === null ? null : (parsePublicUrl(value)?.origin ?? null);
+}
+
+/** The declared origin's hostname, for §9.2 #8's allowlist. */
+export function publicHostname(value: string | null): string | null {
+  return value === null ? null : (parsePublicUrl(value)?.hostname ?? null);
+}
+
 /** DESIGN §11, key for key. */
 export const remoteConfigSchema = z
   .strictObject({
@@ -178,6 +229,29 @@ export const remoteConfigSchema = z
      * and the `Host` allowlist (§9.2 #8) when the CLI cannot supply one.
      */
     hostnameHint: nonEmpty.nullable(),
+    /**
+     * The origin a phone actually opens, when that is not this listener's own
+     * socket — `https://minipc.example-tailnet.ts.net:455`.
+     *
+     * `hostnameHint` answers "what is this machine called?" and nothing more: the
+     * client URL is still spelled `http://<that name>:<the port this process
+     * bound>` (§4.2). In proxy mode that sentence is wrong in two places at once.
+     * The phone's front door belongs to the proxy host — `tailscale serve`
+     * terminating TLS on a port of its choosing, forwarding to a reverse proxy,
+     * which forwards to this listener's LAN socket — so the scheme and the port
+     * are both the proxy's, and this process can discover neither. Declared here
+     * rather than inferred from hops the core never sees: a QR code carrying this
+     * listener's own port is a QR code that leads to a closed port.
+     *
+     * Set, it wins the client URL outright and its hostname joins §9.2 #8's
+     * allowlist. `hostnameHint` keeps its own job either way, and the two may
+     * name different hosts on purpose — a proxy that rewrites `Host` makes "the
+     * name the phone dials" and "the name this listener is asked for" two
+     * different facts.
+     */
+    publicUrl: nonEmpty
+      .refine((value) => parsePublicUrl(value) !== null, { error: REMOTE_PUBLIC_URL_MESSAGE })
+      .nullable(),
     detect: z.strictObject({
       /**
        * An explicit `tailscale.exe`. `null` searches
@@ -233,6 +307,7 @@ export const REMOTE_CONFIG_DEFAULTS: RemoteConfig = {
   proxy: null,
   port: 7478,
   hostnameHint: null,
+  publicUrl: null,
   detect: { cli: null, pollMs: 30_000, retryMaxMs: 120_000 },
   token: { ttlDays: 90, maxActive: 10 },
   auth: { maxFailures: 10, failWindowMs: 300_000, blockMs: 900_000 },

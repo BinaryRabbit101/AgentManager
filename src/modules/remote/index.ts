@@ -81,7 +81,7 @@ import {
 import { HTTP_PORT_NAME, hasMount, type HttpPort } from './ports.js';
 import { createProxyProver, type AddressProver } from './proxy.js';
 import { createAuthLimiter, createRouteBucket } from './rateLimit.js';
-import { createRemoteRoutes } from './routes.js';
+import { allowedHosts, createRemoteRoutes, type RemoteClientHints } from './routes.js';
 import { createGrantRoutes, createStreamRoutes } from './streamRoutes.js';
 import { createStreamRegistry, type StreamRegistry } from './streams.js';
 import { createTailscaleDetector, type TailscaleDetector } from './tailscale.js';
@@ -98,10 +98,12 @@ export {
   REMOTE_CONFIG_DEFAULTS,
   REMOTE_PROXY_REQUIRED_MESSAGE,
   REMOTE_PROXY_UNEXPECTED_MESSAGE,
+  REMOTE_PUBLIC_URL_MESSAGE,
   remoteConfigSchema,
   remoteProxySchema,
 } from './config.js';
 export type { RemoteBindMode, RemoteConfig, RemoteProxyConfig } from './config.js';
+export { parsePublicUrl, publicHostname, publicOrigin } from './config.js';
 export type { RemoteInternals, RemoteModuleDeps, RemoteModuleOptions } from './options.js';
 export type { RemoteListener, RemoteListenerState, RemoteStatus } from './listener.js';
 export { assertBindable } from './listener.js';
@@ -189,6 +191,13 @@ export function createRemoteModule(
       const config = ctx.config.remote;
       const port = options.port ?? config.port;
       const mode = config.bind;
+      // §4.2's two declarations, read once: they name the origin the QR points at
+      // and the hosts the listener answers to, and those two must be built from
+      // the same pair or a phone gets a URL the guard then refuses.
+      const clientHints: RemoteClientHints = {
+        publicUrl: config.publicUrl,
+        hostnameHint: config.hostnameHint,
+      };
       const log: LogFn = (level, message, data) => {
         ctx.logger[level](data ?? {}, message);
       };
@@ -377,13 +386,10 @@ export function createRemoteModule(
           // §9.2 #8's allowlist. Read per request, because the MagicDNS name and
           // the bound address both change when the tailnet re-keys (§2.3). In proxy
           // mode there is no MagicDNS name here — the tailnet name belongs to the
-          // proxy host — so `remote.hostnameHint` is how the owner declares it.
-          allowedHosts: () => {
-            const status = listener.status();
-            return [status.boundAddress?.address, status.magicDnsName, config.hostnameHint].filter(
-              (entry): entry is string => typeof entry === 'string' && entry.length > 0,
-            );
-          },
+          // proxy host — so `remote.hostnameHint` and `remote.publicUrl` are how
+          // the owner declares it; a proxy that preserves `Host` sends the name
+          // the phone dialled, which is `publicUrl`'s.
+          allowedHosts: () => allowedHosts(listener.status(), clientHints),
           // §3.3's audit line wants the *resolved* path, and the OS is the only
           // thing that can resolve a junction. Audit only: a failure here is
           // swallowed and the requested path is logged instead.
@@ -442,7 +448,7 @@ export function createRemoteModule(
         createRemoteRoutes({
           listener,
           logger: ctx.logger,
-          hostnameHint: config.hostnameHint,
+          clientHints,
           tokens,
           // The live table, read per request: a route registered by a module that
           // starts after remote must still appear in the effective deny list.
@@ -458,7 +464,7 @@ export function createRemoteModule(
           tokens,
           listener,
           settings: ctx.settings,
-          hostnameHint: config.hostnameHint,
+          clientHints,
           logger: ctx.logger,
           // §4.5's two consequences of a revoke: the token's live streams close,
           // and losing the *last* token clears every grant.

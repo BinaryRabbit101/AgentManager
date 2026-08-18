@@ -100,8 +100,8 @@ validation (§9.2 #6) and the `Host` allowlist (#8). Access-log fields per §9.1
 - Every request appears in `access.log` with `origin: 'remote'`, `tokenId`, prefix, peer, and
   `requestId`; a failure appears at `warn`.
 - A connection from a peer outside `100.64.0.0/10` is refused before routing.
-- A request with a foreign `Host` header gets 421; the bound IP, MagicDNS name, and `hostnameHint`
-  all pass.
+- A request with a foreign `Host` header gets 421; the bound IP, MagicDNS name, `hostnameHint`, and
+  `remote.publicUrl`’s hostname all pass.
 - Timing test (statistical, not a single measurement) shows no correlation between response time and
   the number of matching leading bytes.
 
