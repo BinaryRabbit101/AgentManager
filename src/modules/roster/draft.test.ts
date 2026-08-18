@@ -306,6 +306,12 @@ describe('the inert query configuration (SDK-NOTES D5)', () => {
     // That this assignment type-checks is the standing check on the seam.
     const live: DraftQueryFn = realDraftQuery;
     expect(typeof live).toBe('function');
+    // Still 'sonnet' after the M8 latency measurement (2026-08-17): haiku was
+    // tried as the cheap lever and came in ~2.7x slower (79.1 s P50 vs 29.2 s),
+    // so the default stands and prompt size is the open lever. See DRAFT_MODEL.
+    // Pinned as a literal rather than compared to DRAFT_MODEL, because a test
+    // that reads the constant it guards agrees with any future value and
+    // therefore guards nothing.
     expect(draftOptions().model).toBe('sonnet');
   });
 });

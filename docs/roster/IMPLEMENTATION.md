@@ -226,6 +226,16 @@ validation of the draft shape, one repair round-trip with the validation errors 
 - P50 latency measured and recorded; if it exceeds ~8s the model or prompt size is revisited before
   the milestone closes.
 
+  **Settled 2026-08-17 (live, `draft.live.test.ts`).** Both levers were pulled and the number
+  recorded at each step: `sonnet` as first written, **29.2 s**; `haiku` on the same prompt, **79.1
+  s** — the weaker model is ~2.7× *slower* at this task, so that lever is closed; `sonnet` on a
+  trimmed contract (no `model` field, persona ceiling 400 → 220 words, list fields capped),
+  **18.8 s**. The budget is therefore set to **25 s** (`DRAFT_P50_BUDGET_MS`, headroom over the 22.0
+  s worst run) rather than ~8 s, because what stands between 18.8 s and 8 s is the persona itself —
+  the field the wizard exists to produce — and cutting it further would be paid for in draft quality,
+  not in waste. The ~8 s *feeling* is now a ui concern: the wizard should stream or show progress so
+  the wait is visible rather than dead air. Tracked as a ui follow-up; no roster work remains.
+
 ---
 
 ## M9 — Import / export
