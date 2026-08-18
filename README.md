@@ -10,7 +10,7 @@ Successor to the ControlPanel web app, with deeper per-project agent management 
 - **Agent execution**: Claude Agent SDK under the owner's Claude subscription auth (`claude setup-token` → `CLAUDE_CODE_OAUTH_TOKEN`), with a concurrency cap and queue because rate-limit windows are shared with the owner's own Claude usage.
 - **UI**: one web frontend served by the core — wrapped in Electron for the local Windows app, plain browser over the tailnet for remote.
 - **Orchestration**: app-orchestrated — AgentManager routes work between roster agents via an inter-agent messaging layer.
-- **Remote access**: listener binds to the Tailscale interface only, plus a bearer token. Remote access auto-enables when an agent is started remotely.
+- **Remote access**: the listener binds a *proven* address and nothing else — the Tailscale interface, or in proxy mode the single declared LAN address reachable only from the household proxy host that fronts it (D5 as amended) — plus a bearer token. Remote access auto-enables when an agent is started remotely.
 - **Editions**: home edition runs the remote listener; work edition is the same codebase with the listener module disabled and localhost-only binding.
 
 ## Documentation

@@ -16,8 +16,14 @@ Conforms to [architecture.md](../architecture.md) D1–D6 and consumes
 > runs *before* bearer auth. `X-Forwarded-For` is never trusted for authorization. M1–M3's
 > IP-literal rejection stands for `remote.bind` itself (the mode is a keyword, the address lives
 > under `remote.proxy.*`). The mode also moves the phone’s front door to the *proxy host*, whose
-> scheme and port this process never sees; `remote.publicUrl` declares it (§4.2). Implementation of
-> the mode is a post-M6 follow-up; the work edition still never starts any listener of any mode.
+> scheme and port this process never sees; `remote.publicUrl` declares it (§4.2). The work edition
+> still never starts any listener of any mode.
+>
+> **Built and in service since 2026-08-17** (`proxy.ts`, landed with M7–M8), and it is the mode this
+> household actually runs: `tailscale serve :455` on the mini-pc terminates TLS and forwards through
+> nginx on `127.0.0.1:93` to the core’s LAN socket on `:7478`. The boundary suite (M10) exercises
+> both modes, so the D5 proofs — no wildcard bind, no unproven address, no listener at all in the
+> work edition — hold for `"proxy"` exactly as they do for `"tailscale"`.
 
 **The one-sentence shape of this element**: remote is a *transport*, not a policy layer. It adds a
 second socket, an authentication check, an origin marker, and a per-agent consent gate. It adds no
