@@ -11,7 +11,8 @@ additions, and they were built from that same commit.
 
 Read this file first. It is the only file in the archive written for you rather than for
 the project's own developers, and there are a few places where the rest of the
-documentation describes features this edition does not run (see §7).
+documentation describes features this edition does not run (see §8). If you already have
+AgentManager installed and are here to update it, go straight to §7.
 
 ---
 
@@ -134,7 +135,7 @@ directory. What it does, in order:
    later decide you want one, that is `scripts\Register-Autostart.ps1`, run deliberately
    by you; nothing in this edition does it for you.
 6. Creates a Start Menu shortcut. Note it points at the **core launcher**, not at a
-   desktop app — see §8.
+   desktop app — see §9.
 7. Starts the core (windowless, via `launch-core.vbs`) and waits for `/healthz`.
 8. Prints the local URL and the next two steps.
 
@@ -251,13 +252,106 @@ What a correct work-edition install looks like in that report:
 - Listening ports: loopback only. Nothing on `0.0.0.0`, nothing on a LAN address.
 - Scheduled task: absent. That is correct, not a failure.
 - Tailscale section: *"Not checked: Tailscale applies to the home edition only."* Also
-  correct — see §7.
+  correct — see §8.
 
 Then open `http://127.0.0.1:7477` in a browser.
 
 ---
 
-## 7. What is inert in this edition
+## 7. Updating an existing install
+
+Everything above is the first install. When a newer archive arrives, you are replacing the
+contents of the install root **in place** — and that is all. Nothing is re-registered,
+because the installer registered *this folder* rather than a copy of it (§3): the Start
+Menu shortcut, the data root and the edition all point at the path, not at the files.
+
+> **Do not re-run `Install-AgentManager.ps1`, and do not re-run `Setup-Auth.ps1`.** Neither
+> is harmful, but neither does anything an update needs.
+
+### What is not in the archive, and therefore not at risk
+
+All runtime state lives under `%LOCALAPPDATA%\AgentManager` and no part of it travels in
+the zip: the database, the logs, the library and its git history, and the OAuth token in
+the secret store. Your `config.json` there is the machine layer — it outranks the shipped
+`config\defaults.json` that the archive *does* replace, so the `edition: work` you chose at
+install time survives an update even though the defaults file underneath it changes.
+
+### Two things to check in the new archive first
+
+- **`package-lock.json`** — if it differs from the one you have, run `npm ci` after
+  unpacking. If it does not, your `node_modules` is still exactly right and `npm ci` is
+  wasted minutes. (`node_modules` is not in the archive. That is precisely why unpacking
+  *over* an install works and unpacking into an empty folder leaves you with something that
+  will not start.)
+- **`migrations\`** — new files mean a schema change. There is nothing for you to run: the
+  core applies element-owned migrations at its next start. It is worth knowing so that a
+  slower-than-usual first boot reads as expected rather than as a hang.
+
+### The procedure
+
+```powershell
+# 1. Stop the core. This edition has no scheduled task (§4), so ask it over HTTP.
+#    The port is in %LOCALAPPDATA%\AgentManager\run\core.port — 7477 unless you changed it.
+Invoke-RestMethod -Method Post http://127.0.0.1:7477/api/service/shutdown
+
+# 2. Delete the build outputs. The archive carries both, fully built.
+Remove-Item -Recurse -Force .\dist, .\app
+
+# 3. Unpack the new archive over this folder, replacing when prompted.
+
+# 4. Only if package-lock.json changed:
+npm ci                                                                    # or: npm ci --ignore-scripts
+
+# 5. Start it again — the same launcher the Start Menu shortcut uses.
+wscript.exe .\launch-core.vbs
+
+# 6. Confirm.
+powershell -ExecutionPolicy Bypass -File .\scripts\Test-AgentManagerHealth.ps1
+```
+
+Step 1 is not optional in practice. Windows will not overwrite a file the running core
+holds open, and a core that survives the copy carries on serving the old `dist\main.js`
+whatever is now on disk. `uptime` in `/api/health` resetting to a few seconds is how you
+know step 5 actually replaced the process rather than finding one already running.
+
+### Why step 2 is there
+
+Unpacking over a folder **adds and overwrites; it never deletes.** Two kinds of leftover
+accumulate if you skip it:
+
+- **Old hashed web assets** in `app\web\assets\`, one set per build, ~400 KB each.
+  `index.html` names the current hash, so they are dead weight rather than a hazard.
+- **Source files deleted upstream** stay behind. Nothing imports them, so they cannot
+  affect the running core — but they are still compiled by `npm run typecheck:web`, so a
+  file that was deleted for a reason can fail a check on your machine that passes on the
+  machine the archive was built on.
+
+Deleting `dist\` and `app\` handles the first completely. It cannot handle the second,
+because those files live in `src\` and `web\src\` alongside the ones you are keeping.
+
+### If you want an exact tree rather than a merged one
+
+Unpack beside the install instead of into it, carry `node_modules` across, and swap the two
+folders. The install root path never changes, so nothing needs re-registering:
+
+```powershell
+# with the core stopped, from the parent directory
+Expand-Archive .\AgentManager-work-edition-<date>.zip -DestinationPath .\AgentManager.new
+Move-Item .\AgentManager\node_modules .\AgentManager.new\node_modules
+Rename-Item .\AgentManager AgentManager.old
+Rename-Item .\AgentManager.new AgentManager
+cd .\AgentManager
+wscript.exe .\launch-core.vbs
+```
+
+Keep `AgentManager.old` until the health check passes, then delete it. If you added
+anything to the install root yourself — a `.env`, notes, a modified `config\` file — carry
+it across before you do, because a swap is the one method that genuinely discards what you
+do not move.
+
+---
+
+## 8. What is inert in this edition
 
 The archive contains the complete project documentation, and a good deal of it describes
 remote access. **None of it applies to this install.** Treat the following as background
@@ -286,7 +380,7 @@ configuration, and no credentials for it. That project lives elsewhere.
 
 ---
 
-## 8. Other things worth knowing before you start
+## 9. Other things worth knowing before you start
 
 - **There is no packaged desktop app.** `docs/architecture.md` D3 describes the UI as
   "Electron-wrapped locally", and `electron/` source is present and typechecked — but
@@ -323,14 +417,26 @@ configuration, and no credentials for it. That project lives elsewhere.
 
 ---
 
-## 9. The short version
+## 10. The short version
+
+**First install** — from the unpacked folder:
 
 ```powershell
-# from the unpacked folder
 npm ci                                                                              # or: npm ci --ignore-scripts
 powershell -ExecutionPolicy Bypass -File .\scripts\Install-AgentManager.ps1 -Edition work -DryRun
 powershell -ExecutionPolicy Bypass -File .\scripts\Install-AgentManager.ps1 -Edition work
 powershell -ExecutionPolicy Bypass -File .\scripts\Setup-Auth.ps1                   # AFTER the installer; read its last lines — see §5
 powershell -ExecutionPolicy Bypass -File .\scripts\Test-AgentManagerHealth.ps1
 start http://127.0.0.1:7477
+```
+
+**Update** (§7) — from the existing install root, which is where it already lives:
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:7477/api/service/shutdown
+Remove-Item -Recurse -Force .\dist, .\app
+# unpack the new archive over this folder, replacing when prompted
+npm ci                                                                              # only if package-lock.json changed
+wscript.exe .\launch-core.vbs
+powershell -ExecutionPolicy Bypass -File .\scripts\Test-AgentManagerHealth.ps1
 ```
