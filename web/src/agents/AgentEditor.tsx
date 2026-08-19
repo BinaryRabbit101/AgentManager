@@ -15,15 +15,18 @@
  * *is* and what it posts, and this file owns only how it looks and reads.
  */
 
-import type { ReactElement, ReactNode } from 'react';
+import { useState, type ReactElement, type ReactNode } from 'react';
 
 import {
+  EFFORT_LEVELS,
+  MODEL_ALIASES,
   PERMISSION_MODES,
   PERSONA_MODES,
   ROLES,
   SPECIALTIES,
   type Diagnostic,
   type IntegrationCredentialStatus,
+  type Role,
   type SuggestedIntegration,
   type SuggestedSkill,
 } from '../api/types';
@@ -57,6 +60,120 @@ function Rationale({ text }: { readonly text: string | undefined }): ReactElemen
   );
 }
 
+/**
+ * The option value that means "none of the above" in a model picker.
+ *
+ * A sentinel rather than a second control, because the alias and the full id are
+ * one field on the wire (`model.primary`) and splitting them into two inputs
+ * would invent a state the schema cannot hold.
+ */
+const CUSTOM_MODEL = '\u0000custom';
+
+/**
+ * Two dozen emoji that still read at card size (§7.1's "emoji avatar (picker)").
+ *
+ * Curated rather than complete: a full picker is a component, and the field
+ * beside this grid already accepts anything the platform can type. These are
+ * only the shortcuts for the common cases.
+ */
+const AVATAR_EMOJI = [
+  '🐛',
+  '🔍',
+  '🧪',
+  '📐',
+  '🛠️',
+  '⚙️',
+  '📝',
+  '📚',
+  '🧭',
+  '🚦',
+  '🛡️',
+  '🧹',
+  '🚀',
+  '💡',
+  '🎯',
+  '🧠',
+  '🦉',
+  '🦊',
+  '🐙',
+  '🐝',
+  '🐢',
+  '🦫',
+  '🤖',
+  '👻',
+] as const;
+
+/**
+ * `model.primary` / `model.fallback`: a picker over the aliases with an escape.
+ *
+ * roster validates aliases **warn-not-block** (§8) — a `claude-*` id released
+ * after this build must stay typeable — so the closed list cannot be the whole
+ * control. The escape is an option rather than a checkbox because "which of
+ * these, or something else" is one question.
+ */
+function ModelPicker({
+  id,
+  label,
+  customLabel,
+  emptyLabel,
+  value,
+  placeholder,
+  onChange,
+}: {
+  readonly id: string;
+  readonly label: string;
+  readonly customLabel: string;
+  readonly emptyLabel: string;
+  readonly value: string;
+  readonly placeholder?: string;
+  readonly onChange: (value: string) => void;
+}): ReactElement {
+  const isAlias = (MODEL_ALIASES as readonly string[]).includes(value);
+  // Held, not derived, because a custom id the user has cleared back to `''`
+  // must leave the text box on screen rather than snap back to the dropdown.
+  const [chose, setChose] = useState(false);
+  const custom = chose || (value !== '' && !isAlias);
+
+  return (
+    <>
+      <div className="field">
+        <label htmlFor={id}>{label}</label>
+        <select
+          id={id}
+          value={custom ? CUSTOM_MODEL : value}
+          onChange={(event) => {
+            if (event.target.value === CUSTOM_MODEL) {
+              setChose(true);
+              return;
+            }
+            setChose(false);
+            onChange(event.target.value);
+          }}
+        >
+          <option value="">{emptyLabel}</option>
+          {MODEL_ALIASES.map((alias) => (
+            <option key={alias} value={alias}>
+              {alias}
+            </option>
+          ))}
+          <option value={CUSTOM_MODEL}>Custom model id…</option>
+        </select>
+      </div>
+      {custom ? (
+        <div className="field">
+          <label htmlFor={`${id}-custom`}>{customLabel}</label>
+          <input
+            id={`${id}-custom`}
+            value={value}
+            placeholder={placeholder}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export function AgentEditor({
   model,
   onChange,
@@ -69,6 +186,24 @@ export function AgentEditor({
   children,
 }: AgentEditorProps): ReactElement {
   const at = (name: string): string => `${idPrefix}-${name}`;
+
+  // Roles the user asked for through "Add addendum for…". Screen state, not
+  // form state: a revealed box left empty writes nothing at all (the absent-key
+  // rule in `editorModel.ts`), so it is a fact about this view of the agent
+  // rather than about the agent.
+  const [revealed, setRevealed] = useState<readonly Role[]>([]);
+  const [addendaOpen, setAddendaOpen] = useState(
+    ROLES.some((role) => (model.roleAddenda[role] ?? '') !== ''),
+  );
+  // A role keeps its box once it has one — including after the user empties it,
+  // which is how "delete this addendum" is spelled and must stay reachable.
+  const shownAddenda = ROLES.filter(
+    (role) =>
+      model.roles.includes(role) ||
+      model.roleAddenda[role] !== undefined ||
+      revealed.includes(role),
+  );
+  const hiddenAddenda = ROLES.filter((role) => !shownAddenda.includes(role));
 
   return (
     <div className="editor">
@@ -87,11 +222,28 @@ export function AgentEditor({
         </div>
         <div className="field">
           <label htmlFor={at('avatar')}>Avatar emoji</label>
-          <input
-            id={at('avatar')}
-            value={model.avatarEmoji}
-            onChange={(event) => onChange({ avatarEmoji: event.target.value })}
-          />
+          <div className="editor__avatar">
+            <input
+              id={at('avatar')}
+              value={model.avatarEmoji}
+              onChange={(event) => onChange({ avatarEmoji: event.target.value })}
+            />
+            {/* The picker of §7.1, in its modest form. The field stays beside it
+                because the grid is a shortcut, not the set of legal answers. */}
+            <div className="editor__emoji" role="group" aria-label="Pick an emoji">
+              {AVATAR_EMOJI.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  aria-label={`Use ${emoji}`}
+                  aria-pressed={model.avatarEmoji === emoji}
+                  onClick={() => onChange({ avatarEmoji: emoji })}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
         <div className="field">
           <label htmlFor={at('tagline')}>Tagline</label>
@@ -166,30 +318,40 @@ export function AgentEditor({
       <fieldset>
         <legend>Model</legend>
         <Rationale text={rationale['model']} />
-        <div className="field">
-          <label htmlFor={at('model')}>Alias or id</label>
-          <input
-            id={at('model')}
-            value={model.modelPrimary}
-            placeholder="sonnet"
-            onChange={(event) => onChange({ modelPrimary: event.target.value })}
-          />
-        </div>
-        <div className="field">
-          <label htmlFor={at('model-fallback')}>Fallback</label>
-          <input
-            id={at('model-fallback')}
-            value={model.modelFallback}
-            onChange={(event) => onChange({ modelFallback: event.target.value })}
-          />
-        </div>
+        <ModelPicker
+          id={at('model')}
+          label="Alias or id"
+          customLabel="Custom model id"
+          emptyLabel="roster’s default"
+          value={model.modelPrimary}
+          placeholder="claude-opus-4-1-20250805"
+          onChange={(modelPrimary) => onChange({ modelPrimary })}
+        />
+        <ModelPicker
+          id={at('model-fallback')}
+          label="Fallback"
+          customLabel="Custom fallback model id"
+          emptyLabel="none"
+          value={model.modelFallback}
+          placeholder="claude-sonnet-4-5-20250929"
+          onChange={(modelFallback) => onChange({ modelFallback })}
+        />
         <div className="field">
           <label htmlFor={at('model-effort')}>Effort</label>
-          <input
+          {/* A hard Zod enum on the server (roster §8), so there is no custom
+              escape here — a typo would be a 400 nobody could have predicted. */}
+          <select
             id={at('model-effort')}
             value={model.modelEffort}
             onChange={(event) => onChange({ modelEffort: event.target.value })}
-          />
+          >
+            <option value="">default</option>
+            {EFFORT_LEVELS.map((level) => (
+              <option key={level} value={level}>
+                {level}
+              </option>
+            ))}
+          </select>
         </div>
       </fieldset>
 
@@ -270,34 +432,71 @@ export function AgentEditor({
       */}
       <fieldset>
         <legend>Role addenda</legend>
-        <p className="editor__note">
-          Appended after the persona when the orchestrator seats this agent in that role — so one
-          agent can be a plain implementer solo and a sharpened skeptic inside a pair, without a
-          second definition. Empty means no addendum.
-        </p>
-        <Rationale text={rationale['roleAddenda']} />
-        {ROLES.map((role) => (
-          <div className="field" key={role}>
-            <label htmlFor={at(`role-addendum-${role}`)}>
-              {role}
-              {model.roles.includes(role) ? '' : ' (not a listed role)'}
-            </label>
-            <textarea
-              id={at(`role-addendum-${role}`)}
-              rows={3}
-              value={model.roleAddenda[role] ?? ''}
-              placeholder={`How this agent behaves as the ${role}…`}
-              onChange={(event) =>
-                onChange({
-                  // The key is kept even when the box is emptied: an absent key
-                  // means "leave the file alone" and an empty one means "delete
-                  // it", and clearing a textarea is the second (editorModel.ts).
-                  roleAddenda: { ...model.roleAddenda, [role]: event.target.value },
-                })
-              }
-            />
-          </div>
-        ))}
+        {/*
+          Closed unless the agent already has one, because the honest default
+          answer to "what do I write here" is "nothing" — five empty boxes on
+          every entrance said the opposite, loudly, and owners read that as a
+          form they were failing to fill in.
+        */}
+        <details
+          className="editor__addenda"
+          open={addendaOpen}
+          onToggle={(event) => setAddendaOpen(event.currentTarget.open)}
+        >
+          <summary>Role addenda — optional, for team seats</summary>
+          <p className="editor__note">
+            An addendum is extra prompt text appended only when the orchestrator seats this agent in
+            that collaboration role (pair or team assignments). Solo runs never read these — most
+            agents don’t need any. Emptying a box deletes that addendum.
+          </p>
+          <Rationale text={rationale['roleAddenda']} />
+          {shownAddenda.map((role) => (
+            <div className="field" key={role}>
+              <label htmlFor={at(`role-addendum-${role}`)}>
+                {role}
+                {model.roles.includes(role) ? '' : ' (not a listed role)'}
+              </label>
+              <textarea
+                id={at(`role-addendum-${role}`)}
+                rows={3}
+                value={model.roleAddenda[role] ?? ''}
+                placeholder={`How this agent behaves as the ${role}…`}
+                onChange={(event) =>
+                  onChange({
+                    // The key is kept even when the box is emptied: an absent key
+                    // means "leave the file alone" and an empty one means "delete
+                    // it", and clearing a textarea is the second (editorModel.ts).
+                    roleAddenda: { ...model.roleAddenda, [role]: event.target.value },
+                  })
+                }
+              />
+            </div>
+          ))}
+          {hiddenAddenda.length === 0 ? null : (
+            <div className="field">
+              <label htmlFor={at('role-addendum-add')}>Add addendum for…</label>
+              {/* roster §4 keeps the seat list and the addenda independent, so
+                  every role stays reachable here — including ones this agent is
+                  not listed for. */}
+              <select
+                id={at('role-addendum-add')}
+                value=""
+                onChange={(event) => {
+                  const role = event.target.value;
+                  if (role === '') return;
+                  setRevealed([...revealed, role as Role]);
+                }}
+              >
+                <option value="">choose a role…</option>
+                {hiddenAddenda.map((role) => (
+                  <option key={role} value={role}>
+                    {role}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </details>
       </fieldset>
 
       {suggestedSkills.length === 0 ? null : (

@@ -177,6 +177,73 @@
   max-width: var(--measure);
 }
 
+/* The emoji shortcut grid beside the avatar field (§7.1). The typed field keeps
+   its own line above the grid on narrow screens, which is why this wraps rather
+   than sitting in a fixed two-column layout. */
+.editor__avatar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.editor__avatar input {
+  flex: 0 1 12rem;
+}
+
+.editor__emoji {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.editor__emoji button {
+  min-inline-size: 2.25rem;
+  min-block-size: 2.25rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  transition:
+    border-color var(--duration-fast) var(--ease),
+    background-color var(--duration-fast) var(--ease);
+}
+
+.editor__emoji button:hover {
+  background: var(--surface-hover);
+}
+
+.editor__emoji button[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--surface-raised);
+}
+
+/* §15's floor, on the pointer that needs it. */
+@media (pointer: coarse) {
+  .editor__emoji button {
+    min-inline-size: 44px;
+    min-block-size: 44px;
+  }
+}
+
+/* Role addenda, closed until they matter (§7.1). */
+.editor__addenda summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-meta);
+  font-weight: var(--weight-semibold);
+  color: var(--text-muted);
+  border-radius: var(--radius-xs);
+}
+
 .editor textarea {
   inline-size: 100%;
   min-block-size: 6rem;

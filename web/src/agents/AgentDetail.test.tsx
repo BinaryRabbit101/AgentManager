@@ -501,7 +501,7 @@ describe('the connectors summary (§7.3)', () => {
 });
 
 describe('role addenda (roster §4)', () => {
-  it('shows a box per role, filled from the agent, and marks the unlisted ones', async () => {
+  it('opens on the boxes the agent actually has, filled, and marks the unlisted ones', async () => {
     open({
       agent: anAgent({
         id: 'priya',
@@ -511,8 +511,11 @@ describe('role addenda (roster §4)', () => {
     });
 
     const addenda = await screen.findByRole('group', { name: 'Role addenda' });
-    for (const role of ['implementer', 'architect', 'skeptic', 'reviewer', 'overseer']) {
-      expect(within(addenda).getByLabelText(new RegExp(`^${role}`, 'u'))).toBeInTheDocument();
+    // Closed by default, but not when there is something in it to see.
+    expect(addenda.querySelector('details')).toHaveAttribute('open');
+    expect(within(addenda).getAllByRole('textbox')).toHaveLength(1);
+    for (const role of ['implementer', 'architect', 'reviewer', 'overseer']) {
+      expect(within(addenda).queryByLabelText(new RegExp(`^${role}`, 'u'))).toBeNull();
     }
     expect(within(addenda).getByLabelText(/^skeptic/u)).toHaveValue(
       '## As the skeptic\n\nArgue against.\n',
@@ -536,6 +539,9 @@ describe('role addenda (roster §4)', () => {
 
     const addenda = await screen.findByRole('group', { name: 'Role addenda' });
     await user.clear(within(addenda).getByLabelText(/^skeptic/u));
+    // A role with neither a seat nor an addendum is reached through the picker
+    // now (WO1); everything after this line is unchanged, which is the point.
+    await user.selectOptions(within(addenda).getByLabelText('Add addendum for…'), 'architect');
     await user.type(within(addenda).getByLabelText(/^architect/u), 'Draw the seams first.');
     await user.click(screen.getByRole('button', { name: 'Save' }));
 

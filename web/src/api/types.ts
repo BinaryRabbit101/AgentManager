@@ -100,6 +100,27 @@ export type Avatar =
 export const PERMISSION_MODES = ['plan', 'dontAsk', 'default', 'acceptEdits'] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
+/**
+ * roster §8's aliases, as the editor's model picker offers them.
+ *
+ * **Not** an allow-list, and the picker must not pretend otherwise: roster's
+ * schema takes any non-empty string and validates warn-not-block, "because a
+ * model released after this build ships must not make an agent unloadable"
+ * (`schema.ts`). Hence the "Custom model id…" escape beside the dropdown.
+ */
+export const MODEL_ALIASES = ['default', 'best', 'opus', 'sonnet', 'haiku', 'opusplan'] as const;
+export type ModelAlias = (typeof MODEL_ALIASES)[number];
+
+/**
+ * roster §8's effort levels — a **hard** Zod enum, unlike the aliases above.
+ *
+ * That asymmetry is the whole reason this is a closed `<select>` with no custom
+ * escape: a fat-fingered effort is a 400 the user cannot predict, and the only
+ * honest fix is to make the wrong value unspellable.
+ */
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
 /** orchestrator §2.3's pinned five. The role checkboxes, and the addenda. */
 export const ROLES = ['implementer', 'architect', 'skeptic', 'reviewer', 'overseer'] as const;
 export type Role = (typeof ROLES)[number];
