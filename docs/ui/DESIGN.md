@@ -1005,9 +1005,21 @@ tokens — never money — as the unit.
   status is shown when it is not the happy path: `unstructured` renders as "finished without a
   structured report", `blocked` as "waiting on a decision", `failed`/`orphaned` with the exit reason.
 - **Message** — an indented, quieter entry with `from → to`, kind, and body, and the **delivery**
-  state rendered distinctly: `inlined`, `read`, or **`undelivered`** with an explicit "never seen by
-  the recipient" label. Orchestrator §16.5 requires the distinction and it matters: "I sent it and
-  they ignored me" and "I sent it and they never saw it" are different failures.
+  state rendered distinctly: `inlined`, `read`, `undelivered` and `undeliverable`. Orchestrator §16.5
+  requires the distinction and it matters: "I sent it and they ignored me" and "I sent it and they
+  never saw it" are different failures — and so is "I sent it and their turn has not come round yet".
+  So `undelivered` is **two labels, chosen by the assignment's `status`**, which the header already
+  has:
+  - **open** → *"waiting — delivered at ‹recipient›'s next turn"*, naming the recipient from the row
+    itself (a broadcast waits on "each recipient"). Orchestrator §5.1 inlines the mailbox at the
+    recipient's next launch, so while the assignment runs this message is pending, not lost, and it
+    carries no unseen mark — a warning on the happy path is a warning nobody reads.
+  - **closed** → *"never seen by the recipient"*, the same label `undeliverable` carries (with its
+    finality said out loud), and marked as unseen rather than merely coloured (§15).
+
+  Both readings come off `delivery` plus `status`; there is no extra request and nothing derived that
+  the server computes. Labelling a pending message "never seen" while the pair was still running is
+  the defect this replaces: it made a working mailbox look broken.
 - **Question** — the inbox card inlined at the point it was asked, with its recommendations and its
   answer, so the conversation reads as a whole.
 

@@ -43,16 +43,25 @@ export function phaseWord(phase: AssignmentPhase): string {
 }
 
 /**
- * §10.2's delivery ladder, spelled out.
+ * §10.2's delivery ladder, spelled out — and the one word that depends on more
+ * than the value.
  *
  * > "Message entries show `inlined`, `read` and **`undelivered`** distinctly;
  * > the undelivered case is labelled as never seen by the recipient."
  *
- * orchestrator emits a fourth value — `undeliverable`, an `undelivered` message
- * on an assignment that has since closed. It is the same failure, now permanent,
- * so it carries the same "never seen" label with the finality said out loud.
- * "I sent it and they ignored me" and "I sent it and they never saw it" are
- * different failures (orchestrator §16.5), and these words keep them apart.
+ * That last clause is only true once there is no next turn left. orchestrator
+ * §5.1 delivers mail at the recipient's *launch*, so on an **open** assignment
+ * `undelivered` means "not yet, and here is who has to take a turn first" —
+ * calling it "never seen" while the pair is still running says a working
+ * mechanism is broken, which is exactly how it read in the field.
+ *
+ * So the words below are the **settled** ones, for a message whose fate is
+ * decided, and `deliveryWord` swaps in the waiting sentence while a turn can
+ * still deliver it. orchestrator's fourth value, `undeliverable` — an
+ * `undelivered` message on an assignment that has since closed — is the same
+ * failure with the finality said out loud. "I sent it and they ignored me" and
+ * "I sent it and they never saw it" are different failures (orchestrator §16.5),
+ * and now so is "I sent it and they have not had their turn yet".
  */
 export const DELIVERY_WORDS: Readonly<Record<MessageDelivery, string>> = Object.freeze({
   inlined: 'inlined into their next turn',
@@ -61,13 +70,49 @@ export const DELIVERY_WORDS: Readonly<Record<MessageDelivery, string>> = Object.
   undeliverable: 'never seen by the recipient — the assignment closed first',
 });
 
-export function deliveryWord(delivery: MessageDelivery): string {
+/**
+ * What the view knows about a message beyond its delivery value.
+ *
+ * Both fields are already on the screen — the assignment header carries the
+ * status and the message row names its recipient — so nothing here is derived
+ * from anything the server did not send (§4, §18 decision 10), and there is no
+ * new API surface behind this label.
+ */
+export interface DeliveryContext {
+  /** `true` while the assignment is `open`: another turn can still deliver it. */
+  readonly assignmentOpen: boolean;
+  /** The recipient's name as the row shows it; `null` for a broadcast. */
+  readonly recipientName: string | null;
+}
+
+export function deliveryWord(delivery: MessageDelivery, context: DeliveryContext): string {
+  if (delivery === 'undelivered' && context.assignmentOpen)
+    return waitingWord(context.recipientName);
   return DELIVERY_WORDS[delivery] ?? delivery;
 }
 
-/** `true` for the two states that mean the recipient never read it. */
-export function isUnseen(delivery: MessageDelivery): boolean {
-  return delivery === 'undelivered' || delivery === 'undeliverable';
+/**
+ * The pending label, which names *whose* turn the message is waiting on.
+ *
+ * The name is what makes it actionable: "waiting" alone leaves the user
+ * wondering what has to happen, and the answer is always "that seat's next
+ * launch". A broadcast has no single recipient, so it waits on all of them.
+ */
+function waitingWord(recipientName: string | null): string {
+  const whose = recipientName === null ? 'each recipient’s' : `${recipientName}’s`;
+  return `waiting — delivered at ${whose} next turn`;
+}
+
+/**
+ * `true` only when the recipient will never read it.
+ *
+ * The screen marks this state as a problem, so a message that is merely waiting
+ * for its recipient's next turn must not carry the mark — a warning on the
+ * happy path is a warning nobody reads.
+ */
+export function isUnseen(delivery: MessageDelivery, context: DeliveryContext): boolean {
+  if (delivery === 'undelivered') return !context.assignmentOpen;
+  return delivery === 'undeliverable';
 }
 
 /**

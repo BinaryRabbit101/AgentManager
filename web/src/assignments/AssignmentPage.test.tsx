@@ -136,6 +136,7 @@ describe('a completed 3-round pair renders as an ordered, readable dialogue (§1
 
 describe('message entries show inlined, read and undelivered distinctly (§10.2)', () => {
   it('labels the undelivered one as never seen by the recipient', async () => {
+    // The fixture assignment is closed, which is what makes "never" true.
     mountAssignment(serving({}));
     await heading();
 
@@ -158,6 +159,23 @@ describe('message entries show inlined, read and undelivered distinctly (§10.2)
     expect(messages[1]?.querySelector('.message__delivery')?.getAttribute('data-unseen')).toBe(
       'false',
     );
+  });
+
+  it('says an undelivered message is still coming while the assignment is open', async () => {
+    // The same fixture message, on an assignment that has not closed: there is
+    // still a launch to inline it into (orchestrator §5.1), so the label names
+    // whose turn it is waiting on instead of declaring it lost.
+    mountAssignment(
+      serving({
+        assignment: anAssignment({ status: 'open', phase: 'running', closeReason: null }),
+      }),
+    );
+    await heading();
+
+    const messages = [...document.querySelectorAll('.message')];
+    const pending = messages[2]?.querySelector('.message__delivery');
+    expect(pending?.textContent).toBe('waiting — delivered at Sam’s next turn');
+    expect(pending?.getAttribute('data-unseen')).toBe('false');
   });
 
   it('names both ends of every message', async () => {

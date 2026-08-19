@@ -48,28 +48,48 @@ describe('phase, rendered as the word (§10.2)', () => {
 });
 
 describe('delivery, distinctly (§10.2, orchestrator §16.5)', () => {
+  const open = { assignmentOpen: true, recipientName: 'Sam' } as const;
+  const closed = { assignmentOpen: false, recipientName: 'Sam' } as const;
+
   it('gives inlined, read and undelivered three different words', () => {
     const words = new Set([
-      deliveryWord('inlined'),
-      deliveryWord('read'),
-      deliveryWord('undelivered'),
+      deliveryWord('inlined', closed),
+      deliveryWord('read', closed),
+      deliveryWord('undelivered', closed),
     ]);
     expect(words.size).toBe(3);
   });
 
-  it('labels undelivered as never seen by the recipient', () => {
-    expect(deliveryWord('undelivered')).toContain('never seen by the recipient');
+  it('says an undelivered message is waiting on the recipient’s next turn, and names them', () => {
+    // While the assignment is open there *is* a next launch to inline it into
+    // (orchestrator §5.1), so "never seen" would simply be false.
+    expect(deliveryWord('undelivered', open)).toBe('waiting — delivered at Sam’s next turn');
+    expect(deliveryWord('undelivered', open)).not.toContain('never seen');
+    expect(isUnseen('undelivered', open)).toBe(false);
+  });
+
+  it('waits on every recipient when the message was a broadcast', () => {
+    expect(deliveryWord('undelivered', { assignmentOpen: true, recipientName: null })).toBe(
+      'waiting — delivered at each recipient’s next turn',
+    );
+  });
+
+  it('labels undelivered as never seen once the assignment is closed', () => {
+    expect(deliveryWord('undelivered', closed)).toContain('never seen by the recipient');
+    expect(isUnseen('undelivered', closed)).toBe(true);
   });
 
   it('treats orchestrator’s fourth value as the same failure, made permanent', () => {
     // `undeliverable` is an undelivered message on an assignment that has since
-    // closed. The recipient will now never see it, so it carries the same label.
-    expect(deliveryWord('undeliverable')).toContain('never seen by the recipient');
-    expect(deliveryWord('undeliverable')).not.toBe(deliveryWord('undelivered'));
-    expect(isUnseen('undeliverable')).toBe(true);
-    expect(isUnseen('undelivered')).toBe(true);
-    expect(isUnseen('read')).toBe(false);
-    expect(isUnseen('inlined')).toBe(false);
+    // closed. The recipient will now never see it — and unlike `undelivered`,
+    // that is true whatever the caller thinks the assignment's status is.
+    for (const context of [open, closed]) {
+      expect(deliveryWord('undeliverable', context)).toContain('never seen by the recipient');
+      expect(isUnseen('undeliverable', context)).toBe(true);
+    }
+    expect(deliveryWord('undeliverable', closed)).not.toBe(deliveryWord('undelivered', closed));
+    expect(isUnseen('read', closed)).toBe(false);
+    expect(isUnseen('inlined', closed)).toBe(false);
   });
 });
 

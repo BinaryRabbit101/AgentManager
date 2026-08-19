@@ -394,6 +394,8 @@ The engine never parses prose for a verdict. A turn either reported structurally
 ```
 
 Sections 3–5 are the only dynamic parts; templates live in code and are not user-editable in v1.
+Section 2 carries one extra fixed line on a multi-seat pattern — the mailbox tempo, spelled out in
+§5.1 — so that a seat knows a message it sends cannot be answered inside the turn that sent it.
 
 ### 3.3 v1's pattern: the adversarial pair
 
@@ -780,6 +782,32 @@ Therefore:
 prompt; `read_at` (or a `message_reads` row) when an agent actually received it in either way. The UI
 renders undelivered mail distinctly, because "I sent it and they ignored me" and "I sent it and they
 never saw it" are different failures and only one of them is the agent's fault.
+
+**`undelivered` is two different facts, and the UI must not merge them.** On an **open** assignment
+it means *not yet*: row 1 of the table above still applies, and the recipient's next launch will
+inline it. Only once the assignment is closed does it become row 3's `undeliverable` — *never*. The
+conversation view therefore labels an undelivered message on an open assignment as **waiting, naming
+the recipient whose next turn will carry it**, and keeps "never seen by the recipient" for
+`undeliverable` and for undelivered mail on a closed assignment (ui §10.2). Both readings come off
+the same `delivery` value plus the assignment `status` already on the projection — no new field, no
+new endpoint. Saying "never seen" about a message that is still going to arrive is what made a
+working mailbox look broken in the 2026-08-19 pair run.
+
+**The agents are told this too.** Nothing in §3.2's prompt said when sent mail arrives, so a seat
+could message its counterpart and then wait inside its own turn for a reply the sequential driver can
+never produce — one turn burnt, and a failure report written partly on that basis. Section 2 of the
+prompt now carries one fixed sentence on every multi-seat pattern (`pair`, `overseer`), from a single
+constant so the two cannot drift:
+
+> "Messages you send are delivered when the recipient's next turn starts — never mid-turn. Do not
+> wait for a reply in this turn: put everything the recipient needs into the message, finish your own
+> work, and report."
+
+It rides with the seat rather than with section 4 because section 4 exists only when there *is*
+unread mail, and the seat that most needs the rule is the one with an empty inbox about to write into
+someone else's. `solo` does not get it — a lone seat has nobody to message. `send_to_agent`'s
+`recipientWillSeeIt: "at its next turn in this assignment"` (§4.3) is the same claim in the tool's
+own voice, and the two are asserted against each other.
 
 **Not pushing into a live session is a decision, not an omission.** Runner's
 `steer(sessionId, text)` could deliver mail into a running session at the next turn boundary. It is
@@ -1474,7 +1502,10 @@ consumers being lied to.
 5. **The conversation view** is `GET /api/assignments/:id/conversation` (§11.2): rounds → ordered
    entries of `turn | message | question`. Turn excerpts are bounded; the full record is the
    transcript at `GET /api/sessions/:id/transcript`. Message entries carry `delivery`
-   (`inlined | read | undelivered`) and the UI must distinguish undelivered mail.
+   (`inlined | read | undelivered`, plus `undeliverable` once the assignment has closed) and the UI
+   must distinguish undelivered mail — and must distinguish it from *lost* mail: `undelivered` on an
+   open assignment is still going to arrive, and only `undeliverable` (or `undelivered` on a closed
+   assignment) may be labelled "never seen by the recipient" (§5.1).
 6. **Fleet status** is `GET /api/orchestrator/status` (§11.3) with the agent state vocabulary
    `idle | queued | working | awaiting_user | paused | halted`.
 7. **Solo is not a special case.** A drag-and-drop launch calls `POST /api/assignments/solo` and gets

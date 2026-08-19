@@ -14,6 +14,10 @@
  * "Sections 3–5 are the only dynamic parts; templates live in code and are not
  * user-editable in v1."
  *
+ * Section 2 carries one extra fixed line on a multi-seat pattern: `MAILBOX_TEMPO`,
+ * which tells the seat when the mail it sends actually arrives (§5.1). See the
+ * constant for why it is there rather than in section 4.
+ *
  * ## The byte cap is enforced by dropping, not by slicing
  *
  * `orchestrator.prompt.maxBytes` (16 KB) is a hard ceiling, and the sections are
@@ -36,6 +40,27 @@ export const REQUEST_DECISION_TOOL = 'mcp__agentmanager__request_user_decision';
 /** The two an overseer launch also mounts (§4.1's table, §3.5's decompose turn). */
 export const CREATE_ASSIGNMENT_TOOL = 'mcp__agentmanager__create_assignment';
 export const LIST_ROSTER_TOOL = 'mcp__agentmanager__list_roster';
+
+/**
+ * The mailbox's tempo, said out loud to every seat that shares an assignment.
+ *
+ * §5.1's delivery table is a fact about the driver, not about the agent's
+ * intent: mail is inlined **at the recipient's next launch**, and the
+ * sequential driver runs one seat at a time, so a reply inside the sending
+ * turn is not slow — it is impossible. An agent that has not been told this
+ * spends its turn waiting for one (observed 2026-08-19: a critic messaged the
+ * drafter, waited, then reported failure on that basis), which costs a whole
+ * turn and reads to the user as a broken product.
+ *
+ * It sits beside the mailbox inlining so the sentence and the mechanism it
+ * describes stay together, and it is **one constant** so pair and overseer say
+ * exactly the same thing. It is *not* in the solo preamble: a lone seat has
+ * nobody to message and the sentence would be noise.
+ */
+export const MAILBOX_TEMPO =
+  'Messages you send are delivered when the recipient’s next turn starts — never mid-turn. ' +
+  'Do not wait for a reply in this turn: put everything the recipient needs into the message, ' +
+  'finish your own work, and report.';
 
 export interface PromptBudgets {
   readonly maxBytes: number;
@@ -132,7 +157,17 @@ function build(
   sections.push(1);
 
   // --- 2. Your seat --------------------------------------------------------
-  parts.push(section('2. Your seat', [seatSentence(input), intentSentence(input.spec)]));
+  // The tempo rides with the seat rather than with section 4 because section 4
+  // only exists when there *is* unread mail, and the seat that most needs the
+  // rule is the one with an empty mailbox about to write into someone else's.
+  // Section 2 also survives every degradation below, which the rule must.
+  parts.push(
+    section('2. Your seat', [
+      seatSentence(input),
+      intentSentence(input.spec),
+      ...(isMultiSeat(input.patternId) ? [MAILBOX_TEMPO] : []),
+    ]),
+  );
   sections.push(2);
 
   // --- 3. The handoff -----------------------------------------------------
@@ -227,6 +262,18 @@ function build(
   return { text: parts.join('\n\n'), sections };
 }
 
+/**
+ * Patterns where another agent has a mailbox worth writing to (§3.1).
+ *
+ * `overseer` counts even though its workers sit in child assignments: the lead
+ * shares its own assignment with nobody, but §4.3 still mounts `send_to_agent`
+ * for it, and a lead that stalls waiting for a child to answer is the same lost
+ * turn.
+ */
+function isMultiSeat(patternId: string): boolean {
+  return patternId === 'pair' || patternId === 'overseer';
+}
+
 function seatSentence(input: ComposePromptInput): string {
   const of = input.roundCap === null ? '' : ` of ${String(input.roundCap)}`;
   if (input.patternId === 'pair') {
@@ -276,8 +323,7 @@ function intentSentence(spec: PromptSpec): string {
 
 /** One finished child, as §3.5's review turn is given it. */
 function childLines(child: ChildState): readonly string[] {
-  const outcome =
-    child.closeReason === null ? `${child.phase} (not closed)` : child.closeReason;
+  const outcome = child.closeReason === null ? `${child.phase} (not closed)` : child.closeReason;
   const who = child.members.map((member) => `${member.agentId} as ${member.role}`).join(', ');
   const lines = [
     `- ${child.id} [${child.pattern}] — ${child.goal ?? '(no goal recorded)'}`,
@@ -288,11 +334,15 @@ function childLines(child: ChildState): readonly string[] {
   if (child.report !== null) {
     lines.push(`    it reported: ${child.report.state} — ${child.report.headline}`);
     const artifacts = child.report.artifacts.map((artifact) => artifact.path);
-    if (artifacts.length > 0) lines.push(`    files it claims to have touched: ${artifacts.join(', ')}`);
+    if (artifacts.length > 0)
+      lines.push(`    files it claims to have touched: ${artifacts.join(', ')}`);
     const blocking = child.report.verdict?.blocking ?? [];
-    for (const issue of blocking) lines.push(`    it flagged: [${issue.severity}] ${issue.summary}`);
+    for (const issue of blocking)
+      lines.push(`    it flagged: [${issue.severity}] ${issue.summary}`);
   } else {
-    lines.push('    it reported nothing structured, so there is no claim to check — only the file.');
+    lines.push(
+      '    it reported nothing structured, so there is no claim to check — only the file.',
+    );
   }
   return lines;
 }

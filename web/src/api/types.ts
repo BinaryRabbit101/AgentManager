@@ -603,9 +603,14 @@ export type TurnStatus =
  *
  * Four values, not three: `undeliverable` is what an `undelivered` message
  * becomes once the assignment is no longer open — the recipient will now never
- * see it. Both render as "never seen by the recipient" (§10.2), because that is
- * what they mean, and the distinction between "not yet" and "never" is carried
- * by the word beside it.
+ * see it.
+ *
+ * `undelivered` alone is **not** that failure. On an open assignment it means
+ * "not yet": the recipient has a turn coming and the mailbox is inlined at its
+ * launch (orchestrator §5.1). Labelling it "never seen" while the assignment is
+ * still running is simply false, and it made a working mechanism look broken —
+ * so `conversation.ts` reads the assignment's `status` alongside this value and
+ * only says "never" when there is no next turn to say it about.
  */
 export type MessageDelivery = 'inlined' | 'read' | 'undelivered' | 'undeliverable';
 
