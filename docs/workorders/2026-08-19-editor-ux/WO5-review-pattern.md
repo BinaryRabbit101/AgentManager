@@ -51,6 +51,14 @@ template (`patterns.ts`):
   follows the pattern's declared seats (first agent implements, second reviews, swappable like
   pair's seats today).
 
+## Housekeeping inherited from WO3
+
+`src/modules/orchestrator/ports.ts`'s `IntegrationStatePort` still declares the old four-state
+integration union; WO3 added `missing-connector` and the port is reached through a cast, so
+nothing fails to typecheck but the type now lies. Widen it to match roster's
+`INTEGRATION_STATES` (or type it from the roster export if the module boundary allows) while
+you are in the element.
+
 ## Out of scope (say so in the DESIGN amendment)
 
 A 4-seat plan-then-build pattern (architect+skeptic → implementer+reviewer) stays deferred;
