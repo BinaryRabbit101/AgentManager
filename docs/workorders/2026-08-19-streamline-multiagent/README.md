@@ -45,9 +45,12 @@ failure is reproducible from the code alone:
 | WO5 | `WO5-task-templates.md` | roster, orchestrator, ui | WO4 (start flow) |
 | WO6 | `WO6-oauth-connectors.md` | roster, foundation, runner, orchestrator, ui | WO4 (preflight surface) |
 | WO7 | `WO7-token-economy.md` | orchestrator, roster, ui | — |
+| WO8 | `WO8-background-triggers.md` | orchestrator, ui, runner, foundation | WO4, WO5, WO6 |
 
 WO1–WO3 are independent and can run in parallel worktrees. WO4 builds on WO2's artifact
-defaulting; WO5 builds on WO4's start flow.
+defaulting; WO5 builds on WO4's start flow. WO8 (owner ask, 2026-08-19: background agents)
+comes last — it fires WO5 templates on a schedule and refuses unattended launches unless
+WO4/WO6 preflight is green.
 
 ## Rules for every implementing agent
 
