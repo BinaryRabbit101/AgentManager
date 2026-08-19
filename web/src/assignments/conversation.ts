@@ -423,6 +423,28 @@ export function bannerFor(assignment: AssignmentView): AssignmentBanner | undefi
   return undefined;
 }
 
+/**
+ * The artifact a converged pair can hand to a build, or `null` (WO6 item 3).
+ *
+ * Three facts the projection already carries and no new server state: the
+ * pattern is a `pair`, the phase is `converged`, and there is an artifact path.
+ * A pair that converges produces an *accepted document* — that is what its
+ * `critic` seat accepted — so it is the one shape where "act on this" has an
+ * unambiguous object. A `review` converges on the change itself and has nothing
+ * left to hand on; a halted or round-capped pair converged on nothing.
+ *
+ * `scope.artifactPath` is the fallback because the top-level field is the
+ * projection of it (orchestrator §11.1) and a core that served one without the
+ * other should still be readable.
+ */
+export function handoffArtifact(
+  assignment: Pick<AssignmentView, 'pattern' | 'phase' | 'artifactPath' | 'scope'>,
+): string | null {
+  if (assignment.pattern !== 'pair' || assignment.phase !== 'converged') return null;
+  const path = assignment.artifactPath ?? assignment.scope?.artifactPath ?? null;
+  return path === null || path.trim() === '' ? null : path;
+}
+
 /** orchestrator's halt reasons, as sentences. The code is never shown alone. */
 export function haltWord(reason: string | null): string {
   switch (reason) {

@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 
 import { anAgent, json, mount, type Responder } from '../../test/harness';
 import { App } from '../App';
+import { useAppStore } from '../state/store';
 
 import { aConversation, anAssignment, aSoloAssignment } from './fixtures';
 
@@ -352,6 +353,62 @@ describe('halted and converged (§10.2)', () => {
     const banner = document.querySelector('[data-banner="converged"]');
     expect(banner?.textContent).toContain('Converged');
     expect(banner?.textContent).toContain('docs/decision.md');
+  });
+});
+
+/**
+ * WO6 item 3 — a converged plan can be handed to a build.
+ *
+ * Deliberately UI-level: the action opens §6's ordinary Start-work flow with a
+ * prefilled goal, and creates nothing. The human picks who builds it and in
+ * which shape, which is the whole reason there is no engine chaining here.
+ */
+describe('a converged pair can be handed to a build (WO6 item 3)', () => {
+  it('offers the action and opens Start-work prefilled with the artifact and the project', async () => {
+    mountAssignment(serving({}));
+    await heading();
+
+    const action = screen.getByRole('button', { name: 'Start work from this artifact…' });
+    await userEvent.setup().click(action);
+
+    // The store is the contract: one opener, one intent shape (§5.4).
+    const intent = useAppStore.getState().startWork;
+    expect(intent).toEqual({
+      agentIds: [],
+      projectId: 'lpm',
+      origin: 'assignment',
+      goal: 'Implement the accepted plan at docs/decision.md (assignment asg_1)',
+    });
+  });
+
+  it('withholds it from a converged assignment with no artifact', async () => {
+    mountAssignment(serving({ assignment: anAssignment({ artifactPath: null, scope: null }) }));
+    await heading();
+
+    // Nothing to act on: there is no accepted document to point a build at.
+    expect(screen.queryByRole('button', { name: /Start work from this artifact/u })).toBeNull();
+  });
+
+  it('withholds it while the pair is still running', async () => {
+    mountAssignment(
+      serving({
+        assignment: anAssignment({ status: 'open', phase: 'running', closeReason: null }),
+      }),
+    );
+    await heading();
+
+    // "Converged" is what makes the document *accepted*; a draft mid-argument is
+    // not a plan anybody agreed to build.
+    expect(screen.queryByRole('button', { name: /Start work from this artifact/u })).toBeNull();
+  });
+
+  it('withholds it from a review, whose deliverable is already the change', async () => {
+    mountAssignment(
+      serving({ assignment: anAssignment({ pattern: 'review', artifactPath: null, scope: null }) }),
+    );
+    await heading();
+
+    expect(screen.queryByRole('button', { name: /Start work from this artifact/u })).toBeNull();
   });
 });
 

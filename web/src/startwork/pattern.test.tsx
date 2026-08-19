@@ -523,6 +523,11 @@ describe('Team — an overseer lead that decomposes (§3.5, §10.4)', () => {
     await waitFor(() => expect(posts).toHaveLength(1));
     const body = posts[0]?.body ?? {};
     expect(body['pattern']).toBe('overseer');
+    // WO5's rule, re-checked for the pattern WO6 named: `requires.artifactPath`
+    // is false for the overseer, so the derived `docs/…/DRAFT.md` default is not
+    // posted — steering a team lead at a markdown deliverable is exactly what
+    // the pattern declines to ask for (orchestrator §3.5).
+    expect(body['scope']).toEqual({ paths: [] });
     // **One** member: the workers hold seats in the children, never here (§3.5).
     expect(body['members']).toEqual([{ agentId: 'rio', role: 'overseer' }]);
     expect(body['tokenBudget']).toBe(900_000);
@@ -537,6 +542,86 @@ describe('Team — an overseer lead that decomposes (§3.5, §10.4)', () => {
     expect(goal).toContain('Sam (sam)');
     expect(goal).not.toContain('Rio (rio)');
     expect(goal).toContain('the final split is yours');
+  });
+
+  /**
+   * WO6 item 2. The fact was already true and already buried: the workers ride
+   * in goal prose the user never reads, so a user who ticks four agents and
+   * presses Start is otherwise entitled to believe four agents were seated.
+   */
+  it('says before submit that only the lead holds a seat, and how many the others are', async () => {
+    mount(<App />, { route: ROUTE, respond: serving({ agents: THREE }) });
+    openTeam();
+    const sheet = await dialog();
+
+    const user = userEvent.setup();
+    await user.selectOptions(await within(sheet).findByLabelText('Lead'), 'rio');
+
+    const notice = within(sheet).getByText(/holds a seat in this assignment/u);
+    expect(notice).toHaveTextContent('Only Rio holds a seat in this assignment.');
+    expect(notice).toHaveTextContent(
+      'The other 2 agents are suggestions the lead may seat in child assignments',
+    );
+
+    // It follows the lead the user picks, because the sentence is about *this*
+    // seating rather than about the pattern in the abstract.
+    await user.selectOptions(within(sheet).getByLabelText('Lead'), 'ada');
+    expect(within(sheet).getByText(/holds a seat in this assignment/u)).toHaveTextContent(
+      'Only Ada holds a seat in this assignment.',
+    );
+  });
+
+  it('says nothing about seats when the shape is not a team', async () => {
+    mount(<App />, { route: ROUTE, respond: serving({ agents: THREE }) });
+    openTeam();
+    const sheet = await dialog();
+
+    const user = userEvent.setup();
+    await user.click(await within(sheet).findByRole('radio', { name: /Independently/u }));
+    expect(within(sheet).queryByText(/holds a seat in this assignment/u)).toBeNull();
+  });
+});
+
+/**
+ * WO6 item 3, the receiving half: the flow opens on a brief somebody else wrote.
+ *
+ * A prefill on the same terms as every other one here — the field is the field
+ * it always was, and nothing re-seeds it. The sending half (the converged pair's
+ * action) is asserted in `assignments/AssignmentPage.test.tsx`.
+ */
+describe('a goal the opener already knew (WO6 item 3)', () => {
+  it('prefills the task box and ticks nobody', async () => {
+    mount(<App />, { route: ROUTE, respond: serving({}) });
+    open({
+      agentIds: [],
+      projectId: 'lpm',
+      origin: 'assignment',
+      goal: 'Implement the accepted plan at docs/decision.md (assignment asg_1)',
+    });
+    const sheet = await dialog();
+
+    expect(within(sheet).getByLabelText(/What should/u)).toHaveValue(
+      'Implement the accepted plan at docs/decision.md (assignment asg_1)',
+    );
+    // No agents preselected: who builds it is the question this dialog is open
+    // to ask, and a handoff that guessed would answer it for the user.
+    await waitFor(() =>
+      expect(within(sheet).getByRole('checkbox', { name: /^Ada/u })).toBeInTheDocument(),
+    );
+    expect(within(sheet).getByRole('checkbox', { name: /^Ada/u })).not.toBeChecked();
+    expect(within(sheet).getByRole('checkbox', { name: /^Sam/u })).not.toBeChecked();
+  });
+
+  it('hands the field over on the first keystroke, like every other prefill', async () => {
+    mount(<App />, { route: ROUTE, respond: serving({}) });
+    open({ agentIds: [], projectId: 'lpm', origin: 'assignment', goal: 'Implement the plan' });
+    const sheet = await dialog();
+
+    const user = userEvent.setup();
+    const box = within(sheet).getByLabelText(/What should/u);
+    await user.clear(box);
+    await user.type(box, 'Something else entirely');
+    expect(box).toHaveValue('Something else entirely');
   });
 });
 

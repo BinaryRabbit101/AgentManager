@@ -23,6 +23,7 @@ import {
   openAssignmentCounts,
   patternFor,
   patternRequest,
+  planHandoffGoal,
   rankForSeats,
   refusedProjects,
   roleForSeat,
@@ -269,6 +270,23 @@ describe('the overseer’s suggested workers are guidance, and say so (§3.5)', 
     const goal = goalWithWorkers('ship it', [{ id: 'ada', name: 'Ada' }]);
     expect(goal.startsWith('ship it\n\n')).toBe(true);
     expect(goal).toContain('Prefer seating these agents in child assignments');
+  });
+});
+
+describe('the plan → build handoff’s goal (WO6 item 3)', () => {
+  it('names the artifact and the assignment that accepted it', () => {
+    expect(planHandoffGoal('docs/decision.md', 'asg_1')).toBe(
+      'Implement the accepted plan at docs/decision.md (assignment asg_1)',
+    );
+  });
+
+  it('is a sentence and nothing else — no agents, no pattern, no request', () => {
+    // The whole handoff is this string plus the project: what shape the build
+    // takes is the user's next answer, not something the plan decided for them.
+    const goal = planHandoffGoal('docs/plan.md', 'asg_2');
+    expect(goal).toContain('docs/plan.md');
+    expect(goal).toContain('asg_2');
+    expect(goal.split('\n')).toHaveLength(1);
   });
 });
 

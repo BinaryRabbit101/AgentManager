@@ -437,6 +437,7 @@ function promptFor(seat: string, intent: 'implement' | 'reimplement' | 'review_c
     tokensUsed: 0,
     mail: { messages: [], remaining: 0 },
     decisions: [],
+    decisionBudget: ORCHESTRATOR_CONFIG_DEFAULTS.breakers.maxDecisionsPerSession,
     budgets: { maxBytes: 16_384, excerptBytes: 2048 },
   }).text;
 }

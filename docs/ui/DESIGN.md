@@ -618,6 +618,14 @@ token budget.
   required**: the pattern has no default on purpose (orchestrator §7.2), and an uncapped overseer is an
   unbounded tree.
 
+  **The seat count is said out loud, before submit** *(2026-08-19, WO6 item 2)*: *"Only Rio holds a
+  seat in this assignment. The other 2 agents are suggestions the lead may seat in child
+  assignments…"*, naming the chosen lead and counting the rest. The fact was already true and already
+  buried — `suggestedWorkersLine` writes it into goal prose the user never reads — and a user who
+  ticks four agents and presses **Start** is otherwise entitled to believe four agents were seated.
+  The sentence tracks the Lead picker, because it is about *this* seating rather than about the
+  pattern in the abstract.
+
 ### Prerequisites are defaults, not questions *(2026-08-19, WO4 §3)*
 
 The minimal path is **pick a project → tick agents → type the task → Start**, and everything a
@@ -808,6 +816,11 @@ two agents.
 | Agent → agent drop (§5.3) | both agents; the pair radio is what two agents open on |
 | Agent → work-item drop, and the row's **Assign an agent…** | that project, that item |
 | Project card / project page → **Start work…** | that project |
+| Converged pair → **Start work from this artifact…** (§10.2) | that project and a prefilled goal; **no agents** |
+
+The last row is the only intent that carries a **goal**. It is a prefill on the same terms as every
+other one in this flow — the task box is the box it always was, the user's first keystroke owns it,
+and nothing re-seeds it afterwards.
 
 ---
 
@@ -1314,6 +1327,26 @@ resolves it. **Converged** renders the completion summary with the artifact link
 **Actions**: Advance (`POST …/advance` — the manual kick after a halt), Close (with a reason), and
 Edit budget / round cap (`PATCH /api/assignments/:id`, which accepts `tokenBudget`, `roundCap`, `goal`
 only — members and pattern are immutable, so the UI offers no such control).
+
+**Start work from this artifact…** *(2026-08-19, WO6 item 3)* — the plan → build handoff. It appears
+on a **`pair`** whose **`phase` is `converged`** and whose **`scope.artifactPath`** is set, and it
+opens §6's ordinary Start-work flow (the one `StartWorkIntent` store) with the same project, the goal
+*"Implement the accepted plan at `<artifactPath>` (assignment `<id>`)"*, and **no agents ticked**.
+Choosing two agents + **Implement and review** is then the natural build step; a solo is a legitimate
+one.
+
+Three things it deliberately is not. It is not **engine chaining**: when a pair converges the result
+is an accepted document and the assignment closes, and until now nothing offered to act on it — but
+the human picks who builds it and in which shape, and no assignment exists until they press the
+button they always press. It creates **no server state**: it is a navigation affordance over two
+fields the projection already carries. And it is the only pattern it is offered for — a `review`
+converges on the change itself and has nothing left to hand on; a halted or round-capped pair
+converged on nothing. It is enabled while the assignment is **closed**, unlike every other action
+here, because a converged pair is closed by definition and that is the point.
+
+The completion "card" is §10.2's converged **banner** — the question inbox has only `question`,
+`approval_gate` and `budget_halt` (§11.2), none of which a completion is — so there is no second
+surface to carry this action and none was invented.
 
 ### 10.3 A solo assignment is not a special case
 

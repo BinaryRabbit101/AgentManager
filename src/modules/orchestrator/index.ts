@@ -163,6 +163,7 @@ export {
 } from './toolset.js';
 export {
   TOOLING_GUARDRAIL,
+  askTheUserParagraph,
   composePrompt,
   type ComposedPrompt,
   type ComposePromptInput,

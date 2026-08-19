@@ -626,7 +626,7 @@ The engine never parses prose for a verdict. A turn either reported structurally
 4. Unread mail             up to mailbox.inlineMax messages, oldest first, then "N older — call read_mailbox"
 5. Open decisions          any open question card for this assignment + how to state a stance (§6.4)
 6. Termination rules       rounds remaining, budget remaining, what convergence means here
-7. Tools and integrations  the fixed no-scavenging paragraph (below)
+7. Tools and integrations  the fixed no-scavenging paragraph, then the ask-the-user paragraph (below)
 8. Required close          "Before you finish, call mcp__agentmanager__report_status with your verdict."
 ```
 
@@ -649,11 +649,34 @@ a key" is a plausible next step for a model given a job and no exit — so the p
 forbidden move and the *fast* one in the same breath, and it is a constant rather than a template
 because a rule that varies by pattern is a rule an author has to re-audit per pattern.
 
+**Section 7 carries a second fixed paragraph — the ask-the-user rule** (`askTheUserParagraph` in
+`prompt.ts`, WO6 item 1), also emitted for every pattern and seat, solo included:
+
+> *"When the goal is ambiguous, or you face a consequential choice the goal does not settle (scope,
+> approach, a destructive action, an external side effect), call
+> `mcp__agentmanager__request_user_decision` rather than guessing — a wrong guess wastes the whole
+> assignment, a question costs one card. Ask only when it matters: you have a budget of ‹N›
+> decisions per session."*
+
+`request_user_decision` is mounted for **every** seat (§4.3) and, until this paragraph existed, the
+composed prompt named it only *reactively*: §6.4's stance solicitation in section 5 needs a card
+somebody else already opened. Nothing ever told a seat it could open one — so an agent handed an
+ambiguous goal guessed, because guessing was the only move it had been given, and a wrong guess
+costs the whole assignment while a question costs one card. It sits beside the guardrail because
+both paragraphs are about the same thing: reaching outside this turn for something the turn does not
+have — a connector in one case, an answer in the other — and both name the sanctioned move rather
+than only the forbidden one.
+
+‹N› is **interpolated from `breakers.maxDecisionsPerSession`** (§8.1, default 3), never written into
+the prose. That cap is configurable and is what `toolset.ts` refuses the next `request_user_decision`
+with; a hard-coded number would be a budget the prompt promises and the tool denies.
+
 Two consequences for the byte cap. Section 7 is **not** in the degradation ladder — 3, 4 and 5 are
 dropped, and a prompt small enough to lose the guardrail is one that had already lost the goal — and
 the pathological final slice now cuts the *head* rather than the tail, so sections 7 and 8 survive it
 whole. Cutting at `maxBytes` from the end used to take the tooling rule and the required close with
-it, which is precisely backwards about which bytes are disposable.
+it, which is precisely backwards about which bytes are disposable. Both of section 7's paragraphs
+inherit that protection.
 
 ### 3.3 v1's pattern: the adversarial pair
 

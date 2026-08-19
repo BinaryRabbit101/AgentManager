@@ -224,8 +224,15 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
     [openItems, selectedItems],
   );
 
-  const [task, setTask] = useState('');
-  const [taskSeeded, setTaskSeeded] = useState(false);
+  /**
+   * The brief, prefilled when the opener already knew one (WO6 item 3).
+   *
+   * `taskSeeded` starts `true` in that case, which is what stops the work-item
+   * seed below from writing over a sentence the user was handed — the same
+   * ownership rule the template goal and the artifact path already keep.
+   */
+  const [task, setTask] = useState(intent.goal ?? '');
+  const [taskSeeded, setTaskSeeded] = useState(intent.goal !== undefined);
   const [role, setRole] = useState<string | undefined>(undefined);
   const [write, setWrite] = useState(false);
 
@@ -1190,9 +1197,19 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
                   so the others ride in the goal as a preference. Saying that out
                   loud is the whole point of this sentence: the lead has
                   `list_roster` and decides.
+
+                  WO6 item 2 made it say the *count* and the lead's name too. The
+                  fact was already true and already buried — `suggestedWorkersLine`
+                  writes it into goal prose the user never reads — and a user who
+                  ticks four agents and presses Start is otherwise entitled to
+                  believe four agents were seated. It is stated here, before
+                  submit, where the human is still deciding.
                 */}
-                <p className="startwork__note" data-workers="suggested">
-                  The others are suggestions — the lead decides the final split, and mints a child
+                <p className="startwork__note" data-workers="suggested" data-seats="team">
+                  Only {leadId === null ? 'the lead' : nameFor(agents, leadId)} holds a seat in this
+                  assignment. The other {String(Math.max(0, count - 1))}{' '}
+                  {count === 2 ? 'agent is a suggestion' : 'agents are suggestions'} the lead may
+                  seat in child assignments — the lead decides the final split, and mints a child
                   assignment for each piece of work.
                 </p>
               </>

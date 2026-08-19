@@ -230,6 +230,25 @@ export function suggestedWorkersLine(
   );
 }
 
+/**
+ * The brief a build inherits from a converged plan (WO6 item 3).
+ *
+ * A **sentence**, not a mechanism. When a pair converges the result is an
+ * accepted document and the assignment closes, and until now nothing offered to
+ * act on it — so the plan sat in `docs/` and the build it argued for was a thing
+ * somebody had to remember to start. This is the whole of the handoff: the goal
+ * the ordinary Start-work flow opens prefilled with, naming the file and the
+ * assignment that produced it so the next seats can read both.
+ *
+ * Deliberately *not* an engine chain. The user picks who builds it and in which
+ * shape — two agents and `review` is the natural answer, solo is a legitimate
+ * one — and no assignment is created until they press the same button they
+ * always press.
+ */
+export function planHandoffGoal(artifactPath: string, assignmentId: string): string {
+  return `Implement the accepted plan at ${artifactPath} (assignment ${assignmentId})`;
+}
+
 /** The goal as posted for a team: the brief, then the suggestion, as prose. */
 export function goalWithWorkers(
   goal: string,

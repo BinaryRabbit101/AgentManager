@@ -12,10 +12,12 @@ import { describe, expect, it } from 'vitest';
 import type { InlinedMail } from './messages.js';
 import type { PromptSpec } from './patterns.js';
 import {
+  askTheUserParagraph,
   byteLength,
   composePrompt,
   MAILBOX_TEMPO,
   REPORT_STATUS_TOOL,
+  REQUEST_DECISION_TOOL,
   TOOLING_GUARDRAIL,
   type ComposePromptInput,
 } from './prompt.js';
@@ -37,6 +39,7 @@ function input(overrides: Partial<ComposePromptInput> = {}): ComposePromptInput 
     tokensUsed: 12_000,
     mail: NO_MAIL,
     decisions: [],
+    decisionBudget: 3,
     budgets: { maxBytes: 16_384, excerptBytes: 2048 },
     ...overrides,
   };
@@ -383,5 +386,60 @@ describe('the no-scavenging guardrail (§3.2 section 7, WO6)', () => {
     expect(squeezed.truncated).toBe(true);
     expect(squeezed.text).toContain(TOOLING_GUARDRAIL);
     expect(squeezed.text).toContain('## 8. Required close');
+  });
+});
+
+/**
+ * WO6 item 1. `request_user_decision` was mounted for every seat and named by no
+ * prompt except reactively (§6.4's stance solicitation, which needs a card
+ * somebody else already opened) — so an agent handed an ambiguous goal guessed,
+ * because guessing was the only move it had been given.
+ */
+describe('the ask-the-user paragraph (§3.2 section 7, WO6 item 1)', () => {
+  const SEATS: readonly { readonly patternId: string; readonly spec: PromptSpec }[] = [
+    { patternId: 'solo', spec: { intent: 'work', seat: 'solo', round: 1 } },
+    { patternId: 'pair', spec: { intent: 'draft', seat: 'drafter', round: 1 } },
+    { patternId: 'pair', spec: { intent: 'critique', seat: 'critic', round: 1 } },
+    { patternId: 'review', spec: { intent: 'implement', seat: 'implementer', round: 1 } },
+    { patternId: 'review', spec: { intent: 'review_changes', seat: 'reviewer', round: 1 } },
+    { patternId: 'overseer', spec: { intent: 'decompose', seat: 'lead', round: 1 } },
+    { patternId: 'overseer', spec: { intent: 'review', seat: 'lead', round: 2 } },
+  ];
+
+  for (const { patternId, spec } of SEATS) {
+    it(`is present verbatim for ${patternId}/${spec.intent}`, () => {
+      const composed = composePrompt(input({ patternId, spec }));
+      expect(composed.text).toContain(askTheUserParagraph(3));
+      expect(composed.text).toContain('## 7. Tools and integrations');
+    });
+  }
+
+  it('names the tool and the reason to call it rather than guess', () => {
+    const paragraph = askTheUserParagraph(3);
+    expect(paragraph).toContain('When the goal is ambiguous');
+    expect(paragraph).toContain(REQUEST_DECISION_TOOL);
+    expect(paragraph).toContain('rather than guessing');
+    expect(paragraph).toContain('a wrong guess wastes the whole assignment');
+  });
+
+  it('interpolates the configured budget rather than a prose number', () => {
+    // `breakers.maxDecisionsPerSession` is configurable, and a hard-coded "3"
+    // would be a promise the toolset's own refusal contradicts.
+    expect(composePrompt(input({ decisionBudget: 5 })).text).toContain(
+      'you have a budget of 5 decisions per session',
+    );
+    expect(composePrompt(input({ decisionBudget: 5 })).text).not.toContain('budget of 3 decisions');
+    // Singular reads as English too — a cap of one is a legal configuration.
+    expect(composePrompt(input({ decisionBudget: 1 })).text).toContain(
+      'you have a budget of 1 decision per session',
+    );
+  });
+
+  it('survives every degradation, including the pathological slice', () => {
+    const squeezed = composePrompt(
+      input({ mail: mail(40, 'x'.repeat(400)), budgets: { maxBytes: 4_000, excerptBytes: 200 } }),
+    );
+    expect(squeezed.truncated).toBe(true);
+    expect(squeezed.text).toContain(askTheUserParagraph(3));
   });
 });

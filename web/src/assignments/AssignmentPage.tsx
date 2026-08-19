@@ -42,6 +42,7 @@ import type {
 import { useServices } from '../app/AppContext';
 import { Avatar } from '../board/Avatar';
 import { KIND_LABELS, STRENGTH_EMPHASIS, strengthWord } from '../questions/card';
+import { planHandoffGoal } from '../startwork/model';
 import { useAppStore } from '../state/store';
 
 import {
@@ -53,6 +54,7 @@ import {
   deliveryWord,
   entryKey,
   type DeliveryContext,
+  handoffArtifact,
   hasTurnInFlight,
   isSolo,
   isUnseen,
@@ -541,11 +543,18 @@ function QuestionEntry({
  * `PATCH /api/assignments/:id` "accepts `tokenBudget`, `roundCap`, `goal` only,
  * so the UI offers no such control" for members or pattern. That sentence is
  * the entire contents of this component's form.
+ *
+ * Plus one that writes nothing at all: **Start work from this artifact…** (WO6
+ * item 3), which is a navigation affordance over `phase` and `scope.artifactPath`
+ * and creates no server state of its own.
  */
 function AssignmentActions({ assignment }: { readonly assignment: AssignmentView }): ReactElement {
   const { client } = useServices();
   const queryClient = useQueryClient();
   const pushToast = useAppStore((store) => store.pushToast);
+  const openStartWork = useAppStore((store) => store.openStartWork);
+  /** The accepted document a build can be started from, or `null` (WO6 item 3). */
+  const handoff = handoffArtifact(assignment);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [tokenBudget, setTokenBudget] = useState(
@@ -603,6 +612,35 @@ function AssignmentActions({ assignment }: { readonly assignment: AssignmentView
       >
         Edit budget &amp; round cap
       </button>
+
+      {/*
+        The plan → build handoff (WO6 item 3).
+
+        Enabled on a *closed* assignment, unlike everything above it, because a
+        converged pair is closed by definition — this is the one action whose
+        whole point is that the work here is finished. It starts nothing: it
+        opens §6's ordinary flow with the project and a goal naming the artifact,
+        and no agents ticked, so the human picks who builds it and in what shape.
+        Two agents on `review` is the natural next step; a solo is a legitimate
+        one. No engine chaining, and no new server state.
+      */}
+      {handoff === null ? null : (
+        <button
+          type="button"
+          className="button"
+          data-action="start-from-artifact"
+          onClick={() => {
+            openStartWork({
+              agentIds: [],
+              projectId: assignment.projectId,
+              origin: 'assignment',
+              goal: planHandoffGoal(handoff, assignment.id),
+            });
+          }}
+        >
+          Start work from this artifact…
+        </button>
+      )}
 
       {editing ? (
         <form

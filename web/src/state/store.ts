@@ -65,7 +65,19 @@ export interface StartWorkIntent {
    * `home` is the way in that arrives with *neither* an agent nor a project:
    * the others all come from a card, a row or a drop that already names one.
    */
-  readonly origin: 'drag' | 'agent-menu' | 'project' | 'work-item' | 'home';
+  readonly origin: 'drag' | 'agent-menu' | 'project' | 'work-item' | 'home' | 'assignment';
+  /**
+   * A brief the opener already knows, seeded into the task box (WO6 item 3).
+   *
+   * A **prefill**, on exactly the terms every other one in this flow has: the
+   * field is the field it always was, the user's first keystroke owns it, and
+   * nothing here re-seeds it afterwards. It exists because "start work from this
+   * converged artifact" is a sentence the assignment view can write and the user
+   * should not have to retype — and writing it into the ordinary flow, rather
+   * than into a second dialog or an engine hop, is what keeps the human in the
+   * loop between a plan and the build that acts on it.
+   */
+  readonly goal?: string;
   /**
    * A work item dropped on, or picked from a row's `⋯` (§5.3, §8.2 region 4).
    *

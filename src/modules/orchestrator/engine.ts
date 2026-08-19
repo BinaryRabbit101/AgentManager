@@ -655,6 +655,9 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
         inlineMaxBytes: config.mailbox.inlineMaxBytes,
       }),
       decisions: solicitations(state),
+      // The same cap `toolset.ts` refuses a fourth `request_user_decision` with
+      // (§8.1), so section 7's paragraph cannot promise a budget the tool denies.
+      decisionBudget: config.breakers.maxDecisionsPerSession,
       budgets: { maxBytes: config.prompt.maxBytes, excerptBytes: config.prompt.excerptBytes },
     });
 

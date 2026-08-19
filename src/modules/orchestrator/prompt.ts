@@ -8,7 +8,7 @@
  * 4. Unread mail        up to mailbox.inlineMax messages, oldest first, then "N older — call read_mailbox"
  * 5. Open decisions     any open question card for this assignment + how to state a stance (§6.4)
  * 6. Termination rules  rounds remaining, budget remaining, what convergence means here
- * 7. Tools and integrations  the fixed no-scavenging rule (WO6)
+ * 7. Tools and integrations  the fixed no-scavenging rule, then the ask-the-user rule (WO6)
  * 8. Required close     "Before you finish, call mcp__agentmanager__report_status with your verdict."
  * ```
  *
@@ -89,6 +89,40 @@ export const TOOLING_GUARDRAIL =
   'keys — that is always the wrong move, and the block report is the fast path to getting the ' +
   'connector fixed.';
 
+/**
+ * §3.2 section 7's second fixed paragraph — the ask-the-user rule (WO6 item 1).
+ *
+ * `request_user_decision` is mounted for every seat (§4.3), and until this
+ * paragraph existed the composed prompt mentioned it *reactively* only: section
+ * 5 solicits a stance on a card somebody else already opened. Nothing ever told
+ * a seat it could open one. So the observed behaviour was the behaviour the
+ * prompt asked for — an agent handed an ambiguous goal guessed, because guessing
+ * was the only move it had been given.
+ *
+ * It sits beside `TOOLING_GUARDRAIL` for the same two reasons that one sits
+ * where it does: section 7 is outside the degradation ladder, so the rule
+ * survives every path a prompt can take to fit the byte cap, and both paragraphs
+ * are about *reaching outside this turn for something the turn does not have* —
+ * a connector in one case, an answer in the other. Both name the sanctioned move
+ * rather than only the forbidden one, because a prohibition on its own leaves
+ * the agent with the same problem and one fewer idea.
+ *
+ * A **function** rather than a constant because of the last clause: the budget
+ * is `breakers.maxDecisionsPerSession` (§8.1), it is configurable, and a prose
+ * "3" would be a number the prompt claims and the toolset refuses. The seat is
+ * told the same cap the refusal will quote.
+ */
+export function askTheUserParagraph(maxDecisionsPerSession: number): string {
+  const budget = String(maxDecisionsPerSession);
+  return (
+    'When the goal is ambiguous, or you face a consequential choice the goal does not settle ' +
+    '(scope, approach, a destructive action, an external side effect), call ' +
+    `${REQUEST_DECISION_TOOL} rather than guessing — a wrong guess wastes the whole assignment, ` +
+    'a question costs one card. Ask only when it matters: you have a budget of ' +
+    `${budget} decision${maxDecisionsPerSession === 1 ? '' : 's'} per session.`
+  );
+}
+
 export interface PromptBudgets {
   readonly maxBytes: number;
   readonly excerptBytes: number;
@@ -114,6 +148,14 @@ export interface ComposePromptInput {
   readonly mail: InlinedMail;
   /** §6.4's stance solicitation; empty when there is nothing open or it is off. */
   readonly decisions: readonly OpenDecision[];
+  /**
+   * `breakers.maxDecisionsPerSession`, for section 7's ask-the-user paragraph.
+   *
+   * Passed in rather than read from config here so composition stays pure — and
+   * so the number in the prose and the number the toolset enforces come from one
+   * place (WO6 item 1).
+   */
+  readonly decisionBudget: number;
   readonly budgets: PromptBudgets;
 }
 
@@ -305,8 +347,15 @@ function build(
   // Unconditional, and *not* in the degradation ladder above: a prompt that
   // dropped this to fit is a prompt that dropped the one rule the incident of
   // 2026-08-19 was about. It sits before the required close so that close stays
-  // the last thing the model reads (see the header's slicing note).
-  parts.push(section('7. Tools and integrations', [TOOLING_GUARDRAIL]));
+  // the last thing the model reads (see the header's slicing note). The
+  // ask-the-user paragraph rides here for the same reason and in the same
+  // breath: both are about reaching outside this turn rather than guessing.
+  parts.push(
+    section('7. Tools and integrations', [
+      TOOLING_GUARDRAIL,
+      askTheUserParagraph(input.decisionBudget),
+    ]),
+  );
   sections.push(7);
 
   // --- 8. Required close ---------------------------------------------------
