@@ -996,6 +996,19 @@ and role, the artifact path as a link, the scope summary, and the workspace.
 cap and the budget are the two things that decide when this stops, and orchestrator §16.8 pins
 tokens — never money — as the unit.
 
+The round number is the round **in flight**, not the raw `rounds_used`. Orchestrator increments
+`rounds_used` when the critic reports, so printing it raw shows `Round 0 of 3` for the whole of
+round 1 — the one stretch the user is most likely to be watching, and the one moment the header is
+most obviously wrong. So: when any turn of the assignment is `planned` or `running`, the strip reads
+`Round min(rounds_used + 1, round_cap) of round_cap` and that pip renders **in progress** — a third
+state, neither empty nor filled, because two states force a half-done round into a reading that is
+wrong either way. When nothing is in flight — idle, awaiting an answer, halted, closed — the raw
+count is what it says, and the last finished round is the last filled pip. This is not the UI
+deriving something the server computes (§18 decision 10): the server sends the turn statuses and the
+count; the UI only asks which of the two the header is about. `/assignments` and the usage table
+print the same number the same way, from `phase === 'running'`, which is the only in-flight evidence
+a list row is served.
+
 **Body**: rounds as labelled sections, entries within them as a dialogue:
 
 - **Turn** — a chat-style entry attributed by avatar + name + **seat** ("Sam · skeptic"), carrying the

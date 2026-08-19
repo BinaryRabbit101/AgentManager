@@ -26,7 +26,14 @@ import type { AgentView, AssignmentView } from '../api/types';
 import { useServices } from '../app/AppContext';
 import { Avatar } from '../board/Avatar';
 
-import { budgetLine, closeWord, isSolo, phaseWord } from './conversation';
+import {
+  budgetLine,
+  closeWord,
+  currentRound,
+  isSolo,
+  phaseInFlight,
+  phaseWord,
+} from './conversation';
 
 export function AssignmentsPage(): ReactElement {
   const { client } = useServices();
@@ -130,10 +137,15 @@ export function AssignmentsPage(): ReactElement {
               <p className="record-row__meta">
                 {/* Tokens, never money (orchestrator §16.8). */}
                 <span>{budget.text}</span>
-                <span>
+                {/*
+                  The same honest count as the assignment header: while a turn
+                  is in flight this row is about the round being worked, not the
+                  last one finished (§10.2).
+                */}
+                <span data-round-in-flight={phaseInFlight(assignment) ? 'true' : 'false'}>
                   {assignment.roundCap === null
-                    ? `${String(assignment.roundsUsed)} rounds`
-                    : `round ${String(assignment.roundsUsed)} of ${String(assignment.roundCap)}`}
+                    ? `${String(currentRound(assignment.roundsUsed, null, phaseInFlight(assignment)))} rounds`
+                    : `round ${String(currentRound(assignment.roundsUsed, assignment.roundCap, phaseInFlight(assignment)))} of ${String(assignment.roundCap)}`}
                 </span>
                 <Link to={`/projects/${encodeURIComponent(assignment.projectId)}`}>project</Link>
               </p>

@@ -51,9 +51,11 @@ import {
   bannerFor,
   deliveryWord,
   entryKey,
+  hasTurnInFlight,
   isSolo,
   isUnseen,
   phaseWord,
+  roundLabel,
   roundPips,
   seatColumn,
   seatsOf,
@@ -100,7 +102,13 @@ export function AssignmentPage(): ReactElement {
   const banner = bannerFor(view);
   const solo = isSolo(view);
   const budget = budgetLine(view.tokensUsed, view.tokenBudget);
-  const pips = roundPips(view.roundsUsed, view.roundCap);
+  // `roundsUsed` counts *finished* rounds, so while a turn is in flight the raw
+  // count is one behind what the user is watching happen (§10.2). The
+  // conversation carries the turn statuses; until it loads, `false` keeps the
+  // header on the count the server sent rather than guessing forward.
+  const inFlight = hasTurnInFlight(conversation.data);
+  const pips = roundPips(view.roundsUsed, view.roundCap, inFlight);
+  const rounds = roundLabel(view.roundsUsed, view.roundCap, inFlight);
 
   return (
     <section className="assignment" aria-labelledby="assignment-heading">
@@ -156,21 +164,22 @@ export function AssignmentPage(): ReactElement {
         {/* §10.2's progress strip. Solo has no rounds, so it has no pips. */}
         <div className="assignment__progress">
           {solo || pips.length === 0 ? (
-            <span data-rounds="none">
-              {solo ? 'One seat, no rounds' : `Round ${String(view.roundsUsed)}`}
-            </span>
+            <span data-rounds="none">{solo ? 'One seat, no rounds' : rounds}</span>
           ) : (
-            <span className="assignment__rounds" data-rounds-used={view.roundsUsed}>
-              <span className="visually-hidden">
-                {`Round ${String(view.roundsUsed)} of ${String(view.roundCap ?? 0)}`}
-              </span>
-              <span aria-hidden="true">{`Round ${String(view.roundsUsed)} of ${String(view.roundCap ?? 0)}`}</span>
+            <span
+              className="assignment__rounds"
+              data-rounds-used={view.roundsUsed}
+              data-round-in-flight={inFlight ? 'true' : 'false'}
+            >
+              <span className="visually-hidden">{rounds}</span>
+              <span aria-hidden="true">{rounds}</span>
               <span className="assignment__pips">
                 {pips.map((pip) => (
                   <span
                     key={pip.index}
                     className="assignment__pip"
                     data-done={pip.done ? 'true' : 'false'}
+                    data-in-progress={pip.inProgress ? 'true' : 'false'}
                     aria-hidden="true"
                   />
                 ))}

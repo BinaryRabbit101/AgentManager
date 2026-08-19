@@ -114,21 +114,93 @@ export function attribution(
 }
 
 /**
+ * Whether a turn of this assignment is in flight (`planned` or `running`).
+ *
+ * The honest input to the round header. `roundsUsed` is a count of *finished*
+ * rounds — orchestrator increments it when the critic reports — so on its own it
+ * reads `Round 0 of 3` through the whole of round 1, which is the one moment the
+ * user is most likely to be looking. This is not deriving something the server
+ * computes (§18-10): the server sends the turn statuses, and this only asks
+ * whether any of them is still open.
+ */
+export function hasTurnInFlight(conversation: ConversationView | undefined): boolean {
+  if (conversation === undefined) return false;
+  return conversation.rounds.some((round) =>
+    round.entries.some(
+      (entry) =>
+        entry.type === 'turn' && (entry.status === 'planned' || entry.status === 'running'),
+    ),
+  );
+}
+
+/**
+ * The same question for a screen that has no turn table — the two index views.
+ *
+ * `AssignmentsPage` and `UsageView` are served `GET /api/assignments`, which
+ * carries the phase but not the turns, so the phase is the only evidence they
+ * have. It is the right one: orchestrator sets `phase: running` exactly while a
+ * turn is being driven, and drops out of it to `awaiting_user`, `halted` or a
+ * closed phase the moment nothing is.
+ */
+export function phaseInFlight(assignment: Pick<AssignmentView, 'status' | 'phase'>): boolean {
+  return assignment.status === 'open' && assignment.phase === 'running';
+}
+
+/**
+ * Which round the header is about: the one in flight, or the last one finished.
+ *
+ * Clamped to the cap, because a turn planned *at* the cap is still the capped
+ * round — `Round 4 of 3` would be a header that contradicts its own second half.
+ */
+export function currentRound(
+  roundsUsed: number,
+  roundCap: number | null,
+  inFlight: boolean,
+): number {
+  if (!inFlight) return roundsUsed;
+  const next = roundsUsed + 1;
+  return roundCap === null ? next : Math.min(next, roundCap);
+}
+
+/** `Round 2 of 3`, or `Round 2` where there is no cap to count against. */
+export function roundLabel(roundsUsed: number, roundCap: number | null, inFlight: boolean): string {
+  const round = String(currentRound(roundsUsed, roundCap, inFlight));
+  return roundCap === null ? `Round ${round}` : `Round ${round} of ${String(roundCap)}`;
+}
+
+export interface RoundPip {
+  readonly index: number;
+  readonly done: boolean;
+  /** The round being worked right now — neither empty nor finished. */
+  readonly inProgress: boolean;
+}
+
+/**
  * §10.2's round pips: `Round 2 of 3` as discrete marks.
  *
  * `done` counts the rounds the server says are used; `cap` is its cap. With no
  * cap (a solo assignment, or a pattern that declares none) there is nothing to
  * pip — a progress bar with no end is a lie about progress — and the caller
  * renders the plain count instead.
+ *
+ * `inProgress` is the third state the strip needs and did not have. Two states
+ * — filled or empty — force a round that is halfway done to render as one of
+ * them, and both readings are wrong: filled claims work that has not landed,
+ * empty claims nothing is happening while a seat is mid-turn.
  */
 export function roundPips(
   roundsUsed: number,
   roundCap: number | null,
-): readonly { readonly index: number; readonly done: boolean }[] {
+  inFlight = false,
+): readonly RoundPip[] {
   if (roundCap === null || roundCap <= 0) return [];
+  const current = currentRound(roundsUsed, roundCap, inFlight);
   return Array.from({ length: roundCap }, (_unused, index) => ({
     index: index + 1,
     done: index < roundsUsed,
+    // Never both: a finished round stays finished even while the *next* one is
+    // being planned, and a clamped current round at the cap is already `done`.
+    inProgress: inFlight && index >= roundsUsed && index + 1 === current,
   }));
 }
 
@@ -236,6 +308,8 @@ export function haltWord(reason: string | null): string {
       return 'a turn finished without a report';
     case 'no_progress':
       return 'the rounds stopped making progress';
+    case 'no_artifact':
+      return 'the drafter reported without writing the artifact';
     case 'permission_fight':
       return 'the same permission was refused repeatedly';
     case 'tool_flood':

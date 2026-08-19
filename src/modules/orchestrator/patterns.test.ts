@@ -220,6 +220,9 @@ describe('§3.3’s turn table, row by row (M6-2)', () => {
       status: 'reported',
       report: report({ headline: 'Draft complete: 4 sections' }),
       outputText: 'I wrote four sections.',
+      // The hash is what says a file is really there; §3.3 does not spend the
+      // critic's turn without it.
+      artifactHash: 'h1',
     });
     const next = plan([drafted]);
     expect(next).toMatchObject({
@@ -252,7 +255,13 @@ describe('§3.3’s turn table, row by row (M6-2)', () => {
 
   it('a seat’s second turn continues its own previous session (§3.2)', () => {
     const turns = [
-      turn({ seat: DRAFTER_SEAT, status: 'reported', report: report(), sessionId: 'draft-1' }),
+      turn({
+        seat: DRAFTER_SEAT,
+        status: 'reported',
+        report: report(),
+        sessionId: 'draft-1',
+        artifactHash: 'h1',
+      }),
       turn({
         seat: CRITIC_SEAT,
         status: 'reported',
@@ -272,6 +281,7 @@ describe('§3.3’s turn table, row by row (M6-2)', () => {
         status: 'reported',
         report: report(),
         sessionId: 'draft-2',
+        artifactHash: 'h2',
       }),
     ];
     expect(plan(round2)).toMatchObject({ seat: CRITIC_SEAT, continueFromSessionId: 'critic-1' });
@@ -354,6 +364,88 @@ describe('convergence: the LLM proposes, the rule decides (M6-3)', () => {
   });
 });
 
+describe('no critic turn without an artifact (§3.3, §8.1 `no_artifact`)', () => {
+  const reportedWithNothing = (over: Partial<TurnRow> = {}): TurnRow =>
+    turn({
+      seat: DRAFTER_SEAT,
+      status: 'reported',
+      report: report({ headline: 'Draft complete' }),
+      artifactHash: null,
+      ...over,
+    });
+
+  it('re-plans the drafter, not the critic, when the report left no file behind', () => {
+    const drafted = reportedWithNothing({ sessionId: 'draft-1' });
+    expect(plan([drafted])).toEqual({
+      seat: DRAFTER_SEAT,
+      agentId: 'ada',
+      round: 1,
+      prompt: {
+        intent: 'artifact_missing',
+        seat: DRAFTER_SEAT,
+        round: 1,
+        retryOfTurnId: drafted.id,
+      },
+      // The seat resumes its own session; it already holds the draft.
+      continueFromSessionId: 'draft-1',
+      priority: 'normal',
+    });
+  });
+
+  it('halts no_artifact on the second miss of the same round, rather than falling through', () => {
+    const turns = [reportedWithNothing(), reportedWithNothing()];
+    expect(plan(turns)).toEqual({ halt: true, haltReason: 'no_artifact' });
+  });
+
+  it('counts per round: a round that missed once does not condemn the next one', () => {
+    const turns = [
+      reportedWithNothing(),
+      turn({ seat: DRAFTER_SEAT, status: 'reported', report: report(), artifactHash: 'h1' }),
+      turn({
+        seat: CRITIC_SEAT,
+        status: 'reported',
+        report: report({ verdict: verdict({ decision: 'revise' }) }),
+      }),
+      reportedWithNothing({ round: 2 }),
+    ];
+    // Round 2's first miss is round 2's first miss, so it gets its own re-plan.
+    expect(plan(turns)).toMatchObject({
+      seat: DRAFTER_SEAT,
+      round: 2,
+      prompt: { intent: 'artifact_missing' },
+    });
+  });
+
+  it('plans the critic exactly as before when the file is really there', () => {
+    expect(
+      plan([reportedWithNothing({ artifactHash: 'h1' })]),
+    ).toMatchObject({ seat: CRITIC_SEAT, round: 1, prompt: { intent: 'critique' } });
+  });
+
+  it('does not guard an assignment with no artifact path, or one that opted out', () => {
+    const noPath = plan([reportedWithNothing()], {
+      assignment: row({ artifactPath: null }),
+    });
+    expect(noPath).toMatchObject({ seat: CRITIC_SEAT });
+
+    const optedOut = plan([reportedWithNothing()], {
+      assignment: row({ patternConfigJson: '{"requireArtifact":false}' }),
+    });
+    expect(optedOut).toMatchObject({ seat: CRITIC_SEAT });
+
+    // A config column that does not parse is the empty config, which is the
+    // default, which is guard on.
+    expect(
+      plan([reportedWithNothing()], { assignment: row({ patternConfigJson: 'not json' }) }),
+    ).toMatchObject({ prompt: { intent: 'artifact_missing' } });
+  });
+
+  it('“Continue anyway” sends the critic in, because the user outranks the counter', () => {
+    const turns = [reportedWithNothing(), reportedWithNothing()];
+    expect(plan(turns, { resumeRequested: true })).toMatchObject({ seat: CRITIC_SEAT });
+  });
+});
+
 describe('the breakers §3.3’s table states (M6-2)', () => {
   it('halts no_progress on an unchanged artifact hash while claiming a revision', () => {
     const turns = [
@@ -395,8 +487,9 @@ describe('the breakers §3.3’s table states (M6-2)', () => {
         }),
       ]),
     ).toMatchObject({ seat: CRITIC_SEAT, round: 2 });
-    // A null hash can never equal the previous one, so the breaker does not fire
-    // rather than firing wrongly (`engine.ts`'s `hashArtifact`).
+    // A null hash can never equal the previous one, so `no_progress` does not
+    // fire rather than firing wrongly (`engine.ts`'s `hashArtifact`). The
+    // artifact guard is what answers a null hash, and it is a different halt.
     expect(
       plan([
         ...base,
@@ -408,7 +501,7 @@ describe('the breakers §3.3’s table states (M6-2)', () => {
           artifactHash: null,
         }),
       ]),
-    ).toMatchObject({ seat: CRITIC_SEAT });
+    ).toMatchObject({ seat: DRAFTER_SEAT, prompt: { intent: 'artifact_missing' } });
   });
 
   it('re-plans the same seat once for an unstructured turn, then halts no_report', () => {

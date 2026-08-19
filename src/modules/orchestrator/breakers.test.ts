@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  artifactMissingTurns,
   artifactUnchanged,
   BREAKER_NAMES,
   consecutiveDenialTurns,
@@ -59,13 +60,14 @@ function turn(overrides: Partial<TurnRow> & { status: TurnStatus }): TurnRow {
 }
 
 describe('the counters are pure and re-derived (§8.1, M7-1)', () => {
-  it('names all eight breakers', () => {
+  it('names all nine breakers', () => {
     expect([...BREAKER_NAMES]).toEqual([
       'budget',
       'round_cap',
       'turn_failures',
       'unstructured',
       'no_progress',
+      'no_artifact',
       'tool_denials',
       'tool_flood',
       'stale',
@@ -100,6 +102,25 @@ describe('the counters are pure and re-derived (§8.1, M7-1)', () => {
     const same = turn({ status: 'reported', artifactHash: 'abc' });
     expect(artifactUnchanged(same, turn({ status: 'reported', artifactHash: 'abc' }))).toBe(true);
     expect(artifactUnchanged(same, turn({ status: 'reported', artifactHash: 'def' }))).toBe(false);
+  });
+
+  it('counts only reported, hash-less turns of the seat and round it was asked about', () => {
+    const turns = [
+      // The round the counter is about: two reports with nothing on disk.
+      turn({ seat: 'drafter', round: 1, status: 'reported', artifactHash: null }),
+      turn({ seat: 'drafter', round: 1, status: 'reported', artifactHash: null }),
+      // A turn that did leave a file, one that never reported, and the critic —
+      // none of them is evidence that the drafter wrote nothing.
+      turn({ seat: 'drafter', round: 1, status: 'reported', artifactHash: 'abc' }),
+      turn({ seat: 'drafter', round: 1, status: 'unstructured', artifactHash: null }),
+      turn({ seat: 'critic', round: 1, status: 'reported', artifactHash: null }),
+      // Another round entirely: the guard is per drafting attempt.
+      turn({ seat: 'drafter', round: 2, status: 'reported', artifactHash: null }),
+    ];
+    expect(artifactMissingTurns(turns, 'drafter', 1)).toBe(2);
+    expect(artifactMissingTurns(turns, 'drafter', 2)).toBe(1);
+    expect(artifactMissingTurns(turns, 'critic', 1)).toBe(1);
+    expect(artifactMissingTurns([], 'drafter', 1)).toBe(0);
   });
 
   it('bounds the round cap and treats a null cap as unbounded', () => {

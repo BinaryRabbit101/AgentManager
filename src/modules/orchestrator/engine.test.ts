@@ -92,14 +92,41 @@ const REVISE: TurnVerdict = {
 };
 const ACCEPT: TurnVerdict = { decision: 'accept', blocking: [], nonBlocking: [] };
 
+let drafts = 0;
+
+/**
+ * What a drafter that actually did its job leaves behind.
+ *
+ * §3.3's artifact guard means a reporting drafter turn with no file at
+ * `scope.artifactPath` is re-planned rather than handed to the critic, so a
+ * fixture that never writes the file would never reach the critic at all. The
+ * content changes every time, because a drafter that writes the *same* bytes
+ * twice is the `no_progress` breaker's case, not this one's.
+ */
+function writeDraft(): void {
+  drafts += 1;
+  mkdirSync(join(workspace.path, 'docs', 'x'), { recursive: true });
+  writeFileSync(
+    join(workspace.path, 'docs', 'x', 'DESIGN.md'),
+    `# Design\n\nDraft ${String(drafts)}\n`,
+    'utf8',
+  );
+}
+
 /** Finishes whichever turn is in flight, with an optional report first. */
 async function finishTurn(
   assignmentId: string,
   body?: Readonly<Record<string, unknown>>,
   session: Readonly<Record<string, unknown>> = {},
+  options: { readonly artifact?: boolean } = {},
 ): Promise<void> {
   const active = harness.turns.active(assignmentId);
   if (active === undefined) throw new Error('no turn is in flight');
+  // The tests that are *about* the artifact pass `artifact: false` and control
+  // the file themselves; everywhere else the drafter behaves.
+  if (options.artifact !== false && active.seat === DRAFTER_SEAT && body !== undefined) {
+    writeDraft();
+  }
   tick();
   if (body !== undefined) await report(assignmentId, active.agentId, body);
   tick();
@@ -107,6 +134,7 @@ async function finishTurn(
 }
 
 beforeEach(() => {
+  drafts = 0;
   workspace = makeTempDir('agentmanager-orchestrator-ws-');
   harness = makeHarness({ agents: AGENTS, workspaceCwd: workspace.path });
 });
@@ -426,10 +454,24 @@ describe('halts (§8.1, M6-2)', () => {
     writeFileSync(artifact, '# Design\n', 'utf8');
 
     const assignmentId = await makePair();
-    await finishTurn(assignmentId, { state: 'done', headline: 'Draft complete' });
+    await finishTurn(
+      assignmentId,
+      { state: 'done', headline: 'Draft complete' },
+      {},
+      {
+        artifact: false,
+      },
+    );
     await finishTurn(assignmentId, { state: 'done', headline: 'Issues', verdict: REVISE });
     // Round 2's drafter claims a revision and changes nothing on disk.
-    await finishTurn(assignmentId, { state: 'done', headline: 'Revised, honest' });
+    await finishTurn(
+      assignmentId,
+      { state: 'done', headline: 'Revised, honest' },
+      {},
+      {
+        artifact: false,
+      },
+    );
 
     const assignment = harness.service.get(assignmentId);
     expect(assignment).toMatchObject({
@@ -453,10 +495,17 @@ describe('halts (§8.1, M6-2)', () => {
     writeFileSync(artifact, '# Design\n', 'utf8');
 
     const assignmentId = await makePair();
-    await finishTurn(assignmentId, { state: 'done', headline: 'Draft complete' });
+    await finishTurn(
+      assignmentId,
+      { state: 'done', headline: 'Draft complete' },
+      {},
+      {
+        artifact: false,
+      },
+    );
     await finishTurn(assignmentId, { state: 'done', headline: 'Issues', verdict: REVISE });
     writeFileSync(artifact, '# Design\n\nWith a rollback path.\n', 'utf8');
-    await finishTurn(assignmentId, { state: 'done', headline: 'Revised' });
+    await finishTurn(assignmentId, { state: 'done', headline: 'Revised' }, {}, { artifact: false });
 
     expect(harness.service.get(assignmentId).phase).toBe('running');
     expect(harness.turns.active(assignmentId)).toMatchObject({ round: 2, seat: CRITIC_SEAT });
