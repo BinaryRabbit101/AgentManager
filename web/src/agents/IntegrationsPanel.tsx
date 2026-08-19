@@ -256,10 +256,39 @@ function IntegrationCard({
         </div>
       )}
 
+      {/*
+        roster §10.1 (WO6). The one control that makes an agent need no key at
+        all: the server authorises *the human* through the MCP OAuth flow, so
+        nothing about it is stored on this machine and there is nothing here to
+        scavenge for. It is remote-only because a stdio server is a local child
+        process with no OAuth challenge to answer.
+      */}
+      {stdio ? null : (
+        <label className="launch__toggle" data-control="oauth">
+          <input
+            type="checkbox"
+            checked={integration.oauth}
+            onChange={(event) => onChange({ ...integration, oauth: event.target.checked })}
+          />
+          Authorise with OAuth — no key stored on this machine
+        </label>
+      )}
+
       <p className="editor__note">
-        {stdio ? 'Environment variables' : 'HTTP headers'} for this server. Tick <em>secret</em> and
-        the definition stores the <em>name</em> of a stored secret. <code>agent.json</code> never
-        holds the value, so it never reaches git or an export.
+        {integration.oauth && !stdio ? (
+          <>
+            This server authorises through the browser the first time an agent uses it: the session
+            raises the link, you sign in, and the grant is cached by the Claude CLI under this
+            install’s data folder. Add headers below only for non-credential things like routing —
+            an OAuth server carries no key and no secret reference.
+          </>
+        ) : (
+          <>
+            {stdio ? 'Environment variables' : 'HTTP headers'} for this server. Tick <em>secret</em>{' '}
+            and the definition stores the <em>name</em> of a stored secret. <code>agent.json</code>{' '}
+            never holds the value, so it never reaches git or an export.
+          </>
+        )}
       </p>
 
       {integration.fields.map((field, index) => (

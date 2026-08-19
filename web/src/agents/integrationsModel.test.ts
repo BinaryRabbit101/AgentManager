@@ -52,6 +52,9 @@ describe('wire → form → wire', () => {
         command: 'npx',
         args: '-y\n@modelcontextprotocol/server-gmail',
         url: '',
+        // stdio has no auth mode at all (roster §10.1) — the flag is off and
+        // `integrationsBody` omits the key, so the round-trip is byte-exact.
+        oauth: false,
         fields: [
           { key: 'GMAIL_TOKEN', value: 'mcp.gmail.token', secret: true },
           { key: 'GMAIL_USER', value: 'me@example.com', secret: false },
@@ -137,6 +140,7 @@ describe('what the form posts is what roster accepts', () => {
         command: 'npx',
         args: '-y\n@modelcontextprotocol/server-gmail',
         url: '',
+        oauth: false,
         fields: [
           { key: 'GMAIL_TOKEN', value: 'mcp.gmail.token', secret: true },
           { key: 'GMAIL_USER', value: 'me@example.com', secret: false },
@@ -157,6 +161,26 @@ describe('what the form posts is what roster accepts', () => {
     ],
     'a name with a single underscore': [
       { ...EMPTY_INTEGRATION, name: 'lpm_docs', command: 'server.exe' },
+    ],
+    // roster §10.1 (WO6): the connector that needs no key on this machine.
+    'an http server that authorises with OAuth': [
+      {
+        ...EMPTY_INTEGRATION,
+        name: 'todo',
+        transport: 'http',
+        url: 'https://mcp.example.com/mcp',
+        oauth: true,
+      },
+    ],
+    'an OAuth server with a non-credential routing header': [
+      {
+        ...EMPTY_INTEGRATION,
+        name: 'todo',
+        transport: 'sse',
+        url: 'https://mcp.example.com/sse',
+        oauth: true,
+        fields: [{ key: 'X-Tenant', value: 'acme', secret: false }],
+      },
     ],
   };
 
@@ -182,6 +206,40 @@ describe('what the form posts is what roster accepts', () => {
     ];
     expect(integrationsSchema.safeParse(integrationsBody(forms)).success).toBe(false);
     expect(integrationProblems(forms).map((problem) => problem.key)).toContain('GMAIL_TOKEN');
+  });
+
+  it('is rejected by roster when OAuth and a credential are both ticked (§10.1)', () => {
+    const forms: IntegrationForm[] = [
+      {
+        ...EMPTY_INTEGRATION,
+        name: 'todo',
+        transport: 'http',
+        url: 'https://mcp.example.com/mcp',
+        oauth: true,
+        fields: [{ key: 'Authorization', value: 'mcp.todo.token', secret: true }],
+      },
+    ];
+    expect(integrationsSchema.safeParse(integrationsBody(forms)).success).toBe(false);
+    // Both halves again: the panel says it in the field, roster refuses the save.
+    expect(
+      integrationProblems(forms)
+        .map((problem) => problem.message)
+        .join(' '),
+    ).toContain('authorise with OAuth');
+  });
+
+  it('round-trips the OAuth flag, and omits the key when it is off', () => {
+    const wire = {
+      todo: { transport: 'http', url: 'https://mcp.example.com/mcp', auth: 'oauth' },
+    };
+    const forms = integrationsOf(wire);
+    expect(forms[0]?.oauth).toBe(true);
+    expect(integrationsBody(forms)['todo']).toMatchObject({ auth: 'oauth' });
+    expect(integrationsBody([{ ...forms[0]!, oauth: false }])['todo']).not.toHaveProperty('auth');
+    // A stdio server never carries one, whatever the wire said.
+    expect(
+      integrationsOf({ local: { transport: 'stdio', command: 'node', auth: 'oauth' } })[0]?.oauth,
+    ).toBe(false);
   });
 });
 

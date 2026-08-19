@@ -117,6 +117,8 @@ export function anAgent(overrides: {
   /** Per-agent MCP servers, as roster returns them — refs, never values (§10). */
   readonly integrations?: AgentView['definition']['integrations'];
   readonly credentials?: AgentView['credentials'];
+  /** roster §10's preflight projection (WO6) — ready / needs-auth / missing-secret. */
+  readonly integrationStates?: AgentView['integrations'];
 }): AgentView {
   return {
     definition: {
@@ -147,6 +149,9 @@ export function anAgent(overrides: {
       ? {}
       : { needsCredentials: overrides.needsCredentials }),
     ...(overrides.credentials === undefined ? {} : { credentials: overrides.credentials }),
+    ...(overrides.integrationStates === undefined
+      ? {}
+      : { integrations: overrides.integrationStates }),
   };
 }
 

@@ -15,6 +15,8 @@ import type { AgentView, AssignmentView, SeatDefinition } from '../api/types';
 import { anAssignment } from '../assignments/fixtures';
 
 import {
+  connectorChips,
+  connectorsNeedAttention,
   declaresAny,
   goalWithWorkers,
   launchableProjects,
@@ -266,5 +268,78 @@ describe('the only client-side refusals, and why each one is honest (§10.4)', (
     expect(
       startBlocker({ ...base, agentCount: 2, teamwork: 'pair', requiresTokenBudget: false }),
     ).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Connector preflight (roster §10, WO6 item 2)
+// ---------------------------------------------------------------------------
+
+describe('the connector chips', () => {
+  const withConnectors = (id: string, rows: NonNullable<AgentView['integrations']>): AgentView =>
+    anAgent({ id, name: id, integrationStates: rows });
+
+  const row = (
+    integration: string,
+    state: 'ready' | 'needs-auth' | 'missing-secret',
+  ): NonNullable<AgentView['integrations']>[number] => ({
+    integration,
+    transport: 'http',
+    auth: state === 'needs-auth' ? 'oauth' : 'credentials',
+    toolPrefix: `mcp__${integration}__`,
+    state,
+    credentials: [],
+    missingSecretRefs: state === 'missing-secret' ? [`mcp.${integration}.token`] : [],
+    required: false,
+    detail: `${integration} is ${state}`,
+  });
+
+  it('renders one chip per declared integration, per agent, worst first', () => {
+    const chips = connectorChips([
+      withConnectors('priya', [row('files', 'ready'), row('todo', 'needs-auth')]),
+      withConnectors('sam', [row('gmail', 'missing-secret')]),
+    ]);
+    expect(chips.map((chip) => `${chip.agentId}:${chip.integration}:${chip.state}`)).toEqual([
+      'priya:todo:needs-auth',
+      'priya:files:ready',
+      'sam:gmail:missing-secret',
+    ]);
+    expect(connectorsNeedAttention(chips)).toBe(true);
+  });
+
+  it('links a missing secret to settings and a missing connector to the agent editor', () => {
+    const chips = connectorChips(
+      [withConnectors('sam', [row('gmail', 'missing-secret')])],
+      ['todo'],
+    );
+    const secret = chips.find((chip) => chip.state === 'missing-secret');
+    expect(secret?.action).toEqual({
+      kind: 'secrets',
+      label: 'Set the secret…',
+      to: '/settings',
+    });
+
+    // WO5's `requiredIntegrations`: a connector the task needs and the agent
+    // does not declare is `not-attached`, and the fix is the integrations panel.
+    const attach = chips.find((chip) => chip.integration === 'todo');
+    expect(attach?.state).toBe('not-attached');
+    expect(attach?.action).toEqual({
+      kind: 'editor',
+      label: 'Add the connector…',
+      to: '/agents/sam',
+    });
+  });
+
+  it('offers no action for a ready or OAuth connector — there is nothing to press', () => {
+    const chips = connectorChips([withConnectors('priya', [row('todo', 'needs-auth')])]);
+    // The SDK has no headless authorize call, so a button here would be a lie;
+    // the link is raised by the session (runner/mcpAuth.ts).
+    expect(chips[0]?.action).toBeUndefined();
+    expect(chips[0]?.label).toBe('needs authorising');
+  });
+
+  it('says nothing at all for an agent with no integrations', () => {
+    expect(connectorChips([anAgent({ id: 'priya' })])).toEqual([]);
+    expect(connectorsNeedAttention([])).toBe(false);
   });
 });

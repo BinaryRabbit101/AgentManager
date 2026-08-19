@@ -177,6 +177,28 @@ export interface IntegrationCredentialStatus {
   readonly resolved: boolean;
 }
 
+/**
+ * roster §10's preflight projection (WO6) — one row per declared integration.
+ *
+ * Data, never a value: `credentials` is the same `{ secretRef, resolved }` block
+ * scoped to this server, and the API has no route that returns a credential.
+ */
+export type IntegrationState = 'ready' | 'needs-auth' | 'missing-secret' | 'not-attached';
+
+export interface IntegrationPreflight {
+  readonly integration: string;
+  readonly transport?: 'stdio' | 'sse' | 'http';
+  readonly auth: 'oauth' | 'credentials' | 'none';
+  readonly toolPrefix: string;
+  readonly state: IntegrationState;
+  readonly credentials: readonly IntegrationCredentialStatus[];
+  readonly missingSecretRefs: readonly string[];
+  readonly required: boolean;
+  readonly lastSeenStatus?: string;
+  /** One sentence: the honest reason for `state`. Shown as the chip's title. */
+  readonly detail: string;
+}
+
 export interface AgentView {
   readonly definition: AgentDefinition;
   readonly persona: string;
@@ -187,6 +209,7 @@ export interface AgentView {
   readonly avatarUrl: string;
   readonly credentials?: readonly IntegrationCredentialStatus[];
   readonly needsCredentials?: boolean;
+  readonly integrations?: readonly IntegrationPreflight[];
 }
 
 export interface RosterListView {

@@ -495,6 +495,7 @@ with no roster-specific work.
 | `DELETE` | `/agents/:id` | archive (soft); `?purge=true` only when no sessions reference it |
 | `POST` | `/agents/:id/duplicate` | see below |
 | `GET` | `/agents/:id/export` | `.agentpack` (zip) download |
+| `GET` | `/agents/:id/integrations` | §10.2's preflight: `ready` / `needs-auth` / `missing-secret` per declared connector, plus `not-attached` for each name in `?required=a,b` the agent does not declare. Never a value |
 | `POST` | `/import` | multipart `.agentpack`; returns a preview or commits with `?commit=true` |
 | `POST` | `/draft` | draft-from-description (§12) |
 | `POST` | `/agents/:id/validate` | dry-run compile against a project id, returns effective permissions |
@@ -654,6 +655,64 @@ is a session that stalls on a permission prompt nobody expected.
 Servers report `pending | connected | failed | needs-auth | disabled` in the session's init
 message; roster exposes the mapping so the runner can surface `needs-auth` as an actionable card
 rather than a generic failure.
+
+### 10.1 OAuth as a first-class auth mode
+
+**Decision: `auth: "oauth"` on an `http`/`sse` integration, mutually exclusive with credential-bearing
+headers. It is a declaration of intent, not a credential, and it compiles to nothing.**
+
+The direction is the owner's, after the incident of 2026-08-19: use OAuth-authorized remote MCP
+servers so agents need no API keys at all, and there is nothing on the machine worth scavenging for.
+
+What the pinned SDK (`@anthropic-ai/claude-agent-sdk` 0.3.233) actually supports was verified by
+SDK-NOTES' method — static `sdk.d.ts` reading plus an offline probe — and shapes every decision here:
+
+| Question | Answer, with the evidence |
+|---|---|
+| How is an OAuth server declared? | **It is not.** `McpHttpServerConfig` (`sdk.d.ts:1037`) and `McpSSEServerConfig` (`:1152`) carry `url`, `headers`, `tools`, `timeout`, `alwaysLoad` — no auth field. The CLI's MCP client runs discovery, dynamic client registration and the code exchange itself when the server challenges. |
+| Can a claude.ai connector be mounted? | **Not programmatically.** `McpClaudeAIProxyServerConfig` (`:1027`, `type: "claudeai-proxy"`) appears only in `McpServerStatusConfig` (`:1120`) — the *read* side — and not in `McpServerConfig` (`:1070`). It can be observed, never declared. |
+| How is the authorize flow initiated? | **In-session, as an elicitation.** `Options.onElicitation` (`:1568`) receives an `ElicitationRequest` (`:582`) with `mode: "url"` and the page to open; the *server* confirms completion as `system`/`elicitation_complete` (`:4111`), correlated by `elicitation_id`. `mcp_call`'s own docs say the same thing (`:3758`). |
+| Can a grant be obtained before a session exists? | **No.** No exported function in `sdk.d.ts` authorises an MCP server outside a `query()`. |
+| Where are tokens cached? | By the CLI, under its config directory — which runner already pins to `<dataRoot>\state\claude-config` via `CLAUDE_CONFIG_DIR` (runner `agentEnv.ts`, foundation §2.3). No new mechanism is needed and none is added. |
+
+So the mode compiles to exactly what a header-less remote server compiles to. The rule it buys is
+that roster can now *tell the two apart*: a headers-bearing server whose `secretRef` will not resolve
+is a broken install a launch must refuse; an OAuth server with no grant yet is one human tap from
+working. The schema enforces three things — `auth: "oauth"` is rejected on `stdio` with a sentence
+rather than an "unrecognized key"; it is rejected beside any credential-shaped header key or any
+`{ secretRef }`; and a non-credential header (`X-Tenant: acme`) still travels, because a routing
+header is not auth. An OAuth integration therefore carries no `secretRef`, so it appears in no
+`requiredSecrets` and an `.agentpack` of it contains no token material by construction, not by
+redaction.
+
+**Roster does not read the CLI's OAuth cache.** It is an undocumented shape holding live access
+tokens; a parser for it would be a third `.reveal()`-equivalent site in all but name (foundation
+§3.2). The only evidence roster has that an OAuth connector is authorised is that a session on this
+machine reported it `connected` — which it learns by subscribing to runner's `runner.mcp.status`
+(runner §10) and holding the result in memory, forgotten on restart. A remembered "it worked last
+Tuesday" is not evidence about a grant the other end can revoke at any moment, so losing it costs one
+cautious chip, which is the direction this section wants to be wrong in.
+
+### 10.2 The integration preflight projection
+
+**Decision: the `{ secretRef, resolved }` block is widened, not joined by a second projection.**
+
+`GET /agents` and `GET /agents/:id` carry `integrations: IntegrationPreflight[]` beside `credentials`,
+and `GET /agents/:id/integrations?required=a,b` answers the same rows plus the one state a definition
+cannot be asked about. Every field is derived from the definition, from a `has`-style secret probe, or
+from a status a session already reported — there is no code path that could carry a value:
+
+| State | Means |
+|---|---|
+| `ready` | stdio, or every `secretRef` resolves, or an OAuth server a session has connected |
+| `needs-auth` | an OAuth grant this build cannot see, or a server the last session reported `needs-auth`/`failed` |
+| `missing-secret` | a `secretRef` the store does not hold — §10's launch refusal, said before the launch |
+| `not-attached` | the task's `requiredIntegrations` names a connector this agent does not declare |
+
+`missing-secret` outranks everything else, because §10 makes it a *launch refusal* and a chip reading
+"needs auth" would understate it. The consumer is ui's Start-work step (ui §6), where it is **advice
+and never a gate**: a connector reported `needs-auth` may well be authorised already, and disabling
+**Start** on an unknown would stop work that would have run.
 
 **Where an owner edits this.** The agent editor's integrations panel (ui §7.3.1) — add/edit/remove
 plus paste-import from a `.mcp.json`, which is the only sanctioned way to give an agent a connector,

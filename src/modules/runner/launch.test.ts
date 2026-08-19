@@ -246,6 +246,11 @@ describe('options immutability (§3.3)', () => {
         // typing. It is one of §3.3's whitelisted keys precisely so runner may
         // set it.
         'includePartialMessages',
+        // WO6 item 3: the browser step of a remote MCP server's OAuth flow. An
+        // elicitation is a question to the *human*, and §5 gives runner every
+        // path a session has to one — so it is runner's option, like
+        // `canUseTool`, and roster could not compile it if it wanted to.
+        'onElicitation',
         'stderr',
       ]);
 

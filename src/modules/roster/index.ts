@@ -172,9 +172,12 @@ export type { McpServerStatus, RequestedSessionSurface, SessionInitFacts } from 
 
 // M6 — integrations and secret resolution (DESIGN §10).
 export {
+  INTEGRATION_STATES,
   compileIntegrations,
   integrationCredentialStatus,
+  integrationPreflight,
   integrationSecretRefs,
+  isOAuthIntegration,
   mcpToolPrefix,
   validateIntegrationAllowRules,
 } from './integrations.js';
@@ -186,7 +189,10 @@ export type {
   CompiledStdioServer,
   CompileIntegrationsInput,
   IntegrationCredentialStatus,
+  IntegrationPreflight,
+  IntegrationPreflightInput,
   IntegrationSecretRef,
+  IntegrationState,
 } from './integrations.js';
 
 export type {

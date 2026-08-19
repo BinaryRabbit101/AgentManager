@@ -15,6 +15,7 @@ import {
   byteLength,
   composePrompt,
   REPORT_STATUS_TOOL,
+  TOOLING_GUARDRAIL,
   type ComposePromptInput,
 } from './prompt.js';
 
@@ -59,10 +60,11 @@ function mail(count: number, body = 'hello'): InlinedMail {
   };
 }
 
-describe('the seven sections (§3.2)', () => {
+describe('the eight sections (§3.2)', () => {
   it('composes goal, seat, termination rules and the required close for a bare turn', () => {
     const composed = composePrompt(input());
-    expect(composed.sections).toEqual([1, 2, 6, 7]);
+    // 7 is the tooling guardrail (WO6), unconditional; 8 is the required close.
+    expect(composed.sections).toEqual([1, 2, 6, 7, 8]);
     expect(composed.text).toContain('Goal: Draft the migration plan');
     expect(composed.text).toContain('docs/billing/ — the billing docs');
     expect(composed.text).toContain('Artifact: docs/billing/plan.md');
@@ -227,5 +229,48 @@ describe('a solo prompt is the same machinery with a different seat sentence', (
     expect(composed.text).toContain('You are the implementer on this assignment.');
     expect(composed.text).toContain('this assignment has no round cap');
     expect(composed.text).not.toContain('Convergence:');
+  });
+});
+
+/**
+ * WO6 item 4. The incident of 2026-08-19 — an agent that could not reach its
+ * todo MCP server and went looking on the machine for API credentials — was not
+ * pattern-specific, so neither is the rule.
+ */
+describe('the no-scavenging guardrail (§3.2 section 7, WO6)', () => {
+  const PATTERNS: readonly { readonly patternId: string; readonly spec: PromptSpec }[] = [
+    { patternId: 'solo', spec: { intent: 'work', seat: 'solo', round: 1 } },
+    { patternId: 'pair', spec: { intent: 'draft', seat: 'drafter', round: 1 } },
+    { patternId: 'pair', spec: { intent: 'critique', seat: 'critic', round: 1 } },
+    { patternId: 'overseer', spec: { intent: 'decompose', seat: 'lead', round: 1 } },
+    { patternId: 'overseer', spec: { intent: 'review', seat: 'lead', round: 2 } },
+  ];
+
+  for (const { patternId, spec } of PATTERNS) {
+    it(`is present verbatim for ${patternId}/${spec.intent}`, () => {
+      const composed = composePrompt(input({ patternId, spec }));
+      expect(composed.text).toContain(TOOLING_GUARDRAIL);
+      expect(composed.text).toContain('## 7. Tools and integrations');
+      expect(composed.sections).toContain(7);
+    });
+  }
+
+  it('names both halves: never scavenge, and report blocked instead', () => {
+    expect(TOOLING_GUARDRAIL).toContain('Use only the tools and MCP servers provided');
+    expect(TOOLING_GUARDRAIL).toContain(`${REPORT_STATUS_TOOL} with state "blocked"`);
+    expect(TOOLING_GUARDRAIL).toContain(
+      'Never search the filesystem, environment, or configuration for credentials or API keys',
+    );
+  });
+
+  it('survives every degradation, including the pathological slice', () => {
+    // The cap drops context (3, 4, 5) before contract. A prompt small enough to
+    // lose the guardrail would be one that had already lost the goal.
+    const squeezed = composePrompt(
+      input({ mail: mail(40, 'x'.repeat(400)), budgets: { maxBytes: 4_000, excerptBytes: 200 } }),
+    );
+    expect(squeezed.truncated).toBe(true);
+    expect(squeezed.text).toContain(TOOLING_GUARDRAIL);
+    expect(squeezed.text).toContain('## 8. Required close');
   });
 });

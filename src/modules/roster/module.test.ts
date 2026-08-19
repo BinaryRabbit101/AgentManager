@@ -160,6 +160,9 @@ describe('module registration', () => {
       'GET /api/roster/agents/:id',
       'GET /api/roster/agents/:id/avatar',
       'GET /api/roster/agents/:id/export',
+      // §10's preflight projection (WO6): ready / needs-auth / missing-secret,
+      // plus `not-attached` when the caller names the task's required servers.
+      'GET /api/roster/agents/:id/integrations',
       'PATCH /api/roster/agents/:id',
       'PATCH /api/roster/agents/:id/ui-state',
       'POST /api/roster/agents',

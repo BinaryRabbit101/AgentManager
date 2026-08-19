@@ -15,11 +15,13 @@ import { loadFixture } from './__tests__/fixtures.js';
 import {
   compileIntegrations,
   integrationCredentialStatus,
+  integrationPreflight,
   integrationSecretRefs,
+  isOAuthIntegration,
   mcpToolPrefix,
   validateIntegrationAllowRules,
 } from './integrations.js';
-import type { AgentDefinition } from './schema.js';
+import { integrationsSchema, type AgentDefinition } from './schema.js';
 import { SessionCompileError } from './sessionOptions.js';
 
 const TOKEN = 'gmail-t0ken-do-not-log';
@@ -206,5 +208,155 @@ describe('the validator warning (§10)', () => {
 
   it('says nothing about an agent with no integrations', () => {
     expect(validateIntegrationAllowRules(loadFixture('coder'))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OAuth and the preflight projection (§10, WO6)
+// ---------------------------------------------------------------------------
+
+describe('auth: "oauth" (§10, WO6 item 1)', () => {
+  it('is accepted on http and sse, and compiles to a server with no credential header', async () => {
+    const { servers } = await compileIntegrations({
+      agentId: 'a',
+      agentName: 'A',
+      integrations: integrationsSchema.parse({
+        todo: { transport: 'http', url: 'https://todo.example/mcp', auth: 'oauth' },
+        calendar: { transport: 'sse', url: 'https://cal.example/sse', auth: 'oauth' },
+      }),
+      secrets: EMPTY,
+    });
+    expect(servers['todo']).toEqual({ type: 'http', url: 'https://todo.example/mcp' });
+    expect(servers['calendar']).toEqual({ type: 'sse', url: 'https://cal.example/sse' });
+    // The SDK has no auth field to compile to (sdk.d.ts:1037, :1152), so the
+    // absence of one here is the whole mechanism rather than an omission.
+    expect(JSON.stringify(servers)).not.toContain('auth');
+  });
+
+  it('keeps a non-credential header, because a routing header is not auth', () => {
+    const parsed = integrationsSchema.parse({
+      todo: {
+        transport: 'http',
+        url: 'https://todo.example/mcp',
+        auth: 'oauth',
+        headers: { 'X-Tenant': 'acme' },
+      },
+    });
+    expect(parsed['todo']).toMatchObject({ auth: 'oauth', headers: { 'X-Tenant': 'acme' } });
+  });
+
+  it('is rejected on stdio, and says why rather than "unrecognized key"', () => {
+    const result = integrationsSchema.safeParse({
+      local: { transport: 'stdio', command: 'node', auth: 'oauth' },
+    });
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain('remote MCP servers only');
+  });
+
+  it('is rejected beside a credential-shaped header or a secretRef', () => {
+    const shaped = integrationsSchema.safeParse({
+      todo: {
+        transport: 'http',
+        url: 'https://todo.example/mcp',
+        auth: 'oauth',
+        headers: { Authorization: { secretRef: 'mcp.todo.token' } },
+      },
+    });
+    expect(shaped.success).toBe(false);
+    expect(JSON.stringify(shaped.error?.issues)).toContain('mutually exclusive');
+
+    const ref = integrationsSchema.safeParse({
+      todo: {
+        transport: 'sse',
+        url: 'https://todo.example/sse',
+        auth: 'oauth',
+        headers: { 'X-Api-Key': { secretRef: 'mcp.todo.key' } },
+      },
+    });
+    expect(ref.success).toBe(false);
+    expect(JSON.stringify(ref.error?.issues)).toContain('mutually exclusive');
+  });
+
+  it('carries no secretRef, so an export of it requires no secret material at all', () => {
+    const definition = withIntegrations(
+      integrationsSchema.parse({
+        todo: { transport: 'http', url: 'https://todo.example/mcp', auth: 'oauth' },
+      }),
+    );
+    expect(integrationSecretRefs(definition)).toEqual([]);
+    expect(isOAuthIntegration(definition.integrations?.['todo'] as never)).toBe(true);
+  });
+});
+
+describe('the preflight projection (§10, WO6 item 2)', () => {
+  const oauthAndCreds = (): AgentDefinition =>
+    withIntegrations(
+      integrationsSchema.parse({
+        todo: { transport: 'http', url: 'https://todo.example/mcp', auth: 'oauth' },
+        gmail: {
+          transport: 'stdio',
+          command: 'node',
+          env: { GMAIL_TOKEN: { secretRef: 'mcp.gmail.token' } },
+        },
+      }),
+    );
+
+  it('answers ready / needs-auth per integration, and reveals no value', async () => {
+    const states = await integrationPreflight({
+      definition: oauthAndCreds(),
+      secrets: RESOLVING,
+    });
+    const byName = Object.fromEntries(states.map((state) => [state.integration, state]));
+
+    expect(byName['gmail']?.state).toBe('ready');
+    expect(byName['gmail']?.credentials).toEqual([
+      expect.objectContaining({ secretRef: 'mcp.gmail.token', resolved: true }),
+    ]);
+    // The OAuth default is cautious: no session has connected, so the grant is
+    // unknown — and unknown is reported as needs-auth rather than as ready.
+    expect(byName['todo']?.state).toBe('needs-auth');
+    expect(byName['todo']?.auth).toBe('oauth');
+    expect(byName['todo']?.toolPrefix).toBe('mcp__todo__');
+
+    expect(JSON.stringify(states)).not.toContain(TOKEN);
+  });
+
+  it('reports missing-secret when a ref does not resolve, and names only the ref', async () => {
+    const states = await integrationPreflight({ definition: oauthAndCreds(), secrets: EMPTY });
+    const gmail = states.find((state) => state.integration === 'gmail');
+    expect(gmail?.state).toBe('missing-secret');
+    expect(gmail?.missingSecretRefs).toEqual(['mcp.gmail.token']);
+    expect(gmail?.detail).toContain('mcp.gmail.token');
+  });
+
+  it('promotes an OAuth server to ready once a session has reported it connected', async () => {
+    const states = await integrationPreflight({
+      definition: oauthAndCreds(),
+      secrets: RESOLVING,
+      lastSeen: { todo: 'connected' },
+    });
+    expect(states.find((state) => state.integration === 'todo')?.state).toBe('ready');
+  });
+
+  it('demotes a credential server the last session could not connect', async () => {
+    const states = await integrationPreflight({
+      definition: oauthAndCreds(),
+      secrets: RESOLVING,
+      lastSeen: { gmail: 'failed' },
+    });
+    expect(states.find((state) => state.integration === 'gmail')?.state).toBe('needs-auth');
+  });
+
+  it('reports a required-but-undeclared connector as not-attached', async () => {
+    const states = await integrationPreflight({
+      definition: oauthAndCreds(),
+      secrets: RESOLVING,
+      required: ['todo', 'jira'],
+    });
+    expect(states.find((state) => state.integration === 'todo')?.required).toBe(true);
+    const jira = states.find((state) => state.integration === 'jira');
+    expect(jira?.state).toBe('not-attached');
+    expect(jira?.transport).toBeUndefined();
+    expect(jira?.detail).toContain('does not declare it');
   });
 });

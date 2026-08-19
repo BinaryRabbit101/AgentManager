@@ -660,3 +660,123 @@ describe('a card is answered where it is seen (§9.3, §11.3)', () => {
     expect(screen.getByText(/Waiting for your answer/u)).toBeTruthy();
   });
 });
+
+/**
+ * WO6 item 3 — the needs-auth card, completed.
+ *
+ * Driven through the real socket rather than through `connectors.ts` alone,
+ * because what was actually wrong before is that these diagnostics carry no
+ * `seq` and so never reached the screen at all.
+ */
+describe('the MCP authorisation card (roster §10, WO6)', () => {
+  it('raises the connector, then the Authenticate… link, as one card', async () => {
+    const view = await open({ lines: [line(1, 'assistant', { text: 'starting' })] });
+
+    await act(async () => {
+      view.sessionStream.emit({
+        type: 'session.diagnostic',
+        ids: { sessionId: 's1' },
+        payload: {
+          severity: 'warn',
+          code: 'mcp_needs_auth',
+          server: 'todo',
+          message: 'The MCP server "todo" needs authorising before this session can use its tools.',
+          action: 'authenticate',
+          relaunchRequired: false,
+        },
+      });
+      await Promise.resolve();
+    });
+
+    const card = await waitFor(() => {
+      const found = document.querySelector('[data-badge="connector"]');
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(card.textContent).toContain('needs authorising');
+    // No link yet: the server has not raised one, and inventing a URL would be
+    // an action that goes nowhere.
+    expect(card.querySelector('[data-action="authenticate"]')).toBeNull();
+
+    await act(async () => {
+      view.sessionStream.emit({
+        type: 'session.diagnostic',
+        ids: { sessionId: 's1' },
+        payload: {
+          severity: 'warn',
+          code: 'mcp_authorize_url',
+          server: 'todo',
+          message: 'The "todo" MCP server needs you to authorise it.',
+          authorizeUrl: 'https://todo.example/authorize?state=abc',
+          action: 'authenticate',
+        },
+      });
+      await Promise.resolve();
+    });
+
+    // One card, now actionable — not a second card beside the first.
+    await waitFor(() =>
+      expect(document.querySelectorAll('[data-badge="connector"]')).toHaveLength(1),
+    );
+    expect(screen.getByRole('link', { name: 'Authenticate…' })).toHaveAttribute(
+      'href',
+      'https://todo.example/authorize?state=abc',
+    );
+  });
+
+  it('goes quiet when the grant lands, and says relaunch when it cannot be used', async () => {
+    const view = await open({ lines: [line(1, 'assistant', { text: 'starting' })] });
+
+    await act(async () => {
+      view.sessionStream.emit({
+        type: 'session.diagnostic',
+        ids: { sessionId: 's1' },
+        payload: {
+          severity: 'warn',
+          code: 'mcp_needs_auth',
+          server: 'todo',
+          message: 'needs auth',
+        },
+      });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(document.querySelector('[data-badge="connector"]')).not.toBeNull());
+
+    await act(async () => {
+      view.sessionStream.emit({
+        type: 'session.diagnostic',
+        ids: { sessionId: 's1' },
+        payload: {
+          severity: 'info',
+          code: 'mcp_authorized',
+          server: 'todo',
+          message: 'authorised',
+        },
+      });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(document.querySelector('[data-badge="connector"]')).toBeNull());
+
+    await act(async () => {
+      view.sessionStream.emit({
+        type: 'session.diagnostic',
+        ids: { sessionId: 's1' },
+        payload: {
+          severity: 'warn',
+          code: 'mcp_reconnect_unavailable',
+          server: 'todo',
+          message: 'Relaunch the turn to pick it up.',
+          relaunchRequired: true,
+        },
+      });
+      await Promise.resolve();
+    });
+    const card = await waitFor(() => {
+      const found = document.querySelector('[data-badge="connector"]');
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(card.dataset['state']).toBe('relaunch-required');
+    expect(card.textContent).toContain('Relaunch the turn');
+  });
+});

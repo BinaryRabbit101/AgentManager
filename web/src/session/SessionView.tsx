@@ -46,6 +46,12 @@ import {
 } from './blocks';
 import { CONTROL_PATHS, controlStates, isAwaitingAnswer } from './controls';
 import { SessionBlock } from './SessionBlock';
+import {
+  applyConnectorDiagnostic,
+  openConnectorNotices,
+  NO_CONNECTOR_NOTICES,
+  type ConnectorNotices,
+} from './connectors';
 import { SessionStream } from './sessionStream';
 import { UsageRail } from './UsageRail';
 
@@ -73,6 +79,8 @@ export function SessionView(): ReactElement {
   const [failure, setFailure] = useState<ApiFailure | undefined>();
   const [controlState, setControlState] = useState<SessionControlResult | undefined>();
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  /** WO6 item 3: one row per MCP server, refined by each diagnostic about it. */
+  const [connectorNotices, setConnectorNotices] = useState<ConnectorNotices>(NO_CONNECTOR_NOTICES);
 
   const session = detail.data?.session;
   const status = controlState?.status ?? session?.status;
@@ -129,6 +137,15 @@ export function SessionView(): ReactElement {
           // arrive with the block rather than one global frame later.
           void queryClient.invalidateQueries({ queryKey: ['questions'] });
           setTranscript((current) => applyEvent(current, frame));
+          return;
+        }
+        if (frame.type === 'session.diagnostic') {
+          // WO6 item 3. Not folded into the block list: `applyEvent` keys on a
+          // `seq` these diagnostics do not carry, so they would be dropped — and
+          // an authorisation link that scrolls away with the transcript is not
+          // an action anyway. It belongs in the header, beside the other
+          // standing facts about the session.
+          setConnectorNotices((current) => applyConnectorDiagnostic(current, frame));
           return;
         }
         if (frame.type === 'session.usage') {
@@ -388,6 +405,44 @@ export function SessionView(): ReactElement {
             needs will end the turn instead.
           </p>
         ) : null}
+        {/*
+          WO6 item 3 — the needs-auth card, completed.
+
+          The **Authenticate…** action is a link and nothing more, because that
+          is genuinely the whole flow: the CLI runs OAuth discovery and the code
+          exchange itself, and what it needs from the human is a browser visit.
+          Opening it is the action; the SDK tells this session when the grant
+          lands (`system`/`elicitation_complete`) and reconnects the server, so
+          there is no "I'm done" button to press and nothing for the user to
+          copy back. Where reconnection is not available the row says relaunch,
+          in runner's own words rather than a guess made here.
+        */}
+        {openConnectorNotices(connectorNotices).map((notice) => (
+          <p
+            key={notice.server}
+            className="notice"
+            data-tone={notice.state === 'failed' ? 'danger' : 'warn'}
+            data-badge="connector"
+            data-state={notice.state}
+            data-server={notice.server}
+            role="alert"
+          >
+            {notice.message}
+            {notice.authorizeUrl === undefined ? null : (
+              <>
+                {' '}
+                <a
+                  href={notice.authorizeUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  data-action="authenticate"
+                >
+                  Authenticate…
+                </a>
+              </>
+            )}
+          </p>
+        ))}
         {(start?.diagnostics ?? []).map((diagnostic, index) => (
           <p
             key={`${diagnostic.code ?? 'diagnostic'}-${String(index)}`}

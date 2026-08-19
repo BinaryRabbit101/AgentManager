@@ -267,6 +267,18 @@ Any third call site is a review failure, not a judgement call.
 | `project.<projectId>.<name>` | projects UI | roster's option compiler, resolving a project's env entries at session start (projects §1.4). Keyed by project id, not slug, so a rename cannot orphan a secret. |
 | `notify.<channel>.<field>` | notification settings UI | orchestrator's notifier (orchestrator §10). v1 uses `notify.ntfy.topicUrl` — an ntfy topic URL is a capability URL, so possession of it is the credential and it belongs here rather than in config. Remote's away-notification path reads the same key (remote §7.4). |
 
+**Extension (WO6, 2026-08-19): an OAuth MCP connector has no key in this table, and that is the
+point.** roster §10.1 adds `auth: "oauth"` to a remote integration, which carries no `secretRef` and
+no literal credential — so it contributes no `mcp.<serverId>.<field>` row above and nothing to
+scavenge for. The grant it uses is obtained and cached by the Claude CLI itself, not by this store,
+and it lands under `<dataRoot>\state\claude-config` because runner pins `CLAUDE_CONFIG_DIR` there
+(§2.3, runner `agentEnv.ts`). That satisfies §3.5's first bullet — "all secrets live under
+`dataRoot`, which is outside any repository" — with no new mechanism, and gives an MCP grant the same
+posture `claude.oauthToken` already has. **This does not add a third `.reveal()` site, and it must
+not become one:** the CLI's cache is an undocumented shape holding live access tokens, and no module
+reads or parses it. Roster's preflight (§10.2) reports what a *session* observed, never what a file
+contains.
+
 Roster's `agent.json` may contain `{"secretRef": "mcp.gmail.token"}` but never a credential value; the `secretRef` schema is roster's (roster §10) and this document does not restate it. A library or project record containing something that looks like a live credential is rejected at load with a clear error — and "looks like a live credential" is **exactly** roster §10's rule, not a second heuristic: any `env` or `headers` key matching `*TOKEN*` / `*KEY*` / `*SECRET*` / `*PASSWORD*` / `AUTH*` must carry `{ secretRef }` rather than a literal string.
 
 ### 3.4 Remote bearer tokens are not stored

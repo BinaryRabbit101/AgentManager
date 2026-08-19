@@ -157,7 +157,12 @@ export {
   type ToolResult,
   type ToolsetFactory,
 } from './toolset.js';
-export { composePrompt, type ComposedPrompt, type ComposePromptInput } from './prompt.js';
+export {
+  TOOLING_GUARDRAIL,
+  composePrompt,
+  type ComposedPrompt,
+  type ComposePromptInput,
+} from './prompt.js';
 export {
   createConversationReader,
   type ConversationEntry,

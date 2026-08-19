@@ -123,6 +123,9 @@ describe('the whitelist', () => {
       'canUseTool',
       'env.CLAUDE_CODE_OAUTH_TOKEN',
       'includePartialMessages',
+      // WO6 item 3: runner owns every path a session has to the human, and an
+      // MCP elicitation is one — the OAuth authorisation link arrives that way.
+      'onElicitation',
       'resume',
       'sessionId',
       'stderr',

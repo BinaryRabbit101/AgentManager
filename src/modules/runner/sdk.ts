@@ -50,6 +50,19 @@ export interface SdkSession extends AsyncIterable<SDKMessage> {
    * `pending | connected | failed | needs-auth | disabled` vocabulary.
    */
   mcpServerStatus?(): Promise<readonly { name: string; status: string }[]>;
+  /**
+   * `Query.reconnectMcpServer(serverName)` (`sdk.d.ts:2592`) — the half of WO6
+   * item 3 the SDK actually offers.
+   *
+   * "Completing auth re-checks the server and lets the session continue where
+   * the SDK supports reconnection" is this method, and nothing else: there is no
+   * SDK call that authorises a remote MCP server outside a live session, so the
+   * *authorising* half is the browser round-trip the CLI raises as a `mode:
+   * "url"` elicitation. Optional in the seam because an older CLI build may not
+   * carry it, and a card that promised a reconnect this build cannot perform
+   * would be worse than one that says "relaunch the turn".
+   */
+  reconnectMcpServer?(serverName: string): Promise<void>;
 }
 
 /** The one SDK entry point runner calls (§4.1: streaming input, always). */

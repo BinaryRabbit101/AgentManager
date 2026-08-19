@@ -182,6 +182,29 @@ export function createRosterRoutes(deps: RosterRoutesDeps): RouteDefinition[] {
     },
 
     {
+      method: 'GET',
+      path: `${ROSTER_API_PREFIX}/agents/:id/integrations`,
+      description:
+        'Per-integration preflight: ready / needs-auth / missing-secret / not-attached (§10).',
+      handler: (req, res) =>
+        answeringAsync(logger, req, res, async () => {
+          // `?required=a,b` is the task's `requiredIntegrations`. It is the only
+          // input that can produce `not-attached`, because "this task needs the
+          // todo connector" is a fact about the task and the agent definition
+          // cannot be asked it.
+          const raw = req.query.get('required');
+          const required = (raw === null ? [] : raw.split(','))
+            .map((name) => name.trim())
+            .filter((name) => name !== '');
+          return res.json({
+            integrations: await service.integrations(id(req), {
+              ...(required.length === 0 ? {} : { required }),
+            }),
+          });
+        }),
+    },
+
+    {
       method: 'PATCH',
       path: `${ROSTER_API_PREFIX}/agents/:id`,
       description: 'Partially updates an agent. The id and meta.createdAt are immutable.',

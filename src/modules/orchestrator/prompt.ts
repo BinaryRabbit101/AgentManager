@@ -8,7 +8,8 @@
  * 4. Unread mail        up to mailbox.inlineMax messages, oldest first, then "N older — call read_mailbox"
  * 5. Open decisions     any open question card for this assignment + how to state a stance (§6.4)
  * 6. Termination rules  rounds remaining, budget remaining, what convergence means here
- * 7. Required close     "Before you finish, call mcp__agentmanager__report_status with your verdict."
+ * 7. Tools and integrations  the fixed no-scavenging rule (WO6)
+ * 8. Required close     "Before you finish, call mcp__agentmanager__report_status with your verdict."
  * ```
  *
  * "Sections 3–5 are the only dynamic parts; templates live in code and are not
@@ -17,9 +18,9 @@
  * ## The byte cap is enforced by dropping, not by slicing
  *
  * `orchestrator.prompt.maxBytes` (16 KB) is a hard ceiling, and the sections are
- * not equally disposable: sections 1, 2, 6 and 7 are what makes the turn
- * *correct* — the goal, the seat, the termination rules and the instruction to
- * report — while 3, 4 and 5 are context. So an over-long prompt loses the
+ * not equally disposable: sections 1, 2, 6, 7 and 8 are what makes the turn
+ * *correct* — the goal, the seat, the termination rules, the tooling rule and
+ * the instruction to report — while 3, 4 and 5 are context. So an over-long prompt loses the
  * excerpt, then the mail bodies, then the decisions, each replaced by an honest
  * one-line marker, and only a pathological goal reaches the final slice. Silently
  * truncating mid-sentence at 16 KB would cut the *required close* off the end,
@@ -36,6 +37,32 @@ export const REQUEST_DECISION_TOOL = 'mcp__agentmanager__request_user_decision';
 /** The two an overseer launch also mounts (§4.1's table, §3.5's decompose turn). */
 export const CREATE_ASSIGNMENT_TOOL = 'mcp__agentmanager__create_assignment';
 export const LIST_ROSTER_TOOL = 'mcp__agentmanager__list_roster';
+
+/**
+ * §3.2 section 7's fixed paragraph — the no-scavenging rule (WO6 item 4).
+ *
+ * It is a **constant, emitted unconditionally, in every composed prompt** —
+ * solo included — because the incident it exists to prevent was not
+ * pattern-specific: on 2026-08-19 an agent whose todo MCP server was
+ * unavailable responded by searching the machine for API credentials. Nothing in
+ * its prompt had told it what to do instead, and "search for a key" is a
+ * plausible next step for a model that has been given a job and no exit.
+ *
+ * So the paragraph does two things in one breath: it names the forbidden move
+ * and it names the *fast* one. A prohibition on its own leaves the agent stuck
+ * with the same problem and one fewer idea; pairing it with `report_status
+ * blocked` makes the sanctioned path also the quickest path to a working
+ * connector, which is what makes it the move a capable agent would pick anyway.
+ *
+ * Wording is fixed rather than templated on purpose — a rule that varies by
+ * pattern is a rule an author has to re-audit per pattern.
+ */
+export const TOOLING_GUARDRAIL =
+  'Use only the tools and MCP servers provided to this session. If a tool or integration you ' +
+  `need is missing, failing, or unauthorized, call ${REPORT_STATUS_TOOL} with state "blocked" ` +
+  'naming it. Never search the filesystem, environment, or configuration for credentials or API ' +
+  'keys — that is always the wrong move, and the block report is the fast path to getting the ' +
+  'connector fixed.';
 
 export interface PromptBudgets {
   readonly maxBytes: number;
@@ -93,11 +120,28 @@ export function composePrompt(input: ComposePromptInput): ComposedPrompt {
     }
   }
 
-  // Only a goal or a blocking list larger than the whole budget gets here.
+  // Only a goal or a blocking list larger than the whole budget gets here — and
+  // it is the one path that used to cut mid-sentence at `maxBytes`, taking the
+  // *last* sections with it. That is exactly backwards: the tail is sections 7
+  // and 8, the tooling rule and the required close, which are the two sentences
+  // the run's correctness depends on. So the slice is applied to everything
+  // *before* them and the tail is re-appended whole (WO6 item 4 made this
+  // load-bearing: "the guardrail paragraph present for every pattern").
   const bare = build(input, { excerpt: false, mailBodies: false, decisions: false });
-  const text = sliceUtf8(bare.text, input.budgets.maxBytes);
+  const tail = bare.parts.slice(-2).join('\n\n');
+  const head = bare.parts.slice(0, -2).join('\n\n');
+  const room = input.budgets.maxBytes - byteLength(tail) - SEPARATOR_BYTES;
+  const text =
+    room > 0
+      ? `${sliceUtf8(head, room)}\n\n${tail}`
+      : // A cap smaller than the contract itself is a misconfiguration, not a
+        // prompt: nothing can be preserved, so the old behaviour stands.
+        sliceUtf8(bare.text, input.budgets.maxBytes);
   return { text, sections: bare.sections, bytes: byteLength(text), truncated: true };
 }
+
+/** The `\n\n` that joins two sections. */
+const SEPARATOR_BYTES = 2;
 
 interface Degradation {
   readonly excerpt: boolean;
@@ -111,6 +155,8 @@ function build(
 ): {
   text: string;
   sections: readonly number[];
+  /** The sections as separate strings, so the pathological slice can keep the tail. */
+  parts: readonly string[];
 } {
   const parts: string[] = [];
   const sections: number[] = [];
@@ -220,11 +266,19 @@ function build(
   parts.push(section('6. Termination rules', terminationLines(input)));
   sections.push(6);
 
-  // --- 7. Required close ---------------------------------------------------
-  parts.push(section('7. Required close', [requiredCloseLine(input)]));
+  // --- 7. Tools and integrations -------------------------------------------
+  // Unconditional, and *not* in the degradation ladder above: a prompt that
+  // dropped this to fit is a prompt that dropped the one rule the incident of
+  // 2026-08-19 was about. It sits before the required close so that close stays
+  // the last thing the model reads (see the header's slicing note).
+  parts.push(section('7. Tools and integrations', [TOOLING_GUARDRAIL]));
   sections.push(7);
 
-  return { text: parts.join('\n\n'), sections };
+  // --- 8. Required close ---------------------------------------------------
+  parts.push(section('8. Required close', [requiredCloseLine(input)]));
+  sections.push(8);
+
+  return { text: parts.join('\n\n'), sections, parts };
 }
 
 function seatSentence(input: ComposePromptInput): string {

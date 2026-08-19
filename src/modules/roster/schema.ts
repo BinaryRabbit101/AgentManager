@@ -428,6 +428,62 @@ const remoteUrl = z
     'must be an http(s) URL',
   );
 
+/**
+ * §10's OAuth auth mode — remote transports only (WO6).
+ *
+ * `auth: "oauth"` is a **declaration of intent, not a credential**: it says this
+ * server authorises the human through the MCP OAuth flow rather than through a
+ * header this machine holds. Nothing is compiled from it, because there is
+ * nothing to compile to — the SDK's `McpHttpServerConfig` / `McpSSEServerConfig`
+ * carry `url`, `headers`, `tools`, `timeout` and `alwaysLoad` and no auth field
+ * whatsoever (`sdk.d.ts:1037`, `:1152`), and the CLI's own MCP client performs
+ * discovery and authorisation when the server answers a challenge.
+ *
+ * What the flag buys is that the rest of the system can *tell the two apart*. A
+ * headers-bearing server whose `secretRef` will not resolve is a broken install
+ * that a launch should refuse; an OAuth server with no grant yet is one human
+ * tap from working. Those are different sentences, and preflight
+ * (`integrations.ts`) says them differently instead of showing one "needs
+ * credential" badge for both.
+ */
+export const INTEGRATION_AUTH_MODES = ['oauth'] as const;
+export const integrationAuthSchema = z.enum(INTEGRATION_AUTH_MODES);
+export type IntegrationAuth = z.infer<typeof integrationAuthSchema>;
+
+/**
+ * "OAuth means no credential of ours travels with this server."
+ *
+ * The rule is *credential-bearing* headers rather than headers at all: an
+ * `X-Tenant: acme` routing header is not a credential, and forbidding it would
+ * make the mode unusable for the servers that need one. What is refused is
+ * exactly what §10 already calls a credential — a credential-shaped key, or any
+ * `{ secretRef }` — because an OAuth server that also carries a bearer token is
+ * two auth mechanisms whose failure modes cannot be told apart, and the whole
+ * point of the mode is that there is nothing on this machine worth scavenging
+ * for.
+ */
+function refuseCredentialHeaders(
+  value: {
+    readonly auth?: IntegrationAuth | undefined;
+    readonly headers?: Record<string, SecretValue> | undefined;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.auth !== 'oauth') return;
+  for (const [key, entry] of Object.entries(value.headers ?? {})) {
+    const isRef = typeof entry === 'object' && entry !== null && 'secretRef' in entry;
+    if (!isRef && !isCredentialShapedKey(key)) continue;
+    ctx.addIssue({
+      code: 'custom',
+      path: ['headers', key],
+      message:
+        `auth "oauth" and a credential header are mutually exclusive: "${key}" ` +
+        `${isRef ? 'carries a secretRef' : 'is credential-shaped'}. An OAuth integration ` +
+        'carries no secretRef and no literal credential (DESIGN §10).',
+    });
+  }
+}
+
 export const integrationConfigSchema = z.discriminatedUnion('transport', [
   z.strictObject({
     transport: z.literal('stdio'),
@@ -435,21 +491,42 @@ export const integrationConfigSchema = z.discriminatedUnion('transport', [
     args: z.array(z.string()).optional(),
     env: credentialAwareRecord('environment variable', ENV_NAME_PATTERN).optional(),
     toolPrefixHint: toolPrefixHint.optional(),
+    /**
+     * Refused with a sentence rather than by omission. `strictObject` would
+     * reject the key anyway, as "unrecognized", which is the right outcome
+     * described in the wrong words: a stdio server is a child process this
+     * machine starts, so there is no HTTP challenge for an authorization server
+     * to answer and `auth: "oauth"` on one is not a stricter config but a config
+     * that cannot mean anything.
+     */
+    auth: z
+      .never({
+        error:
+          'auth "oauth" applies to remote MCP servers only (transport "http" or "sse"): a stdio ' +
+          'server is a local child process with no OAuth challenge to answer (DESIGN §10)',
+      })
+      .optional(),
   }),
-  z.strictObject({
-    transport: z.literal('sse'),
-    url: remoteUrl,
-    headers: credentialAwareRecord('HTTP header', HEADER_NAME_PATTERN).optional(),
-    toolPrefixHint: toolPrefixHint.optional(),
-  }),
-  z.strictObject({
-    /** `http` only: `streamable-http` is a `.mcp.json` alias the programmatic
-     *  option does not accept (§10, confirmed in SDK-NOTES §3). */
-    transport: z.literal('http'),
-    url: remoteUrl,
-    headers: credentialAwareRecord('HTTP header', HEADER_NAME_PATTERN).optional(),
-    toolPrefixHint: toolPrefixHint.optional(),
-  }),
+  z
+    .strictObject({
+      transport: z.literal('sse'),
+      url: remoteUrl,
+      headers: credentialAwareRecord('HTTP header', HEADER_NAME_PATTERN).optional(),
+      toolPrefixHint: toolPrefixHint.optional(),
+      auth: integrationAuthSchema.optional(),
+    })
+    .superRefine(refuseCredentialHeaders),
+  z
+    .strictObject({
+      /** `http` only: `streamable-http` is a `.mcp.json` alias the programmatic
+       *  option does not accept (§10, confirmed in SDK-NOTES §3). */
+      transport: z.literal('http'),
+      url: remoteUrl,
+      headers: credentialAwareRecord('HTTP header', HEADER_NAME_PATTERN).optional(),
+      toolPrefixHint: toolPrefixHint.optional(),
+      auth: integrationAuthSchema.optional(),
+    })
+    .superRefine(refuseCredentialHeaders),
 ]);
 export type IntegrationConfig = z.infer<typeof integrationConfigSchema>;
 

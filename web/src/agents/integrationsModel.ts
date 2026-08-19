@@ -61,6 +61,15 @@ export interface IntegrationForm {
   readonly args: string;
   /** sse/http only. */
   readonly url: string;
+  /**
+   * sse/http only — roster §10.1's `auth: "oauth"` (WO6).
+   *
+   * A *declaration*, not a credential: it says the server authorises the human
+   * through the MCP OAuth flow, so this machine holds nothing for it. Roster
+   * refuses it beside a credential-shaped header or a `secretRef`, which is
+   * restated in {@link integrationProblems} so the clash is caught in the field.
+   */
+  readonly oauth: boolean;
   /** `env` for stdio, `headers` for sse/http — §10's two credential-bearing maps. */
   readonly fields: readonly CredentialField[];
 }
@@ -71,6 +80,7 @@ export const EMPTY_INTEGRATION: IntegrationForm = Object.freeze({
   command: '',
   args: '',
   url: '',
+  oauth: false,
   fields: [],
 });
 
@@ -199,6 +209,9 @@ export function integrationsOf(value: unknown): IntegrationForm[] {
       command: typeof raw['command'] === 'string' ? raw['command'] : '',
       args: Array.isArray(args) ? args.filter((arg) => typeof arg === 'string').join('\n') : '',
       url: typeof raw['url'] === 'string' ? raw['url'] : '',
+      // Only `"oauth"` is representable, so anything else round-trips as off
+      // rather than as a value the form would write back unrecognised.
+      oauth: transport !== 'stdio' && raw['auth'] === 'oauth',
       fields: fieldsOf(transport === 'stdio' ? raw['env'] : raw['headers']),
     });
   }
@@ -269,6 +282,9 @@ export function integrationsBody(
     out[name] = {
       transport: form.transport,
       url: form.url,
+      // Omitted rather than sent `false`: the schema has one auth mode and an
+      // absent key is what "no declared auth mode" spells (roster §10.1).
+      ...(form.oauth ? { auth: 'oauth' } : {}),
       ...(hasFields ? { headers: fields } : {}),
       ...hint,
     };
@@ -319,6 +335,19 @@ export function integrationProblems(forms: readonly IntegrationForm[]): Integrat
     for (const field of form.fields) {
       const key = field.key.trim();
       if (key === '') continue;
+      // roster §10.1's mutual exclusion, said in the field. An OAuth server that
+      // also carries a bearer token is two auth mechanisms whose failure modes
+      // cannot be told apart, and the point of the mode is that this machine
+      // holds nothing for the server at all.
+      if (form.oauth && (field.secret || isCredentialShapedKey(key))) {
+        problems.push({
+          integration: name,
+          key,
+          message:
+            `“${key}” is a credential, and this server is set to authorise with OAuth. Untick ` +
+            'one of the two: an OAuth connector carries no secret reference and no key.',
+        });
+      }
       if (field.secret) {
         if (!isSecretKey(field.value.trim())) {
           problems.push({
