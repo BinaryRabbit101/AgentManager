@@ -514,11 +514,14 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
    * carries the projection — so N seated agents cost no extra request, and the
    * chips appear the moment a name is ticked rather than after a round trip.
    *
-   * `requiredIntegrations` (WO5's task templates) is not in this build's task
-   * shape yet; when it is, it is the second argument and `not-attached` starts
-   * appearing. The code path and its test exist so that is a one-line change.
+   * The second argument is the picked template's `requiredIntegrations` (WO5) —
+   * the producer of `not-attached`: a seat missing a connector the task needs is
+   * a chip with an editor link, never a submit blocker (roster §2.4).
    */
-  const chips = useMemo(() => connectorChips(selected), [selected]);
+  const chips = useMemo(
+    () => connectorChips(selected, template?.template.requiredIntegrations ?? []),
+    [selected, template],
+  );
 
   const banner = elevationBanner(
     project.data?.defaults.permissionElevation,
