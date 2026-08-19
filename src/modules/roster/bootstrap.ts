@@ -90,12 +90,23 @@ export interface RosterMetadata {
    * library looks empty" would give them.
    */
   readonly seededAt: string | null;
+  /**
+   * When the **task-template** seeding pass ran (WO5), or `null` before it has.
+   *
+   * A second stamp rather than a reuse of `seededAt`, because the two passes
+   * are not the same decision and every existing library has already taken the
+   * first one. Templates arrived after agents did, so a roster stamped
+   * `seededAt` in June must still get the starter templates once — and must
+   * still not get them back after the owner deletes one.
+   */
+  readonly templatesSeededAt: string | null;
 }
 
 /** What a `roster.json` that cannot be read is treated as. */
 const DEFAULT_ROSTER_METADATA: RosterMetadata = {
   schemaVersion: AGENT_SCHEMA_VERSION,
   seededAt: null,
+  templatesSeededAt: null,
 };
 
 /**
@@ -118,9 +129,16 @@ export function readRosterMetadata(paths: LibraryPaths): RosterMetadata {
   const record = raw as Record<string, unknown>;
   const schemaVersion = record['schemaVersion'];
   const seededAt = record['seededAt'];
+  const templatesSeededAt = record['templatesSeededAt'];
   return {
     schemaVersion: typeof schemaVersion === 'number' ? schemaVersion : AGENT_SCHEMA_VERSION,
     seededAt: typeof seededAt === 'string' && seededAt.length > 0 ? seededAt : null,
+    // Absent on every `roster.json` written before WO5, which reads as "the
+    // template pass has not run here" — exactly right, because it has not.
+    templatesSeededAt:
+      typeof templatesSeededAt === 'string' && templatesSeededAt.length > 0
+        ? templatesSeededAt
+        : null,
   };
 }
 
@@ -214,6 +232,15 @@ export function bootstrapLibrary(options: BootstrapLibraryOptions): BootstrapRes
   if (!existsSync(paths.agents)) {
     mkdirSync(paths.agents, { recursive: true });
     created.push(paths.agents);
+  }
+  // `templates/` alongside it (§2.4, WO5). Created unconditionally rather than
+  // on first use, and by the same idempotent check as everything else here, so a
+  // library that predates task templates grows the folder on its next boot
+  // instead of on the first write — which is what makes the watcher able to
+  // start on a directory that exists.
+  if (!existsSync(paths.templates)) {
+    mkdirSync(paths.templates, { recursive: true });
+    created.push(paths.templates);
   }
   if (!existsSync(paths.rosterJson)) {
     writeRosterMetadata(paths, DEFAULT_ROSTER_METADATA, hooks);

@@ -65,6 +65,10 @@ import { listSkillNames, validateSkills } from './skills.js';
 
 /** `agents/` — one folder per agent, the folder name being the id. */
 export const AGENTS_DIRNAME = 'agents';
+/** `templates/` — one folder per task template (§2.4, WO5). Declared here with
+ *  the rest of the layout, and read by `templates.ts`, which owns everything
+ *  inside it — this module is still the only place that knows the shape. */
+export const TEMPLATES_DIRNAME = 'templates';
 /** `.archive/` — soft-deleted agents, `<id>-<timestamp>/` (§9.3). */
 export const ARCHIVE_DIRNAME = '.archive';
 /** Roster-level metadata: `schemaVersion`, `seededAt` (§2.1). */
@@ -92,6 +96,8 @@ export const TEMP_PREFIX = '.tmp-';
 export interface LibraryPaths {
   readonly root: string;
   readonly agents: string;
+  /** `templates/` — the task-template sibling of `agents/` (§2.4, WO5). */
+  readonly templates: string;
   readonly archive: string;
   readonly rosterJson: string;
   readonly gitignore: string;
@@ -104,6 +110,7 @@ export function libraryPaths(root: string): LibraryPaths {
   return {
     root: absolute,
     agents: join(absolute, AGENTS_DIRNAME),
+    templates: join(absolute, TEMPLATES_DIRNAME),
     archive: join(absolute, ARCHIVE_DIRNAME),
     rosterJson: join(absolute, ROSTER_JSON_FILENAME),
     gitignore: join(absolute, GITIGNORE_FILENAME),

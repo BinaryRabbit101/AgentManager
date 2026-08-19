@@ -333,6 +333,9 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       // one chip is the same intent twice, and the column should hold the set
       // the user expressed, not the clicks they made (§2.3).
       preGrants: dedupePreGrants(request.preGrants),
+      // Provenance, straight through: the template already did its work in the
+      // browser, and this is the one trace of it the row keeps (WO5).
+      templateId: request.templateId,
       tokenBudget: request.tokenBudget ?? defaultBudget(request),
       roundCap: request.roundCap ?? defaultRoundCap(request),
       members: request.members.map((member, index) => ({
@@ -462,6 +465,7 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       // do it the same way everything else does, by riding the one
       // `CreateAssignmentRequest` §2.3 funnels all three paths through.
       ...(request.preGrants === undefined ? {} : { preGrants: request.preGrants }),
+      ...(request.templateId === undefined ? {} : { templateId: request.templateId }),
       ...(request.createdBy === undefined ? {} : { createdBy: request.createdBy }),
     });
 
@@ -693,6 +697,7 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       parentAssignmentId: row.parentAssignmentId,
       leadAgentId: row.leadAgentId,
       artifactPath: row.artifactPath,
+      templateId: row.templateId,
       tokenBudget: row.tokenBudget,
       tokensUsed: row.tokensUsed,
       roundCap: row.roundCap,

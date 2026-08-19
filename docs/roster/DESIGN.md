@@ -63,9 +63,13 @@ database holds only what must not churn git history.
           SKILL.md
       .claude-plugin/
         plugin.json                    # generated, not hand-edited — makes the folder a local plugin
+  templates/
+    todo-ticket-replies/               # folder name == task template id (see §2.4)
+      template.json                    # a reusable Start-work prefill
   .archive/
     <id>-<timestamp>/                  # soft-deleted agents (see §9)
-  roster.json                          # roster-level metadata: schemaVersion, seededAt
+  roster.json                          # roster-level metadata: schemaVersion, seededAt,
+                                       #   templatesSeededAt
 ```
 
 Paths are foundation's (foundation §1.2): the library root is `library.root`, resolved beneath
@@ -115,6 +119,89 @@ ResolvedAgent>`, validates each, and watches the directory (debounced, ~250 ms) 
 Reads are served from memory; writes go through the store (atomic temp-file + rename) and then
 update the map. A file that fails validation is kept out of the registry and surfaced as a
 `RosterDiagnostic` the UI can display on the board — never a crash, never a silent drop.
+
+### 2.4 Task templates *(2026-08-19, WO5)*
+
+> "We also should be able to attach agents that design specifically for example updating todo
+> ticket replies, drafting emails, etc."
+
+A **task template** is a reusable prefill of the Start-work flow (ui §6): the shape of a
+recurring, non-code job — answer the open tickets, draft replies to a mailbox — held as data so
+any capable agent can be attached to it in one pick, instead of the task being described from
+scratch every time.
+
+```jsonc
+// <libraryRoot>/templates/<slug>/template.json          — folder name == template id
+{
+  "schemaVersion": 1,
+  "id": "todo-ticket-replies",
+  "name": "Reply to todo tickets",
+  "description": "Read the open tickets, draft a reply to each, and file them for review.",
+  "pattern": "solo",                        // or "pair"; never "overseer" — see below
+  "goalTemplate": "Work the open items in {{source}}: draft a reply for each, …",
+  "artifactPathTemplate": "docs/assignments/{{slug}}/replies.md",
+  "write": true,
+  "requiredIntegrations": ["gmail"],        // MCP connector ids (§10) — a warning, never a gate
+  "suggestedRoles": ["implementer"],        // ranking hint only (owner decision 2026-08-18)
+  "preGrantTools": ["Write", "Edit"]        // feeds orchestrator §2.3's assignment-scoped pre-grants
+}
+```
+
+**Storage is the library, file-based** — a `templates/` sibling of `agents/`, created by bootstrap,
+loaded into its own in-memory index and watched by its own debounced watcher, all by exactly the
+mechanisms §2.1 and §2.3 describe. The rationale is §2.1's, unchanged: shareable, diffable,
+`git pull`-able and hand-editable. Nothing about a template goes into SQLite; it is not an agent,
+so it lives beside the agents rather than inside the same map, and no listing can return one by
+accident.
+
+**A bad template costs exactly one template.** Loading is per-folder and never throws: a
+`template.json` that will not parse comes back as a `Diagnostic` on the same channel a malformed
+`agent.json` uses (`roster.invalid-template` beside `roster.invalid-definition`, both `error`,
+both naming the file), the module's health goes `degraded` rather than failing, and its neighbours
+load. A folder whose name disagrees with the `id` inside it is `roster.template-id-mismatch`, for
+§2.1's reason applied one directory across.
+
+**Templates suggest; they never gate.** `requiredIntegrations` produces a *warning* in the picker
+when a seated agent does not declare the connector, with a link into the agent's MCP integrations
+editor (ui §7.3.1); `suggestedRoles` is a ranking hint. Neither removes a row, disables a control
+or refuses a launch — the owner's 2026-08-18 decision ("capabilities rank, they never gate")
+applied to the one new thing that could plausibly have re-introduced a gate. The check is answered
+**as data**, per live agent, on the list route, so the dialog needs no request per tick and cannot
+disagree with the server about what an agent declares.
+
+**Templates are data, not a code path.** Applying one only prefills the creation call
+(orchestrator §2.3): goal, pattern, artifact path, write posture, pre-grants. Orchestrator gains
+one optional `templateId` recorded for provenance and nothing else — there is no template-shaped
+assignment and nothing at runtime branches on one.
+
+**`pattern` is `solo` or `pair`, never `overseer`.** A team's lead needs a token budget the pattern
+gives no default for (orchestrator §7.2), so a template that prefilled `overseer` would prefill a
+form that still could not be submitted, and a prefill that leaves **Start** disabled is worse than
+no prefill.
+
+**Two variables, `{{slug}}` and `{{source}}`, and no engine.** `{{slug}}` is the assignment's
+directory slug — the same `<slug>-<shortId>` the untemplated default builds, so a template's
+artifact lands beside a hand-filled run rather than in a parallel tree. `{{source}}` is the one
+free input the dialog renders when a template mentions it ("which queue?", "which mailbox?"). A
+placeholder naming anything else is left **verbatim**, so an author's typo shows up in the
+prefilled field as the typo it is. A template language is a thing that grows conditionals; this
+one has a fixed job.
+
+**Routes** (§9.1's table plus two): `GET /api/roster/templates` — every template with its
+`variables` and its `integrationGaps`, plus the library's template diagnostics — and
+`GET /api/roster/templates/:id`. **Read-only on purpose**: a template is authored the way an agent
+was before the editor existed, by writing the file, and shipping a list route without a write route
+is the honest version of that. A malformed folder answers `404` by id as well as appearing in the
+list's diagnostics, because answering with something for it would make a broken file look applied.
+
+**Seeding** is §2.1's, with a second stamp. Two starter templates ship — "Reply to todo tickets"
+and "Draft email replies", both `solo` — through the same `seed.ts` pass, the same real parser and
+the same "never overwrite a folder that exists" rule. They run on `roster.json`'s
+`templatesSeededAt` rather than on `seededAt`, because templates arrived after agents did: every
+library that already exists has taken the agent decision and holds no templates, and hanging the
+second decision off the first would mean nobody who already uses AgentManager ever receives them.
+The pass therefore also runs on a library the agent half deliberately left alone. Editions do not
+differ (D6).
 
 ---
 

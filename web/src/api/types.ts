@@ -196,6 +196,49 @@ export interface RosterListView {
 }
 
 // ---------------------------------------------------------------------------
+// Task templates (roster §2.4, WO5)
+// ---------------------------------------------------------------------------
+
+/** `templates/<id>/template.json`, as `GET /api/roster/templates` returns it. */
+export interface TaskTemplate {
+  readonly schemaVersion: number;
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  /** `overseer` is deliberately not offered: a team has no default budget. */
+  readonly pattern: 'solo' | 'pair';
+  readonly goalTemplate: string;
+  readonly artifactPathTemplate?: string;
+  readonly write?: boolean;
+  /** MCP connector ids the seated agent should carry — a warning, never a gate. */
+  readonly requiredIntegrations?: readonly string[];
+  readonly suggestedRoles?: readonly string[];
+  /** Bare tool names that arrive pre-ticked on WO4's gate chips. */
+  readonly preGrantTools?: readonly string[];
+}
+
+/** One live agent's shortfall against a template's `requiredIntegrations`. */
+export interface TemplateIntegrationGap {
+  readonly agentId: string;
+  readonly agentName: string;
+  readonly missing: readonly string[];
+}
+
+export interface TaskTemplateView {
+  readonly template: TaskTemplate;
+  /** Which of `slug` / `source` this template's own text mentions — the server
+   *  scans, so the dialog does not have to know the substitution rule. */
+  readonly variables: readonly ('slug' | 'source')[];
+  /** Answered for every live agent at once, so ticking an agent needs no request. */
+  readonly integrationGaps: readonly TemplateIntegrationGap[];
+}
+
+export interface TaskTemplateListView {
+  readonly templates: readonly TaskTemplateView[];
+  readonly diagnostics: readonly Diagnostic[];
+}
+
+// ---------------------------------------------------------------------------
 // Projects (§8.1)
 // ---------------------------------------------------------------------------
 
@@ -552,6 +595,9 @@ export interface AssignmentView {
   readonly parentAssignmentId: string | null;
   readonly leadAgentId: string | null;
   readonly artifactPath: string | null;
+  /** The task template this was started from, or `null` (roster §2.4, WO5).
+   *  Optional on the wire for a core that predates it. */
+  readonly templateId?: string | null;
   /** §10.2: the budget is **tokens**, never money (orchestrator §16.8). */
   readonly tokenBudget: number | null;
   readonly tokensUsed: number;

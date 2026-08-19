@@ -146,6 +146,14 @@ export function createRosterModule(
             'the agent library already holds agents; the starter roster was not written',
           );
         }
+        // The template half runs on its own stamp, so it can write into a
+        // library the agent half deliberately left alone (§2.4, WO5).
+        if (seeded.templates.seeded.length > 0) {
+          ctx.logger.info(
+            { templateIds: seeded.templates.seeded, libraryRoot },
+            `seeded ${String(seeded.templates.seeded.length)} starter task template(s)`,
+          );
+        }
       }
 
       /**
@@ -226,6 +234,7 @@ export function createRosterModule(
       ctx.registerRoutes(createRosterRoutes({ service, logger: ctx.logger }));
 
       let watcher: RosterWatcher = inertWatcher();
+      let templateWatcher: RosterWatcher = inertWatcher();
 
       return {
         start() {
@@ -235,12 +244,12 @@ export function createRosterModule(
             );
             return;
           }
+          const debounce =
+            options.watchDebounceMs === undefined ? {} : { debounceMs: options.watchDebounceMs };
           watcher = createRosterWatcher({
-            agentsDir: store.paths.agents,
+            dir: store.paths.agents,
             logger: ctx.logger,
-            ...(options.watchDebounceMs === undefined
-              ? {}
-              : { debounceMs: options.watchDebounceMs }),
+            ...debounce,
             onChanged: (folders) => {
               const change =
                 folders === undefined ? service.reload() : service.reloadFolders(folders);
@@ -252,19 +261,51 @@ export function createRosterModule(
               }
             },
           });
+          // A second watcher over `templates/` (§2.4, WO5) rather than one
+          // recursive watch of the library root: the two have different reload
+          // paths, and one merged stream of folder names would have to be
+          // re-attributed by guessing which directory a name came from.
+          templateWatcher = createRosterWatcher({
+            dir: store.paths.templates,
+            logger: ctx.logger,
+            ...debounce,
+            onChanged: (folders) => {
+              const change =
+                folders === undefined
+                  ? service.reloadTemplates()
+                  : service.reloadTemplateFolders(folders);
+              if (change.changed) {
+                ctx.logger.info(
+                  { templateIds: change.templateIds },
+                  'the task templates changed on disk and were reloaded',
+                );
+              }
+            },
+          });
         },
 
         stop() {
           watcher.close();
+          templateWatcher.close();
         },
 
         health() {
-          const diagnostics = [...service.bootDiagnostics, ...service.registry.diagnostics()];
+          const diagnostics = [
+            ...service.bootDiagnostics,
+            ...service.registry.diagnostics(),
+            // A `template.json` that will not parse is a fault of exactly the
+            // same weight as an `agent.json` that will not: it degrades, it does
+            // not fail, and it says which file to open.
+            ...service.listTemplates().diagnostics,
+          ];
           const errors = diagnostics.filter((diagnostic) => diagnostic.level === 'error');
           const conditions = diagnostics
             .filter((diagnostic) => diagnostic.level !== 'info')
             .map((diagnostic) => ({
-              id: `${diagnostic.code}:${diagnostic.agentId ?? 'library'}`,
+              // A template diagnostic names no agent, so the file it points at
+              // is what keeps two broken templates from collapsing into one
+              // condition the owner can only fix half of.
+              id: `${diagnostic.code}:${diagnostic.agentId ?? diagnostic.path ?? 'library'}`,
               level: diagnostic.level === 'error' ? ('error' as const) : ('warn' as const),
               message: diagnostic.message,
             }));
@@ -278,8 +319,10 @@ export function createRosterModule(
             detail: {
               agents: service.registry.list().length,
               archived: service.registry.listArchived().length,
+              templates: service.listTemplates().templates.length,
               libraryRoot,
               watching: watcher.watching,
+              watchingTemplates: templateWatcher.watching,
             },
           };
         },

@@ -160,6 +160,8 @@ describe('module registration', () => {
       'GET /api/roster/agents/:id',
       'GET /api/roster/agents/:id/avatar',
       'GET /api/roster/agents/:id/export',
+      'GET /api/roster/templates',
+      'GET /api/roster/templates/:id',
       'PATCH /api/roster/agents/:id',
       'PATCH /api/roster/agents/:id/ui-state',
       'POST /api/roster/agents',
@@ -173,7 +175,8 @@ describe('module registration', () => {
     ]);
     // The whole of §9.1's table, M9's two pack endpoints included, plus §6.2's
     // `/permissions/allow` — the durable half of the question card's "Always
-    // allow" (runner §5.1, owner decision 2026-08-18).
+    // allow" (runner §5.1, owner decision 2026-08-18) — and §2.4's two read-only
+    // template routes (WO5), which have no write half on purpose.
     expect(mine.every((route) => route.remote === 'allow')).toBe(true);
   });
 

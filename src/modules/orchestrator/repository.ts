@@ -66,6 +66,8 @@ export interface AssignmentRow {
   readonly patternConfigJson: string;
   /** 0004's column, raw. Parsed by `parsePreGrants` at the one place it is read. */
   readonly preGrantsJson: string;
+  /** 0006's column: the task template this was started from, or `null` (WO5). */
+  readonly templateId: string | null;
   readonly phase: AssignmentPhase;
   readonly haltReason: string | null;
   readonly updatedAt: string | null;
@@ -92,6 +94,7 @@ export interface CreateAssignmentRow {
   readonly artifactPath?: string | undefined;
   readonly patternConfig?: Readonly<Record<string, unknown>> | undefined;
   readonly preGrants?: readonly PreGrant[] | undefined;
+  readonly templateId?: string | undefined;
   readonly tokenBudget: number | null;
   readonly roundCap: number | null;
   readonly members: readonly {
@@ -186,6 +189,7 @@ interface RawRow {
   readonly artifact_path: string | null;
   readonly pattern_config_json: string;
   readonly pre_grants_json: string;
+  readonly template_id: string | null;
   readonly phase: AssignmentPhase;
   readonly halt_reason: string | null;
   readonly updated_at: string | null;
@@ -279,7 +283,7 @@ export function createAssignmentRepository(
 
   const ownColumns =
     'created_by, parent_assignment_id, lead_agent_id, write, artifact_path, ' +
-    'pattern_config_json, pre_grants_json, phase, halt_reason, updated_at';
+    'pattern_config_json, pre_grants_json, template_id, phase, halt_reason, updated_at';
 
   const selectOwn = db.prepare<[string], RawRow>(
     `SELECT ${ownColumns} FROM assignments WHERE id = ?`,
@@ -293,14 +297,15 @@ export function createAssignmentRepository(
       string | null,
       string,
       string,
+      string | null,
       string,
       string,
       string,
     ]
   >(
     'UPDATE assignments SET created_by = ?, parent_assignment_id = ?, lead_agent_id = ?, ' +
-      'write = ?, artifact_path = ?, pattern_config_json = ?, pre_grants_json = ?, phase = ?, ' +
-      'updated_at = ? WHERE id = ?',
+      'write = ?, artifact_path = ?, pattern_config_json = ?, pre_grants_json = ?, ' +
+      'template_id = ?, phase = ?, updated_at = ? WHERE id = ?',
   );
   const setPhaseStatement = db.prepare<[string, string | null, string, string]>(
     'UPDATE assignments SET phase = ?, halt_reason = ?, updated_at = ? WHERE id = ?',
@@ -373,6 +378,7 @@ export function createAssignmentRepository(
       artifactPath: own.artifact_path,
       patternConfigJson: own.pattern_config_json,
       preGrantsJson: own.pre_grants_json,
+      templateId: own.template_id,
       phase: own.phase,
       haltReason: own.halt_reason,
       updatedAt: own.updated_at,
@@ -405,6 +411,10 @@ export function createAssignmentRepository(
       // new ones after the fact would be the Always-allow memory with a
       // different name (§2.3, WO4 §2).
       JSON.stringify(input.preGrants ?? []),
+      // Written once and never rewritten, for the same reason the pre-grants are:
+      // it records where this assignment came from, and provenance that could be
+      // edited afterwards is not provenance (WO5).
+      input.templateId ?? null,
       input.phase,
       now,
       created.id,

@@ -198,6 +198,17 @@ export interface CreateAssignmentRequest {
   readonly patternConfig?: Readonly<Record<string, unknown>>;
   /** Gates the user pre-answered in the dialog, scoped to this assignment (§2.3). */
   readonly preGrants?: readonly PreGrant[];
+  /**
+   * The roster task template this was started from, for provenance (§2.3, WO5).
+   *
+   * Recorded and never acted on: a template is a prefill, so everything it
+   * contributed is already in `goal`, `scope.artifactPath`, `pattern` and
+   * `preGrants` by the time this request is built. Nothing validates it against
+   * the library either — templates are files an owner may rename or delete
+   * (roster §2.1), and a create call that started refusing because somebody
+   * pruned a folder would be a template *gating* a launch.
+   */
+  readonly templateId?: string;
   /** Defaults to `'user'`; the MCP tool passes `overseer:<agentId>` (M4). */
   readonly createdBy?: CreatedBy;
   /** Set by `create_assignment` only; a user-created assignment has no parent. */
@@ -219,6 +230,8 @@ export interface CreateSoloRequest {
   readonly workItemIds?: readonly string[];
   /** Gates the user pre-answered in the dialog (§2.3, WO4 §2). */
   readonly preGrants?: readonly PreGrant[];
+  /** The task template this was started from (§2.3, WO5) — provenance only. */
+  readonly templateId?: string;
   readonly createdBy?: CreatedBy;
 }
 
@@ -270,6 +283,8 @@ export interface AssignmentView {
   readonly parentAssignmentId: string | null;
   readonly leadAgentId: string | null;
   readonly artifactPath: string | null;
+  /** The task template this assignment was started from, or `null` (WO5). */
+  readonly templateId: string | null;
   readonly tokenBudget: number | null;
   readonly tokensUsed: number;
   readonly roundCap: number | null;

@@ -42,6 +42,17 @@
  *    and writes nothing.
  * 4. **No secrets, no integrations.** None of the four needs a credential, so a
  *    clean install has nothing to configure before the board works.
+ *
+ * ## And two task templates (WO5, 2026-08-19)
+ *
+ * The same pass writes the two starter **task templates** of §2.4 — "Reply to
+ * todo tickets" and "Draft email replies" — under the same three rules, with one
+ * deliberate difference: the template half runs on its **own** stamp
+ * (`roster.json`'s `templatesSeededAt`) rather than on `seededAt`. Templates
+ * arrived after agents did, so every library that already exists has taken the
+ * agent decision and has no templates at all; hanging the second decision off
+ * the first would mean nobody who already uses AgentManager ever receives them.
+ * See {@link seedTemplates}.
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -53,6 +64,13 @@ import type { Diagnostic } from './contracts.js';
 import { parseAgentDefinition } from './parse.js';
 import { AGENT_SCHEMA_VERSION, type AgentDefinition } from './schema.js';
 import { libraryPaths, writeFileAtomic, type RosterStore, type StoreHooks } from './store.js';
+import {
+  TASK_TEMPLATE_SCHEMA_VERSION,
+  createTemplateStore,
+  parseTaskTemplate,
+  type TaskTemplate,
+  type TemplateStore,
+} from './templates.js';
 
 // ---------------------------------------------------------------------------
 // The library README (M10)
@@ -84,6 +102,9 @@ database.
         roles/          optional per-collaboration-role addenda
         skills/         this agent's skills, one folder each
         .claude-plugin/ generated; do not edit
+    templates/
+      todo-ticket-replies/
+        template.json   a reusable Start-work prefill (a "task template")
 
 Edit \`persona.md\` in any editor and AgentManager reloads it within a second,
 no restart. Edit \`agent.json\` and the same happens — with one difference: a
@@ -93,6 +114,18 @@ back.
 
 The folder name is the agent id, and the id is immutable. To rename an agent,
 change \`name\` in \`agent.json\`; to give it a new id, duplicate it.
+
+## Task templates
+
+\`templates/\` holds the shape of a job you start often, so "Reply to todo
+tickets" is one pick in **Start work** rather than a paragraph you retype. A
+template carries the brief, the pattern, the artifact path and the tool gates to
+pre-answer — never a project and never an agent, because those are the two
+things you choose every time.
+
+They load, reload and report their mistakes exactly the way agents do, and there
+is no editor for them yet: write \`templates/<id>/template.json\`, save it, and
+it appears in the dialog.
 
 ## It is a git repository
 
@@ -360,6 +393,120 @@ hint.
 /** The starter roster, in board order. */
 export const SEED_AGENTS: readonly SeedAgent[] = [PRIYA, ADA, SAM, MIRA];
 
+// ---------------------------------------------------------------------------
+// The two starter task templates (WO5)
+// ---------------------------------------------------------------------------
+
+/**
+ * One starter template, minus the field seeding stamps.
+ *
+ * The same shape {@link SeedAgent} has, and for the same reason: `schemaVersion`
+ * and `id` are supplied by {@link seedTemplateDefinition} so no seed can
+ * disagree with itself about its own provenance.
+ */
+export interface SeedTemplate {
+  readonly id: string;
+  /** Everything except `schemaVersion` and `id`. */
+  readonly template: Record<string, unknown>;
+}
+
+/**
+ * "Reply to todo tickets" — WO5's first starter.
+ *
+ * `solo`, because the job is drafting rather than reviewing, and because a pair
+ * on a queue of tickets spends its rounds arguing about the first one. It
+ * declares **no** `requiredIntegrations`: a ticket queue is a file, a URL or an
+ * MCP server depending on whose queue it is, so `{{source}}` asks rather than
+ * the template assuming — and a starter that warned about a connector nobody
+ * has on a clean install would be a warning that teaches people to ignore
+ * warnings.
+ */
+export const TODO_TICKET_REPLIES: SeedTemplate = {
+  id: 'todo-ticket-replies',
+  template: {
+    name: 'Reply to todo tickets',
+    description: 'Read the open tickets, draft a reply to each, and file them all for review.',
+    pattern: 'solo',
+    goalTemplate: `Work the open items in {{source}}.
+
+For each open ticket, in the order they appear:
+
+1. Read the ticket and whatever it points at — the code, the log, the previous
+   reply. Do not answer from the title.
+2. Draft a reply addressed to the person who raised it: what you found, what
+   happens next, and by when if you can say. Say "I do not know yet" rather
+   than guessing; a confident wrong answer costs more than a slow one.
+3. If the ticket cannot be answered without a decision only a human can make,
+   draft the reply anyway and mark it **needs a decision**, naming the choice.
+
+Collect every draft in the artifact, one section per ticket, with the ticket's
+id and title as the heading. Nothing is sent — this is a review queue, and the
+human sends.`,
+    artifactPathTemplate: 'docs/assignments/{{slug}}/replies.md',
+    write: true,
+    suggestedRoles: ['implementer'],
+    // The two gates a drafting run actually raises (roster `preflight.ts`'s
+    // catalogue): the artifact is written once and revised in place.
+    preGrantTools: ['Write', 'Edit'],
+  },
+};
+
+/**
+ * "Draft email replies" — WO5's second starter.
+ *
+ * This one *does* declare a `requiredIntegrations`, and deliberately: an agent
+ * with no mailbox connector cannot read a mailbox, so the warning is true on
+ * the day it fires. It is still only a warning — the picker offers every agent
+ * and the dialog links to the integrations editor (ui §7.3.1) rather than
+ * removing the row, which is the whole difference between ranking and gating.
+ */
+export const EMAIL_REPLY_DRAFTS: SeedTemplate = {
+  id: 'email-reply-drafts',
+  template: {
+    name: 'Draft email replies',
+    description: 'Read the unanswered mail, draft a reply to each, and leave them for a human.',
+    pattern: 'solo',
+    goalTemplate: `Draft replies to the unanswered mail in {{source}}.
+
+For each message that still needs an answer:
+
+1. Read the whole thread, not just the last message. Half of what looks
+   unanswered has already been answered further up.
+2. Draft a reply in the voice of a colleague, not of a support macro: answer
+   the question that was asked, say what you are doing about it, and stop.
+3. Flag anything that commits money, time or a person's availability as
+   **needs a decision** instead of committing it.
+
+Collect the drafts in the artifact, one section per thread, each with the
+sender, the subject and the draft. **Send nothing.** The human reads, edits and
+sends.`,
+    artifactPathTemplate: 'docs/assignments/{{slug}}/email-drafts.md',
+    write: true,
+    // The connector id an agent would carry for a mailbox (roster §10's
+    // `integrations` key). It ranks and it warns; it never filters.
+    requiredIntegrations: ['gmail'],
+    suggestedRoles: ['implementer'],
+    preGrantTools: ['Write', 'Edit'],
+  },
+};
+
+/** The starter templates, in the order the dialog's strip renders them. */
+export const SEED_TEMPLATES: readonly SeedTemplate[] = [TODO_TICKET_REPLIES, EMAIL_REPLY_DRAFTS];
+
+/**
+ * One starter template as a validated {@link TaskTemplate}.
+ *
+ * Through the same parser a hand-written `template.json` goes through, so a
+ * starter with a typo fails this element's own suite rather than an owner's
+ * first boot.
+ */
+export function seedTemplateDefinition(seed: SeedTemplate): TaskTemplate {
+  return parseTaskTemplate(
+    { ...seed.template, schemaVersion: TASK_TEMPLATE_SCHEMA_VERSION, id: seed.id },
+    `seed:${seed.id}`,
+  );
+}
+
 /**
  * One seed as a validated {@link AgentDefinition}.
  *
@@ -389,6 +536,20 @@ export interface SeedLibraryOptions {
   readonly hooks?: StoreHooks;
   /** Overridable so a test can seed a two-agent library without a fixture. */
   readonly agents?: readonly SeedAgent[];
+  /** The same seam for the template pass (WO5). */
+  readonly templates?: readonly SeedTemplate[];
+}
+
+/** What the template half of a seeding run did (WO5). */
+export interface SeedTemplatesResult {
+  /** Template ids written by this run. Empty on every run after the first. */
+  readonly seeded: readonly string[];
+  /** Ids whose folder already existed and so were left completely alone. */
+  readonly skipped: readonly string[];
+  readonly reason: 'seeded' | 'already-seeded';
+  /** What `roster.json`'s `templatesSeededAt` should hold afterwards. */
+  readonly stampedAt: string;
+  readonly diagnostics: readonly Diagnostic[];
 }
 
 export interface SeedResult {
@@ -401,6 +562,79 @@ export interface SeedResult {
   /** Why nothing was written, when nothing was. */
   readonly reason: 'seeded' | 'already-seeded' | 'library-not-empty';
   readonly diagnostics: readonly Diagnostic[];
+  /** The template pass, which runs on its own stamp (WO5) — see below. */
+  readonly templates: SeedTemplatesResult;
+}
+
+export interface SeedTemplatesOptions {
+  readonly store: TemplateStore;
+  /** `roster.json`'s `templatesSeededAt`, or `null` when the pass has not run. */
+  readonly seededAt: string | null;
+  readonly clock?: Clock;
+  readonly templates?: readonly SeedTemplate[];
+}
+
+/**
+ * Writes the starter task templates, once (WO5).
+ *
+ * Three rules, two of them borrowed verbatim from the agent pass and one that
+ * is deliberately *not*:
+ *
+ * - **Through the real parser and the real store.** A starter that would not
+ *   validate cannot ship, and the folder it lands in is indistinguishable from
+ *   one an owner wrote by hand.
+ * - **Never overwrite, and never come back.** A folder that exists is left
+ *   alone, and `templatesSeededAt` records that the decision was taken — so a
+ *   deleted starter template does not reappear on the next boot.
+ * - **It does *not* check whether the library is empty.** That guard exists for
+ *   agents because dropping four strangers into somebody's cloned roster is the
+ *   rudest possible first impression. Templates are new, so every library in
+ *   existence has none, and refusing to seed them into a library that happens to
+ *   hold agents would mean nobody who already uses AgentManager ever gets them.
+ *   A colliding id is still skipped, which is what protects a cloned roster that
+ *   brought its own.
+ */
+export function seedTemplates(options: SeedTemplatesOptions): SeedTemplatesResult {
+  const clock: Clock = options.clock ?? ((): Date => new Date());
+  const seeds = options.templates ?? SEED_TEMPLATES;
+  const diagnostics: Diagnostic[] = [];
+
+  if (options.seededAt !== null) {
+    return {
+      seeded: [],
+      skipped: [],
+      reason: 'already-seeded',
+      stampedAt: options.seededAt,
+      diagnostics,
+    };
+  }
+
+  const seeded: string[] = [];
+  const skipped: string[] = [];
+  for (const seed of seeds) {
+    if (options.store.hasFolder(seed.id)) {
+      skipped.push(seed.id);
+      continue;
+    }
+    try {
+      options.store.write(seedTemplateDefinition(seed));
+      seeded.push(seed.id);
+    } catch (cause) {
+      // A starter template that will not write is a diagnostic on a dialog that
+      // still works, exactly as a starter agent is — the blank card is the first
+      // card in the strip, and it is the whole of today's flow.
+      diagnostics.push({
+        level: 'warn',
+        code: 'roster.seed-failed',
+        message:
+          `the starter task template "${seed.id}" could not be written ` +
+          `(${cause instanceof Error ? cause.message : String(cause)}); Start work will simply ` +
+          'open with no templates (DESIGN §2.4, WO5).',
+      });
+    }
+  }
+
+  return { seeded, skipped, reason: 'seeded', stampedAt: isoTimestamp(clock()), diagnostics };
 }
 
 /**
@@ -420,23 +654,43 @@ export function seedLibrary(options: SeedLibraryOptions): SeedResult {
   const diagnostics: Diagnostic[] = [];
 
   const metadata = readRosterMetadata(paths);
+
+  // The template pass first, and **outside** the agent pass's gates: a library
+  // seeded with agents last month has `seededAt` set and no templates at all, so
+  // hanging the templates off that stamp would mean every existing install never
+  // gets them. Its own stamp is what makes it once-ever (WO5).
+  const templates = seedTemplates({
+    store: createTemplateStore({ root: paths.root, ...(options.hooks === undefined ? {} : { hooks }) }),
+    seededAt: metadata.templatesSeededAt,
+    clock,
+    ...(options.templates === undefined ? {} : { templates: options.templates }),
+  });
+  diagnostics.push(...templates.diagnostics);
+  const stamped = { ...metadata, templatesSeededAt: templates.stampedAt };
+
   const stampSeeded = (reason: SeedResult['reason']): SeedResult => {
     const readmeWritten = writeLibraryReadme(paths.root, hooks);
     // `seededAt` records that the decision was taken, not merely that files
     // were written — which is what stops a deleted starter agent from
     // reappearing, and what stops a cloned roster being seeded on its second
     // boot after being skipped on its first.
-    writeRosterMetadata(paths, { ...metadata, seededAt: isoTimestamp(clock()) }, hooks);
-    return { seeded: [], skipped: [], readmeWritten, reason, diagnostics };
+    writeRosterMetadata(paths, { ...stamped, seededAt: isoTimestamp(clock()) }, hooks);
+    return { seeded: [], skipped: [], readmeWritten, reason, diagnostics, templates };
   };
 
   if (metadata.seededAt !== null) {
+    // Nothing to record unless the template pass just took its own decision —
+    // an untouched `roster.json` is what keeps a second boot free of a write.
+    if (templates.stampedAt !== metadata.templatesSeededAt) {
+      writeRosterMetadata(paths, stamped, hooks);
+    }
     return {
       seeded: [],
       skipped: [],
       readmeWritten: writeLibraryReadme(paths.root, hooks),
       reason: 'already-seeded',
       diagnostics,
+      templates,
     };
   }
 
@@ -468,8 +722,8 @@ export function seedLibrary(options: SeedLibraryOptions): SeedResult {
   }
 
   const readmeWritten = writeLibraryReadme(paths.root, hooks);
-  writeRosterMetadata(paths, { ...metadata, seededAt: isoTimestamp(clock()) }, hooks);
-  return { seeded, skipped, readmeWritten, reason: 'seeded', diagnostics };
+  writeRosterMetadata(paths, { ...stamped, seededAt: isoTimestamp(clock()) }, hooks);
+  return { seeded, skipped, readmeWritten, reason: 'seeded', diagnostics, templates };
 }
 
 /**

@@ -291,7 +291,7 @@ describe('migrations (M0-3)', () => {
   it('applies migrations/orchestrator/ after foundation and records it under "orchestrator"', async () => {
     const booted = await bootCore();
 
-    expect(booted.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(5);
+    expect(booted.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(6);
     const ledger = booted.storage.db
       .prepare<[], { module: string; version: number }>(
         'SELECT module, version FROM schema_migrations',
@@ -313,7 +313,7 @@ describe('migrations (M0-3)', () => {
     service = undefined;
 
     const second = await bootCore();
-    expect(second.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(5);
+    expect(second.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(6);
     const health = await second.health();
     expect(health.status).toBe('ok');
   });

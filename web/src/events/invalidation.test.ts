@@ -25,8 +25,14 @@ function frame(type: string, extra: Partial<EventFrame> = {}): EventFrame {
 }
 
 describe('the invalidation map (§3.4)', () => {
-  it('roster.changed refetches the roster list', () => {
-    expect(plan(frame('roster.changed')).invalidate).toEqual([queryKeys.roster]);
+  it('roster.changed refetches both halves of the library', () => {
+    // The board *and* the task templates (roster §2.4, WO5): a `template.json`
+    // edited on disk arrives as this same event with `reason: 'templates'`,
+    // which is precisely why one rule covers both keys rather than two.
+    expect(plan(frame('roster.changed')).invalidate).toEqual([
+      queryKeys.roster,
+      queryKeys.taskTemplates,
+    ]);
   });
 
   it('roster.changed with reason "avatar" also drops that agent’s object URL', () => {

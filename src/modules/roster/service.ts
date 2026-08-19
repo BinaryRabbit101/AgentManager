@@ -83,9 +83,21 @@ import {
   InvalidRosterRequestError,
   PurgeBlockedError,
   RosterServiceError,
+  TemplateNotFoundError,
   UnknownBoardOrderIdError,
 } from './serviceErrors.js';
 import { SKILLS_DIRNAME, validateSkills } from './skills.js';
+import {
+  createTemplateRegistry,
+  createTemplateStore,
+  missingIntegrations,
+  templateVariables,
+  type TaskTemplate,
+  type TemplateIntegrationGap,
+  type TemplateRegistryChange,
+  type TemplateStore,
+  type TemplateVariable,
+} from './templates.js';
 import { mintAgentId } from './slug.js';
 import {
   AGENT_JSON_FILENAME,
@@ -262,7 +274,42 @@ export type RosterChangeReason =
   | 'ui-state'
   | 'board-order'
   | 'external'
-  | 'loaded';
+  | 'loaded'
+  /** A file under `templates/` changed (§2.4, WO5) — no agent did. */
+  | 'templates';
+
+// ---------------------------------------------------------------------------
+// Task templates (§2.4, WO5)
+// ---------------------------------------------------------------------------
+
+/**
+ * One template as `GET /api/roster/templates` returns it.
+ *
+ * Two derived fields ride beside the stored document, and neither is something
+ * the browser should be computing:
+ *
+ * - **`variables`** is which of `{{slug}}` / `{{source}}` this template's own
+ *   text mentions, which is what decides whether the dialog renders the one
+ *   extra input. Scanning for placeholders in the client would be a second
+ *   implementation of the substitution rule.
+ * - **`integrationGaps`** is WO5's "agent X lacks connector Y", answered for
+ *   *every live agent* at once. Per-agent rather than per-selection because the
+ *   selection changes with every tick and a request per keystroke would be a
+ *   poll; the whole roster is a handful of rows, and the dialog looks up the
+ *   agents it has seated. Templates that require nothing produce an empty list.
+ */
+export interface TaskTemplateView {
+  readonly template: TaskTemplate;
+  readonly variables: readonly TemplateVariable[];
+  readonly integrationGaps: readonly TemplateIntegrationGap[];
+}
+
+export interface TaskTemplateListView {
+  readonly templates: readonly TaskTemplateView[];
+  /** Malformed `template.json`s, through the same channel a malformed
+   *  `agent.json` reaches the board by (§2.3). */
+  readonly diagnostics: readonly Diagnostic[];
+}
 
 export interface RosterService {
   list(): RosterListView;
@@ -344,6 +391,17 @@ export interface RosterService {
   /** Rereads named folders — the watcher's normal case. */
   reloadFolders(folders: readonly string[]): RegistryChange;
   /**
+   * `GET /api/roster/templates` (§2.4, WO5) — every task template, with its
+   * variables and its per-agent connector gaps.
+   */
+  listTemplates(): TaskTemplateListView;
+  /** `GET /api/roster/templates/:id`. Throws {@link TemplateNotFoundError}. */
+  getTemplate(id: string): TaskTemplateView;
+  /** Rereads `templates/` — the templates watcher's filename-less case. */
+  reloadTemplates(): TemplateRegistryChange;
+  /** Rereads named template folders — the templates watcher's normal case. */
+  reloadTemplateFolders(folders: readonly string[]): TemplateRegistryChange;
+  /**
    * `POST /draft` (§12, M8) — draft-from-description.
    *
    * Stateless: nothing is written, nothing is cached, and no id is minted. The
@@ -372,6 +430,9 @@ export interface RosterService {
 
 export interface RosterServiceOptions {
   readonly store: RosterStore;
+  /** §2.4's `templates/` store. Defaults to one over the same library root —
+   *  injectable only so a test can point the two halves at different trees. */
+  readonly templates?: TemplateStore;
   readonly uiState: AgentUiStateRepository;
   /** Foundation's rebuildable index — roster pushes, never reads (§2.2). */
   readonly agents: AgentsRepository;
@@ -443,6 +504,12 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
   const { store, uiState, agents, sessions, bus } = options;
   const clock: Clock = options.clock ?? ((): Date => new Date());
   const registry = createRosterRegistry(store);
+  // §2.4's second index, built the same way over `templates/`. It is a sibling
+  // of the agent registry rather than part of it: a template is not an agent,
+  // nothing joins the two, and folding them together would make every listing
+  // and every diagnostic have to say which kind it meant.
+  const templateStore = options.templates ?? createTemplateStore({ root: store.paths.root });
+  const templates = createTemplateRegistry(templateStore);
 
   // -------------------------------------------------------------------------
   // The three steps every mutation ends with
@@ -500,9 +567,63 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
     });
   }
 
+  /**
+   * `roster.changed`, for a change under `templates/` (§2.4, WO5).
+   *
+   * Deliberately *not* {@link settle}: no agent moved, so reconciling
+   * `agent_ui_state` and rewriting foundation's whole `agents` index would be
+   * work with no cause, and a `roster.changed` claiming `agentIds` nobody
+   * touched would be a lie the UI acts on. The event is the same *type* because
+   * the ui's invalidation map already keys the `roster.*` prefix onto the
+   * library's queries (ui §3.4) — one edit to a library file, one refetch.
+   *
+   * Not persisted: a template edit is a file on disk the board re-reads, and the
+   * event log is the audit trail of what *happened to agents*, not a change feed
+   * for the filesystem.
+   */
+  function announceTemplates(): void {
+    bus.emit({
+      type: 'roster.changed',
+      persist: false,
+      payload: {
+        reason: 'templates' satisfies RosterChangeReason,
+        agentIds: [],
+        count: registry.list().length,
+      },
+    });
+  }
+
   // -------------------------------------------------------------------------
   // Views
   // -------------------------------------------------------------------------
+
+  /**
+   * One template, plus the two things the dialog cannot honestly derive itself.
+   *
+   * The gaps are computed against the **live** registry only: an archived agent
+   * cannot be seated (§5.2), so a warning about its connectors would be advice
+   * about a launch nobody can make.
+   */
+  function templateViewOf(template: TaskTemplate): TaskTemplateView {
+    const required = template.requiredIntegrations;
+    const gaps: TemplateIntegrationGap[] = [];
+    if (required !== undefined && required.length > 0) {
+      for (const agent of registry.list()) {
+        const missing = missingIntegrations(
+          required,
+          Object.keys(agent.definition.integrations ?? {}),
+        );
+        if (missing.length > 0) {
+          gaps.push({
+            agentId: agent.definition.id,
+            agentName: agent.definition.name,
+            missing,
+          });
+        }
+      }
+    }
+    return { template, variables: templateVariables(template), integrationGaps: gaps };
+  }
 
   function viewOf(agent: ResolvedAgent): AgentView {
     const id = agent.definition.id;
@@ -1201,6 +1322,11 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
 
     load() {
       const result = registry.reloadAll();
+      // `templates/` is read in the same boot pass and *before* `settle`, so the
+      // one `roster.changed` a boot emits already covers both halves of the
+      // library rather than the templates arriving in a second event nobody
+      // subscribed differently to.
+      templates.reloadAll();
       settle('loaded', result.agentIds);
       return result;
     },
@@ -1221,6 +1347,38 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
           ? { changed: false, agentIds: [] }
           : { changed: true, agentIds: [...touched].sort() };
       if (result.changed) settle('external', result.agentIds);
+      return result;
+    },
+
+    // --- §2.4's task templates (WO5) ---------------------------------------
+
+    listTemplates: () => ({
+      templates: templates.list().map((entry) => templateViewOf(entry.template)),
+      diagnostics: templates.diagnostics(),
+    }),
+
+    getTemplate(id) {
+      const found = templates.get(id);
+      if (found === undefined) throw new TemplateNotFoundError(id);
+      return templateViewOf(found.template);
+    },
+
+    reloadTemplates() {
+      const result = templates.reloadAll();
+      if (result.changed) announceTemplates();
+      return result;
+    },
+
+    reloadTemplateFolders(folders) {
+      const touched = new Set<string>();
+      for (const folder of folders) {
+        for (const id of templates.reload(folder).templateIds) touched.add(id);
+      }
+      const result: TemplateRegistryChange =
+        touched.size === 0
+          ? { changed: false, templateIds: [] }
+          : { changed: true, templateIds: [...touched].sort() };
+      if (result.changed) announceTemplates();
       return result;
     },
   };

@@ -834,3 +834,85 @@ describe('assignment-scoped pre-grants (§2.3; WO4 §2)', () => {
     expect(h.service.get(plain.assignmentId).preGrants).toEqual([]);
   });
 });
+
+/**
+ * Task-template provenance (§2.3; roster §2.4; WO5).
+ *
+ * The claim under test is a negative one, and it is the whole design: an
+ * assignment started from a template behaves **identically** to a hand-filled
+ * one. Everything the template contributed is an ordinary field by the time
+ * creation runs, so the only difference a row may carry is the id, recorded and
+ * never acted on.
+ */
+describe('task-template provenance (§2.3, WO5)', () => {
+  it('records the template id on both creation paths', async () => {
+    const h = open({ agents: [ADA, SAM] });
+
+    const solo = await h.service.createSolo({
+      projectId: PROJECT_ID,
+      agentId: 'ada',
+      prompt: 'answer the queue',
+      templateId: 'todo-ticket-replies',
+    });
+    expect(h.service.get(solo.assignmentId).templateId).toBe('todo-ticket-replies');
+
+    const pattern = await h.service.createAssignment({
+      projectId: PROJECT_ID,
+      pattern: 'pair',
+      members: [
+        { agentId: 'ada', role: 'architect' },
+        { agentId: 'sam', role: 'skeptic' },
+      ],
+      templateId: 'email-reply-drafts',
+      autoStart: false,
+    });
+    expect(h.service.get(pattern.assignmentId).templateId).toBe('email-reply-drafts');
+  });
+
+  it('is null for a hand-filled assignment, and changes nothing else', async () => {
+    const h = open({ agents: [ADA] });
+    const fields = {
+      projectId: PROJECT_ID,
+      agentId: 'ada',
+      prompt: 'answer the queue',
+      write: true,
+    } as const;
+
+    const templated = await h.service.createSolo({ ...fields, templateId: 'todo-ticket-replies' });
+    const byHand = await h.service.createSolo(fields);
+
+    const a = h.service.get(templated.assignmentId);
+    const b = h.service.get(byHand.assignmentId);
+    expect(b.templateId).toBeNull();
+
+    // Field for field the same row, the id and the timestamps excepted: "the
+    // assignment behaves identically to a hand-filled one" (WO5).
+    const shape = (view: typeof a): Record<string, unknown> => ({
+      pattern: view.pattern,
+      status: view.status,
+      phase: view.phase,
+      write: view.write,
+      scope: view.scope,
+      artifactPath: view.artifactPath,
+      tokenBudget: view.tokenBudget,
+      roundCap: view.roundCap,
+      preGrants: view.preGrants,
+      members: view.members.map((member) => ({ agentId: member.agentId, role: member.role })),
+    });
+    expect(shape(a)).toEqual(shape(b));
+  });
+
+  it('accepts an id no template in the library answers to', async () => {
+    // Templates are files an owner may rename, delete or `git checkout` past
+    // (roster §2.1). A create call that started refusing because a folder was
+    // pruned would be provenance gating a launch.
+    const h = open({ agents: [ADA] });
+    const created = await h.service.createSolo({
+      projectId: PROJECT_ID,
+      agentId: 'ada',
+      prompt: 'go',
+      templateId: 'a-template-that-was-deleted',
+    });
+    expect(h.service.get(created.assignmentId).templateId).toBe('a-template-that-was-deleted');
+  });
+});

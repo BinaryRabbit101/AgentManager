@@ -18,7 +18,7 @@
  * seeds go through the real store and validation, and seeding never overwrites
  * an agent the owner authored.
  */
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -38,10 +38,13 @@ import {
   PRIYA,
   SAM,
   SEED_AGENTS,
+  SEED_TEMPLATES,
   seedDefinition,
   seedLibrary,
+  seedTemplateDefinition,
 } from './seed.js';
 import { libraryPaths, type RosterStore } from './store.js';
+import { taskTemplateSchema } from './templates.js';
 import {
   FIXED_NOW,
   fakeGit,
@@ -356,6 +359,130 @@ describe('every seed is launchable (M10)', () => {
       expect(compiled.effective.deny).toContain('Edit');
       expect(compiled.effective.allow).not.toContain('Edit');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two starter task templates (WO5)
+// ---------------------------------------------------------------------------
+
+describe('seeding the starter task templates (WO5)', () => {
+  it('is the two WO5 names, both solo, and both pass the template schema', () => {
+    expect(SEED_TEMPLATES.map((seed) => seed.id)).toEqual([
+      'todo-ticket-replies',
+      'email-reply-drafts',
+    ]);
+    for (const seed of SEED_TEMPLATES) {
+      const template = seedTemplateDefinition(seed);
+      // Parsed once by `seedTemplateDefinition`, and asserted again against the
+      // schema itself, so this does not rest on that function's own parser.
+      expect(taskTemplateSchema.safeParse(template).success).toBe(true);
+      expect(template.pattern).toBe('solo');
+      expect(template.id).toBe(seed.id);
+      // Both write a document, so both name where it goes and both pre-answer
+      // the gates that writing one raises (WO4's chips).
+      expect(template.artifactPathTemplate).toContain('{{slug}}');
+      expect(template.goalTemplate).toContain('{{source}}');
+      expect(template.preGrantTools).toContain('Write');
+    }
+    expect(SEED_TEMPLATES.map((seed) => seedTemplateDefinition(seed).name)).toEqual([
+      'Reply to todo tickets',
+      'Draft email replies',
+    ]);
+  });
+
+  it('writes both into a fresh library once, and reseeding duplicates nothing', () => {
+    const store = bootstrapped(harness);
+
+    const first = seedLibrary({ store, clock: () => FIXED_NOW });
+    expect(first.templates.reason).toBe('seeded');
+    expect(first.templates.seeded).toEqual(['todo-ticket-replies', 'email-reply-drafts']);
+    expect(readdirSync(join(harness.libraryRoot, 'templates')).sort()).toEqual([
+      'email-reply-drafts',
+      'todo-ticket-replies',
+    ]);
+    expect(readRosterMetadata(libraryPaths(harness.libraryRoot)).templatesSeededAt).toBe(
+      FIXED_NOW.toISOString(),
+    );
+
+    const second = seedLibrary({ store, clock: () => FIXED_NOW });
+    expect(second.templates.reason).toBe('already-seeded');
+    expect(second.templates.seeded).toEqual([]);
+    expect(readdirSync(join(harness.libraryRoot, 'templates')).sort()).toEqual([
+      'email-reply-drafts',
+      'todo-ticket-replies',
+    ]);
+  });
+
+  it('reaches a library that was seeded with agents before templates existed', () => {
+    const store = bootstrapped(harness);
+    // What every existing install looks like: `seededAt` recorded, and no
+    // `templatesSeededAt` at all, because that field did not exist when it was
+    // written. Hanging the template pass off `seededAt` would strand these.
+    writeFileSync(
+      libraryPaths(harness.libraryRoot).rosterJson,
+      JSON.stringify({ schemaVersion: 1, seededAt: FIXED_NOW.toISOString() }),
+      'utf8',
+    );
+
+    const result = seedLibrary({ store, clock: () => FIXED_NOW });
+    expect(result.reason).toBe('already-seeded');
+    expect(result.seeded).toEqual([]);
+    // The agent half wrote nothing, and the template half still ran.
+    expect(result.templates.seeded).toEqual(['todo-ticket-replies', 'email-reply-drafts']);
+    expect(readRosterMetadata(libraryPaths(harness.libraryRoot)).seededAt).toBe(
+      FIXED_NOW.toISOString(),
+    );
+    expect(readRosterMetadata(libraryPaths(harness.libraryRoot)).templatesSeededAt).not.toBeNull();
+  });
+
+  it('never overwrites a template the owner authored, and never returns a deleted one', () => {
+    const store = bootstrapped(harness);
+    seedLibrary({ store, clock: () => FIXED_NOW });
+
+    const mine = join(harness.libraryRoot, 'templates', 'todo-ticket-replies', 'template.json');
+    writeFileSync(mine, '{ "mine": true }', 'utf8');
+    rmSync(join(harness.libraryRoot, 'templates', 'email-reply-drafts'), {
+      recursive: true,
+      force: true,
+    });
+
+    seedLibrary({ store, clock: () => FIXED_NOW });
+
+    expect(readFileSync(mine, 'utf8')).toBe('{ "mine": true }');
+    expect(existsSync(join(harness.libraryRoot, 'templates', 'email-reply-drafts'))).toBe(false);
+  });
+
+  it('loads both through the real registry, with no diagnostics', () => {
+    const store = bootstrapped(harness);
+    seedLibrary({ store, clock: () => FIXED_NOW });
+    harness.service.load();
+
+    const listed = harness.service.listTemplates();
+    expect(listed.diagnostics).toEqual([]);
+    expect(listed.templates.map((one) => one.template.id).sort()).toEqual([
+      'email-reply-drafts',
+      'todo-ticket-replies',
+    ]);
+    // §2.4's one extra input is asked for by both, because both need to know
+    // *which* queue or mailbox.
+    expect(listed.templates.every((one) => one.variables.includes('source'))).toBe(true);
+  });
+
+  it('reports a template that will not write as a diagnostic, not a throw', () => {
+    const store = bootstrapped(harness);
+    // A `templates/` that is a *file* is the cheapest real way to make every
+    // write fail: no folder can be created underneath it.
+    rmSync(join(harness.libraryRoot, 'templates'), { recursive: true, force: true });
+    writeFileSync(join(harness.libraryRoot, 'templates'), 'not a directory', 'utf8');
+
+    const result = seedLibrary({ store, clock: () => FIXED_NOW });
+    expect(result.templates.seeded).toEqual([]);
+    expect(result.templates.diagnostics).toHaveLength(SEED_TEMPLATES.length);
+    expect(result.templates.diagnostics[0]?.code).toBe('roster.seed-failed');
+    expect(result.templates.diagnostics[0]?.level).toBe('warn');
+    // And the agents still arrived — one broken half does not take the other.
+    expect(result.seeded).toEqual(SEED_AGENTS.map((seed) => seed.id));
   });
 });
 

@@ -18,7 +18,13 @@
  * advisory and never as a blocker.
  */
 
-import type { AgentView, AssignmentView, Project, SeatDefinition } from '../api/types';
+import type {
+  AgentView,
+  AssignmentView,
+  Project,
+  SeatDefinition,
+  TaskTemplateView,
+} from '../api/types';
 import { projectLaunchRefusal } from '../api/types';
 
 /**
@@ -232,6 +238,8 @@ export interface SoloRequest {
   readonly workItemIds?: readonly string[];
   /** Gates pre-answered in the dialog (WO4 §2). Omitted when nothing was ticked. */
   readonly preGrants?: readonly PreGrant[];
+  /** The task template this was started from (WO5) — provenance, not a setting. */
+  readonly templateId?: string;
   readonly confirmRemoteAccess?: true;
 }
 
@@ -249,6 +257,7 @@ export function soloRequest(input: {
   readonly write: boolean;
   readonly workItemIds: readonly string[];
   readonly preGrants: readonly PreGrant[];
+  readonly templateId: string | null;
   readonly confirmRemoteAccess: boolean;
 }): SoloRequest {
   return {
@@ -265,6 +274,10 @@ export function soloRequest(input: {
     // make "nothing was pre-allowed" indistinguishable from "this client does
     // not do pre-grants" on the server side.
     ...(input.preGrants.length === 0 ? {} : { preGrants: input.preGrants }),
+    // Omitted rather than sent null for the same reason: the blank card is the
+    // default, and a body that always carried the key would make "started from
+    // nothing" and "this client does not know about templates" the same request.
+    ...(input.templateId === null ? {} : { templateId: input.templateId }),
     ...(input.confirmRemoteAccess ? { confirmRemoteAccess: true as const } : {}),
   };
 }
@@ -278,6 +291,7 @@ export interface PatternRequest {
   readonly roundCap?: number;
   readonly tokenBudget?: number;
   readonly preGrants?: readonly PreGrant[];
+  readonly templateId?: string;
   readonly autoStart: false;
   readonly confirmRemoteAccess?: true;
 }
@@ -308,6 +322,7 @@ export function patternRequest(input: {
   readonly roundCap: string;
   readonly tokenBudget: string;
   readonly preGrants: readonly PreGrant[];
+  readonly templateId: string | null;
   readonly confirmRemoteAccess: boolean;
 }): PatternRequest {
   return {
@@ -322,6 +337,7 @@ export function patternRequest(input: {
     ...(input.roundCap === '' ? {} : { roundCap: Number(input.roundCap) }),
     ...(input.tokenBudget === '' ? {} : { tokenBudget: Number(input.tokenBudget) }),
     ...(input.preGrants.length === 0 ? {} : { preGrants: input.preGrants }),
+    ...(input.templateId === null ? {} : { templateId: input.templateId }),
     autoStart: false,
     ...(input.confirmRemoteAccess ? { confirmRemoteAccess: true as const } : {}),
   };
@@ -431,6 +447,85 @@ export function assignmentSlug(goal: string): string {
 export function defaultArtifactPath(goal: string, shortId: string): string {
   const suffix = shortId === '' ? '' : `-${shortId}`;
   return `docs/assignments/${assignmentSlug(goal)}${suffix}/DRAFT.md`;
+}
+
+// ---------------------------------------------------------------------------
+// Task templates (roster §2.4, WO5)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `{{slug}}` a template's paths are rendered against.
+ *
+ * The *same* string the untemplated default builds its directory from —
+ * `<slug>-<shortId>` — so a template that writes `docs/assignments/{{slug}}/…`
+ * lands beside a hand-filled run rather than in a parallel tree, and inherits
+ * the short id's reason for existing: two runs of the same brief must not draft
+ * over each other's file.
+ */
+export function templateSlug(goal: string, shortId: string): string {
+  return shortId === '' ? assignmentSlug(goal) : `${assignmentSlug(goal)}-${shortId}`;
+}
+
+/**
+ * `{{slug}}` and `{{source}}`, and nothing else — the browser half of roster's
+ * `renderTemplateText`.
+ *
+ * Restated here rather than fetched per keystroke, and pinned by a test that
+ * imports roster's own function: the same arrangement the integrations form uses
+ * against `integrationsSchema` (roster §10), for the same reason — a rule stated
+ * twice is a rule that drifts once, unless something asserts they agree.
+ *
+ * A placeholder outside the vocabulary survives verbatim, so an author's typo
+ * shows up in the prefilled field as the typo it is.
+ */
+export function renderTemplateText(
+  text: string,
+  values: { readonly slug?: string; readonly source?: string },
+): string {
+  return text.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/gu, (whole, name: string) => {
+    if (name === 'slug') return values.slug ?? '';
+    if (name === 'source') return values.source ?? '';
+    return whole;
+  });
+}
+
+/** True when the template renders §6's one extra input. */
+export function usesSource(template: TaskTemplateView | undefined): boolean {
+  return template?.variables.includes('source') ?? false;
+}
+
+/** Which teamwork shape a template's `pattern` asks the dialog to open on. */
+export function teamworkForTemplate(pattern: 'solo' | 'pair'): Teamwork {
+  return pattern === 'pair' ? 'pair' : 'solo';
+}
+
+/**
+ * The connectors a template needs that this agent does not carry, as the server
+ * already answered it.
+ *
+ * A lookup rather than a computation: `integrationGaps` arrives on the template
+ * with one entry per live agent that falls short (roster §2.4), so ticking an
+ * agent costs no request and the warning cannot disagree with the server about
+ * what the agent declares.
+ */
+export function missingConnectors(
+  template: TaskTemplateView | undefined,
+  agentId: string,
+): readonly string[] {
+  return (
+    template?.integrationGaps.find((gap) => gap.agentId === agentId)?.missing ?? []
+  );
+}
+
+/** Every seated agent that falls short, in selection order — the warning list. */
+export function connectorWarnings(
+  template: TaskTemplateView | undefined,
+  agentIds: readonly string[],
+): readonly { readonly agentId: string; readonly missing: readonly string[] }[] {
+  return agentIds.flatMap((agentId) => {
+    const missing = missingConnectors(template, agentId);
+    return missing.length === 0 ? [] : [{ agentId, missing }];
+  });
 }
 
 /**
