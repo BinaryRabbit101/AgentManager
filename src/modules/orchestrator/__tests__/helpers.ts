@@ -142,8 +142,8 @@ export function fakeSecrets(values: Record<string, string>): SecretResolver {
  * Timers a test drives by hand.
  *
  * `run()` fires everything armed so far, which is what makes §10's 60-second
- * delay and M7-5's quarter-of-a-day sweep testable without either of them
- * happening.
+ * delay, M7-5's sweep and §3.1's 30-second re-advance after a failed launch
+ * testable without any of them happening.
  */
 export interface FakeTimers extends NotifyTimers {
   /** Fires every armed callback, oldest first, and awaits each. */
@@ -303,6 +303,7 @@ export interface Harness {
   readonly notifier: Notifier;
   /** Every ntfy POST the notifier attempted, in order. */
   readonly posts: { url: string; body: string; headers: Record<string, string> }[];
+  /** Shared by the notifier's delay and the engine's post-launch-failure retry. */
   readonly timers: FakeTimers;
   readonly bus: EventBus;
   readonly events: AppEvent[];
@@ -511,6 +512,10 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
   });
   built.toolset = toolset;
 
+  // Armed before the engine as well as the notifier: §3.1's post-launch-failure
+  // re-advance is a timer, and a test that had to wait 30 seconds for it is a
+  // test nobody runs.
+  const timers = fakeTimers();
   const engine = createPatternEngine({
     repository,
     turns,
@@ -525,6 +530,7 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     clock,
     config,
     expireHours: options.expireHours ?? 24,
+    timers,
   });
   built.engine = engine;
   const detach = options.attachEngine === false ? () => {} : engine.attach();
@@ -555,7 +561,6 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     config: config.widget,
   });
 
-  const timers = fakeTimers();
   const posts: { url: string; body: string; headers: Record<string, string> }[] = [];
   const notifier = createNotifier({
     config,

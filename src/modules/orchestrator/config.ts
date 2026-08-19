@@ -71,6 +71,18 @@ export const orchestratorConfigSchema = z.strictObject({
   assignment: z.strictObject({
     /** The staleness sweep's threshold (§8.1 `stale`). */
     maxAgeHours: positiveInt,
+    /**
+     * How long an `open`, `running` assignment with **no** live turn may sit
+     * before the sweep re-advances it (§3.1's recovery pass).
+     *
+     * Minutes rather than hours because this is not the staleness halt: it is
+     * the belt to the launch-failure suspender, and its whole value is being
+     * short. Two minutes is long enough that a normal event-driven advance has
+     * already happened and short enough that a wedge is invisible to the user.
+     * The breakers bound what it can re-drive, so a broken launch halts
+     * `turn_failures` rather than spinning.
+     */
+    recoverAfterMinutes: positiveInt,
     /** §9-7: how many other open assignments an agent may already hold a seat in. */
     maxConcurrentPerAgent: positiveInt,
     /** §9-3. v1 pins 1: no overseer minting overseers. */
@@ -147,7 +159,12 @@ export const ORCHESTRATOR_CONFIG_DEFAULTS: OrchestratorConfig = {
     overdraftTokens: 25_000,
     raiseMaxFactor: 2,
   },
-  assignment: { maxAgeHours: 24, maxConcurrentPerAgent: 2, maxNestingDepth: 1 },
+  assignment: {
+    maxAgeHours: 24,
+    recoverAfterMinutes: 2,
+    maxConcurrentPerAgent: 2,
+    maxNestingDepth: 1,
+  },
   questions: { joinWindowMs: 120_000 },
   mailbox: { inlineMax: 10, inlineMaxBytes: 8192 },
   prompt: { maxBytes: 16_384, excerptBytes: 2048, outputCaptureBytes: 32_768 },

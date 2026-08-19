@@ -512,6 +512,163 @@ describe('halts (§8.1, M6-2)', () => {
   });
 });
 
+describe('a failed launch is retried rather than left wedged (§3.1, WO1)', () => {
+  /**
+   * A runner whose first `failures` launches throw.
+   *
+   * The throw is what a queue-full runner, an unresolved secret or an SDK hiccup
+   * looks like from the engine: the turn row exists and no session ever will.
+   */
+  function rejectingRunner(failures: number): ReturnType<typeof fakeRunner> {
+    let attempts = 0;
+    return fakeRunner({
+      onStart: () => {
+        attempts += 1;
+        if (attempts <= failures) throw new Error('the runner queue is full');
+        return { sessionId: `session-${String(attempts)}` };
+      },
+    });
+  }
+
+  function withRunner(failures: number): void {
+    harness.cleanup();
+    workspace = makeTempDir('agentmanager-orchestrator-ws-');
+    harness = makeHarness({
+      agents: AGENTS,
+      workspaceCwd: workspace.path,
+      runner: rejectingRunner(failures),
+    });
+  }
+
+  it('fails the turn with launch_failed, then the scheduled retry launches it', async () => {
+    withRunner(1);
+    const assignmentId = await makePair();
+
+    // The advance that created the assignment is already spent: without the
+    // timer this is where the pair stops, at `running`, forever.
+    expect(harness.turns.list(assignmentId)).toMatchObject([
+      { status: 'failed', sessionId: null, exitReason: 'launch_failed', round: 1 },
+    ]);
+    expect(harness.service.get(assignmentId).phase).toBe('running');
+    expect(
+      harness.events
+        .filter((event) => event.type === 'assignment.turn.ended')
+        .map((event) => (event.payload as { exitReason?: unknown }).exitReason),
+    ).toEqual(['launch_failed']);
+
+    await harness.timers.run();
+    await flush();
+
+    const turns = harness.turns.list(assignmentId);
+    expect(turns).toHaveLength(2);
+    expect(turns[1]).toMatchObject({ round: 1, seat: DRAFTER_SEAT, status: 'running' });
+    expect(turns[1]?.retryOfTurnId).toBe(turns[0]?.id);
+  });
+
+  it('halts turn_failures with one card when the retry fails too', async () => {
+    withRunner(2);
+    const assignmentId = await makePair();
+
+    await harness.timers.run(); // the first retry — which also fails
+    await flush();
+    expect(
+      harness.turns.list(assignmentId).map((turn) => [turn.status, turn.exitReason]),
+    ).toEqual([
+      ['failed', 'launch_failed'],
+      ['failed', 'launch_failed'],
+    ]);
+
+    await harness.timers.run(); // the second retry — which the breaker refuses
+    await flush();
+    expect(harness.service.get(assignmentId)).toMatchObject({
+      phase: 'halted',
+      haltReason: 'turn_failures',
+    });
+    // Two failures, one card: a halt raises exactly one however many triggers
+    // arrived (§8.1).
+    const cards = harness.inbox.list({ assignmentId, status: 'open' });
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.options.map((option) => option.id)).toEqual(['continue', 'close']);
+    // And it did not spin: two launch attempts, and the third advance never got
+    // as far as the runner because the breaker refused it first.
+    expect(harness.runner.started).toHaveLength(2);
+  });
+});
+
+describe('the sweep re-advances what nothing is driving (§3.1, WO1)', () => {
+  /**
+   * An assignment in the wedged shape: `open`, `running`, no turn in flight.
+   *
+   * Built through a launch failure with the retry timer deliberately left
+   * unfired, which is the state a process that died between the failure and its
+   * timer would boot into.
+   */
+  async function wedged(): Promise<string> {
+    harness.cleanup();
+    workspace = makeTempDir('agentmanager-orchestrator-ws-');
+    let first = true;
+    harness = makeHarness({
+      agents: AGENTS,
+      workspaceCwd: workspace.path,
+      runner: fakeRunner({
+        onStart: () => {
+          if (first) {
+            first = false;
+            throw new Error('the runner queue is full');
+          }
+          return { sessionId: 'session-recovered' };
+        },
+      }),
+    });
+    const assignmentId = await makePair();
+    expect(harness.turns.active(assignmentId)).toBeUndefined();
+    expect(harness.service.get(assignmentId).phase).toBe('running');
+    return assignmentId;
+  }
+
+  it('leaves an assignment alone until it has been idle past recoverAfterMinutes', async () => {
+    const assignmentId = await wedged();
+
+    expect(await harness.engine.sweepStale()).toEqual([]);
+    expect(harness.turns.list(assignmentId)).toHaveLength(1);
+
+    harness.advance(3 * 60_000);
+    expect(await harness.engine.sweepStale()).toEqual([]);
+    expect(harness.turns.active(assignmentId)).toMatchObject({
+      round: 1,
+      seat: DRAFTER_SEAT,
+      sessionId: 'session-recovered',
+    });
+  });
+
+  it('still halts stale at maxAgeHours rather than re-advancing forever', async () => {
+    const assignmentId = await wedged();
+
+    harness.advance(25 * 3_600_000);
+    expect(await harness.engine.sweepStale()).toEqual([assignmentId]);
+    expect(harness.service.get(assignmentId)).toMatchObject({
+      phase: 'halted',
+      haltReason: 'stale',
+    });
+    // The halt won: nothing was re-planned on the way past it.
+    expect(harness.turns.list(assignmentId)).toHaveLength(1);
+  });
+
+  it('does not re-advance a solo, which has no driver to advance', async () => {
+    const solo = await harness.service.createSolo({
+      projectId: PROJECT_ID,
+      agentId: 'kim',
+      prompt: 'go',
+    });
+    await flush();
+    await endSession(harness, solo.sessionId);
+
+    harness.advance(3 * 60_000);
+    expect(await harness.engine.sweepStale()).toEqual([]);
+    expect(harness.turns.list(solo.assignmentId)).toHaveLength(0);
+  });
+});
+
 describe('budgets stop the loop with the right phase (§7.3, §8.1)', () => {
   it('plans nothing once tokens_used has crossed the budget, and says why', async () => {
     const assignmentId = await makePair({ tokenBudget: 100 });

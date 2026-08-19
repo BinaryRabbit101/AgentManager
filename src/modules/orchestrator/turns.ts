@@ -115,6 +115,15 @@ export interface TurnRow {
    * arrives exactly once, on `session.ended`.
    */
   readonly permissionDenials: number;
+  /**
+   * Why the turn ended, in runner's §2.3 vocabulary — or `launch_failed`, which
+   * the engine writes when no session ever existed to carry one.
+   *
+   * `null` until the turn completes, and `null` for a completion nobody gave a
+   * reason for. Orchestrator copies the value rather than re-declaring runner's
+   * closed set: a second list of exit reasons is a second thing to keep in step.
+   */
+  readonly exitReason: string | null;
   /** Derived, never stored — see the file header. */
   readonly retryOfTurnId: string | null;
 }
@@ -134,6 +143,8 @@ export interface CompleteTurnInput {
   readonly artifactHash?: string | null | undefined;
   /** Runner's count for the session, when `session.ended` carried one (§8.1). */
   readonly permissionDenials?: number | undefined;
+  /** Runner's `exit_reason`, or `launch_failed` when no session was ever started. */
+  readonly exitReason?: string | null | undefined;
 }
 
 export interface TurnRepository {
@@ -197,11 +208,12 @@ interface RawTurn {
   readonly started_at: string | null;
   readonly ended_at: string | null;
   readonly permission_denials: number;
+  readonly exit_reason: string | null;
 }
 
 const COLUMNS =
   'id, assignment_id, round, seat, agent_id, session_id, prev_session_id, status, ' +
-  'report_json, output_text, artifact_hash, started_at, ended_at, permission_denials';
+  'report_json, output_text, artifact_hash, started_at, ended_at, permission_denials, exit_reason';
 
 export interface TurnRepositoryOptions {
   readonly db: Database;
@@ -252,6 +264,9 @@ export function createTurnRepository(options: TurnRepositoryOptions): TurnReposi
   const setDenials = db.prepare<[number, string]>(
     'UPDATE assignment_turns SET permission_denials = ? WHERE id = ?',
   );
+  const setExitReason = db.prepare<[string | null, string]>(
+    'UPDATE assignment_turns SET exit_reason = ? WHERE id = ?',
+  );
 
   function now(): string {
     return isoTimestamp(clock());
@@ -296,6 +311,7 @@ export function createTurnRepository(options: TurnRepositoryOptions): TurnReposi
         startedAt: row.started_at,
         endedAt: row.ended_at,
         permissionDenials: row.permission_denials,
+        exitReason: row.exit_reason,
         retryOfTurnId: previous,
       };
     });
@@ -385,6 +401,10 @@ export function createTurnRepository(options: TurnRepositoryOptions): TurnReposi
       if (input.permissionDenials !== undefined) {
         setDenials.run(Math.max(0, Math.trunc(input.permissionDenials)), id);
       }
+      // Written on the turn for the same reason `permission_denials` is: the
+      // value arrives exactly once, and a turn that failed at launch has no
+      // session row to read it back off later (§11.2).
+      if (input.exitReason !== undefined) setExitReason.run(input.exitReason ?? null, id);
       setComplete.run(input.status, now(), id);
       return require_(id);
     },

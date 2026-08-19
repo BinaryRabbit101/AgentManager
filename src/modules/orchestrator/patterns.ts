@@ -269,6 +269,23 @@ export interface AssignmentState {
         readonly answeredAt?: string | undefined;
       }
     | undefined;
+  /**
+   * Is *any* decision card for this assignment still open?
+   *
+   * {@link openQuestion} carries the newest card and its answer, which cannot
+   * answer "is this seat still waiting on something": the newest card may be an
+   * answered one from two rounds ago while nothing is open at all. Telling those
+   * apart is what stops a blocked seat waiting forever for an answer that has
+   * already landed or was never asked for (§3.3).
+   *
+   * Resolved by the engine against the inbox and handed over as a boolean, in
+   * the same discipline as {@link ChildState}: `plan()` is pure over persisted
+   * assignment state and may not query anything (§3.1).
+   *
+   * `undefined` means "this build could not tell", and the wait is kept — a
+   * state that cannot see the inbox must not conclude that nothing is in it.
+   */
+  readonly hasOpenQuestion?: boolean | undefined;
   /** §8.1's counters. A no-op input until M7 fills them. */
   readonly breakers: BreakerCounters;
   /**
@@ -939,7 +956,24 @@ function unfinishedTurn(
   return undefined;
 }
 
-/** §3.3's blocked row: the answer, or the wait for it. */
+/**
+ * §3.3's blocked row: the answer, the wait for it — or the way out when neither
+ * will ever come.
+ *
+ * The wait is only correct while an answer is still *possible*. Two shapes make
+ * it impossible: the newest decision was answered **before** this turn blocked
+ * (so `question.answered` has already fired and will not fire again), and there
+ * is no card at all for a seat that reported `blocked`. Both leave an `open`,
+ * `running` assignment with nothing scheduled — the dead-end the engine's
+ * recovery pass keeps re-entering and this branch is the only thing that can
+ * get out of.
+ *
+ * So when nothing is open, the same seat and round are re-planned instead. The
+ * retry either raises its question again (and the next wait is a real one) or
+ * finishes; it never loops, because a *second* blocked turn in the same
+ * seat-and-round is left to wait — after which `maxAgeHours` is the backstop,
+ * and a halt the user can see beats a retry the user cannot.
+ */
 function answeredOrWait(state: AssignmentState, last: TurnRow, agentId: string): PlanResult {
   const decision = state.openQuestion;
   const answer = decision?.answerText;
@@ -947,7 +981,12 @@ function answeredOrWait(state: AssignmentState, last: TurnRow, agentId: string):
     decision?.answeredAt !== undefined &&
     last.endedAt !== null &&
     decision.answeredAt < last.endedAt;
-  if (answer === undefined || stale) return { wait: true, reason: 'awaiting_answer' };
+  if (answer === undefined || stale) {
+    const answerable = state.hasOpenQuestion !== false || blockedAgain(state.turns, last);
+    return answerable
+      ? { wait: true, reason: 'awaiting_answer' }
+      : retryPlan(state, last, agentId);
+  }
   return {
     seat: last.seat,
     agentId,
@@ -961,6 +1000,23 @@ function answeredOrWait(state: AssignmentState, last: TurnRow, agentId: string):
     ...continuation(state.turns, last.seat),
     priority: 'normal',
   };
+}
+
+/**
+ * Has this seat already blocked twice in this round?
+ *
+ * The bound on the escape above. `blocked` is the one terminal status no §8.1
+ * counter watches — it is not a failure and not an unstructured turn — so
+ * without this a seat that blocks, is retried, and blocks again would be
+ * retried forever. One recovery attempt per seat-and-round is the whole budget;
+ * past that the assignment waits, and the staleness halt is what the user sees.
+ */
+function blockedAgain(turns: readonly TurnRow[], last: TurnRow): boolean {
+  return (
+    turns.filter(
+      (turn) => turn.seat === last.seat && turn.round === last.round && turn.status === 'blocked',
+    ).length > 1
+  );
 }
 
 /** The same seat and round again, told why it is being asked twice. */

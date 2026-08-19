@@ -1,0 +1,19 @@
+-- 0003_turn_exit_reason.sql — why a turn ended, on the turn (orchestrator
+-- DESIGN §3.1, §11.2).
+--
+-- A `failed` turn already renders in the conversation view; what it could not
+-- say was *why*, because the reason arrives once — on `session.ended`, or from
+-- the engine's own `launch_failed` — and existed nowhere durable afterwards.
+-- The user watching a pair sit still was shown a failed row with no cause, and
+-- "the session could not be started" is exactly the sentence that makes the
+-- difference between a wedge and a bug report.
+--
+-- Stored rather than joined back to `sessions`: a launch failure has **no**
+-- session row at all (that is what failed), so the session is the one place the
+-- reason provably is not. The value is runner's §2.3 vocabulary, unvalidated
+-- here — orchestrator copies what it was told rather than re-declaring a closed
+-- set runner owns.
+--
+-- Applied inside the migration runner's transaction: no BEGIN/COMMIT and no
+-- `IF NOT EXISTS`, per foundation §1.3 and the conventions of 0001/0002.
+ALTER TABLE assignment_turns ADD COLUMN exit_reason TEXT;

@@ -42,6 +42,16 @@ export interface ConversationTurnEntry {
   readonly excerpt: string | null;
   readonly startedAt: string | null;
   readonly endedAt: string | null;
+  /**
+   * Why the turn ended, when anything said so — runner's `exit_reason`, or the
+   * engine's `launch_failed`.
+   *
+   * On the entry rather than left to a lookup because a `failed` row with no
+   * cause is the thing the user actually saw: a pair that stopped, with a red
+   * turn and no sentence. `launch_failed` in particular has no session to click
+   * through to, so this is the only place the reason can be read at all.
+   */
+  readonly exitReason: string | null;
   /** Present when this turn re-ran a seat that produced no report (§3.3). */
   readonly retryOfTurnId: string | null;
   readonly turnId: string;
@@ -168,6 +178,7 @@ export function createConversationReader(
           turn.outputText === null ? null : sliceUtf8(turn.outputText, config.prompt.excerptBytes),
         startedAt: turn.startedAt,
         endedAt: turn.endedAt,
+        exitReason: turn.exitReason,
         retryOfTurnId: turn.retryOfTurnId,
       });
     }

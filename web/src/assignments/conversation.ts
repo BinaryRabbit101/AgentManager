@@ -71,20 +71,57 @@ export function isUnseen(delivery: MessageDelivery): boolean {
 }
 
 /**
+ * runner's `exit_reason` vocabulary, as the half-sentence that follows "failed".
+ *
+ * Only the reasons a **failed** turn can carry are worded; everything else falls
+ * back to the code with its underscores opened out, which is still more than the
+ * user had before and never invents a diagnosis the server did not make.
+ *
+ * `launch_failed` gets the longest sentence because it is the one with no
+ * session to click through to — the turn row is the only place its story is
+ * told, and "failed" alone reads as the agent's fault when it is not.
+ */
+export const EXIT_REASON_WORDS: Readonly<Record<string, string>> = Object.freeze({
+  launch_failed: 'the session could not be started',
+  secret_unresolved: 'a secret it needs could not be resolved',
+  workspace_unavailable: 'its workspace was unavailable',
+  start_timeout: 'it never started in time',
+  idle_timeout: 'it went quiet for too long',
+  wall_clock_timeout: 'it ran past its time limit',
+  error_during_execution: 'the agent errored mid-run',
+  error_structured_output: 'the agent’s output could not be parsed',
+  core_restart: 'the core restarted while it was running',
+  stale_queue: 'it waited in the queue too long',
+  transcript_cap: 'its transcript hit the cap',
+});
+
+export function exitReasonWord(reason: string): string {
+  return EXIT_REASON_WORDS[reason] ?? reason.replace(/_/gu, ' ');
+}
+
+/**
  * §10.2: "Turn status is shown when it is **not** the happy path."
  *
  * `reported` and `running` return `undefined` — a chip saying "this went fine"
  * on every row is noise that hides the one row that did not.
+ *
+ * The unhappy ones name their cause when the server recorded one. A failed turn
+ * with no reason is the failure the user cannot act on, and orchestrator now
+ * keeps `exit_reason` on the turn precisely so this line can finish the
+ * sentence.
  */
 export function turnStatusNote(turn: ConversationTurnEntry): string | undefined {
   const status: TurnStatus = turn.status;
+  const because = turn.exitReason === null || turn.exitReason === undefined
+    ? ''
+    : ` — ${exitReasonWord(turn.exitReason)}`;
   switch (status) {
     case 'unstructured':
       return 'finished without a structured report';
     case 'blocked':
       return 'waiting on a decision';
     case 'failed':
-      return 'failed';
+      return `failed${because}`;
     case 'orphaned':
       return 'orphaned — the core stopped while it was running';
     case 'planned':

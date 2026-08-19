@@ -622,6 +622,12 @@ export interface ConversationTurnEntry {
   readonly excerpt: string | null;
   readonly startedAt: string | null;
   readonly endedAt: string | null;
+  /**
+   * Why the turn ended: runner's `exit_reason`, or `launch_failed` when the
+   * session was never started. `null` on the happy path and on anything older
+   * than the column.
+   */
+  readonly exitReason: string | null;
   readonly retryOfTurnId: string | null;
 }
 
