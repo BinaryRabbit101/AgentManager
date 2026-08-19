@@ -430,6 +430,7 @@ describe('the round cap and its three-option card (M6-4)', () => {
       config: {
         patterns: {
           pair: { roundCap: 1, maxRoundCap: 1, stanceSolicitation: true, requireArtifact: true },
+          review: { roundCap: 3, maxRoundCap: 6 },
           overseer: { roundCap: 3, maxRoundCap: 6 },
         },
       },
@@ -822,6 +823,7 @@ describe('messages and stance solicitation flow through the prompt (§3.2, §6.4
       config: {
         patterns: {
           pair: { roundCap: 3, maxRoundCap: 6, stanceSolicitation: false, requireArtifact: true },
+          review: { roundCap: 3, maxRoundCap: 6 },
           overseer: { roundCap: 3, maxRoundCap: 6 },
         },
       },
@@ -922,7 +924,15 @@ describe('restarting mid-round loses nothing (M5-5, M6 acceptance)', () => {
 describe('GET /api/patterns’ payload (M5-1)', () => {
   it('describes every pattern, its seats, defaults and card order', () => {
     const patterns = harness.engine.patterns();
-    expect(patterns.map((pattern) => pattern.id)).toEqual(['solo', 'pair', 'overseer']);
+    expect(patterns.map((pattern) => pattern.id)).toEqual(['solo', 'pair', 'review', 'overseer']);
+    // §3.6: the pair's numbers from its own config keys, and **no** artifact
+    // path — the review's deliverable is the change, so the dialog renders no
+    // artifact field for it (`review.test.ts` owns the rest).
+    expect(patterns.find((pattern) => pattern.id === 'review')).toMatchObject({
+      requires: { artifactPath: false, roundCap: true, tokenBudget: true },
+      defaults: { roundCap: 3, tokenBudget: 400_000 },
+      maxRoundCap: 6,
+    });
     const pair = patterns.find((pattern) => pattern.id === 'pair');
     expect(pair).toMatchObject({
       driver: 'sequential',

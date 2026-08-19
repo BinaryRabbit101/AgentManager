@@ -266,6 +266,37 @@ export const PATTERNS: PatternListView = {
       },
     },
     /**
+     * orchestrator §3.6, as `GET /api/patterns` serves it (WO5).
+     *
+     * Two seats like the pair, and `requires.artifactPath: false` — the
+     * deliverable is the change in the workspace, so the dialog renders no
+     * artifact-path field and posts none.
+     */
+    {
+      id: 'review',
+      driver: 'sequential',
+      seats: [
+        {
+          key: 'implementer',
+          roles: ['implementer', 'architect'],
+          required: true,
+          preferredTier: 'max',
+          write: true,
+        },
+        {
+          key: 'reviewer',
+          roles: ['reviewer', 'skeptic'],
+          required: true,
+          preferredTier: 'balanced',
+          write: false,
+        },
+      ],
+      requires: { artifactPath: false, roundCap: true, tokenBudget: true },
+      defaults: { roundCap: 3, tokenBudget: 400_000 },
+      maxRoundCap: 6,
+      cardSeatOrder: ['reviewer', 'implementer'],
+    },
+    /**
      * orchestrator §3.5, as `GET /api/patterns` serves it (engine.ts).
      *
      * **One** seat — the workers hold seats in the child assignments the lead

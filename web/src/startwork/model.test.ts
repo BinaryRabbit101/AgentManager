@@ -53,7 +53,10 @@ describe('the shape of the work is the count’s question (§6)', () => {
   it('offers exactly what the count allows', () => {
     expect(teamworkOptions(0)).toEqual(['solo']);
     expect(teamworkOptions(1)).toEqual(['solo']);
-    expect(teamworkOptions(2)).toEqual(['pair', 'independent']);
+    // WO5: two agents get the review beside the pair, because they produce
+    // different things — a document the drafter wrote, or the change the
+    // implementer made.
+    expect(teamworkOptions(2)).toEqual(['pair', 'review', 'independent']);
     expect(teamworkOptions(5)).toEqual(['team', 'independent']);
   });
 
@@ -66,11 +69,35 @@ describe('the shape of the work is the count’s question (§6)', () => {
     expect(teamworkFor(1, 'team')).toBe('solo');
   });
 
+  it('keeps the review choice while two agents are picked, and drops it at three', () => {
+    expect(teamworkFor(2, 'review')).toBe('review');
+    expect(teamworkFor(3, 'review')).toBe('team');
+  });
+
   it('maps each shape onto the pattern it posts, or onto solos', () => {
     expect(patternFor('pair')).toBe('pair');
+    expect(patternFor('review')).toBe('review');
     expect(patternFor('team')).toBe('overseer');
     expect(patternFor('solo')).toBeNull();
     expect(patternFor('independent')).toBeNull();
+  });
+
+  it('seats the review’s two declared seats, implementer first', () => {
+    // The seat mapping follows the pattern's own `seats`, exactly as the pair's
+    // does — the dialog never hard-codes who implements.
+    const reviewSeats: readonly SeatDefinition[] = [
+      { key: 'implementer', roles: ['implementer', 'architect'], required: true, write: true },
+      { key: 'reviewer', roles: ['reviewer', 'skeptic'], required: true, write: false },
+    ];
+    const reviewer = declaring('rex', ['reviewer']);
+    const implementer = declaring('kim', ['implementer']);
+    // Picked reviewer-first: the ranking still implements with the implementer.
+    const seated = rankForSeats(reviewSeats, [reviewer, implementer]);
+    expect(seated.map((agent) => agent.definition.id)).toEqual(['kim', 'rex']);
+    expect(seatMembers(reviewSeats, seated)).toEqual([
+      { agentId: 'kim', role: 'implementer' },
+      { agentId: 'rex', role: 'reviewer' },
+    ]);
   });
 });
 

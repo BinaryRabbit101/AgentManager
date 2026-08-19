@@ -90,14 +90,21 @@ export interface PermissionPreviewPort {
 /**
  * WO6's integration-state projection, as data (roster §10).
  *
- * The four states are roster's closed set; orchestrator consumes them and never
- * re-derives one — the whole point of §2.8's preflight is that the *same*
- * projection the Start-work dialog shows a human is what an unattended launch is
- * judged against.
+ * The states are roster's closed set (`INTEGRATION_STATES`); orchestrator
+ * consumes them and never re-derives one — the whole point of §2.8's preflight
+ * is that the *same* projection the Start-work dialog shows a human is what an
+ * unattended launch is judged against.
+ *
+ * `missing-connector` joined the set when the connector library landed (roster
+ * WO3): an agent may hold a `connectorId` reference to a library entry that no
+ * longer exists. It is listed here rather than left out because the port is
+ * reached through a cast, so a union that lags roster's does not fail to
+ * typecheck — it just quietly lies, and the one consumer that matters is the
+ * preflight's "anything short of green does not launch".
  */
 export interface IntegrationStatePort {
   readonly integration: string;
-  readonly state: 'ready' | 'needs-auth' | 'missing-secret' | 'not-attached';
+  readonly state: 'ready' | 'needs-auth' | 'missing-secret' | 'missing-connector' | 'not-attached';
   readonly required: boolean;
   readonly detail: string;
 }

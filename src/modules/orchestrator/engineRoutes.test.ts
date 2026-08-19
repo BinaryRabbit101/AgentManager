@@ -110,13 +110,19 @@ describe('GET /api/patterns (M5-1)', () => {
     const answer = await wired.call('GET', '/api/patterns');
     expect(answer.status).toBe(200);
     const patterns = answer.body['patterns'] as { id: string; seats: { roles: string[] }[] }[];
-    expect(patterns.map((pattern) => pattern.id)).toEqual(['solo', 'pair', 'overseer']);
+    expect(patterns.map((pattern) => pattern.id)).toEqual(['solo', 'pair', 'review', 'overseer']);
     expect(patterns[1]?.seats.map((seat) => seat.roles)).toEqual([
       ['architect', 'implementer'],
       ['skeptic'],
     ]);
+    // §3.6: two seats, each accepting the neighbouring role — the create dialog
+    // ranks by them and never gates on them (owner, 2026-08-18).
+    expect(patterns[2]?.seats.map((seat) => seat.roles)).toEqual([
+      ['implementer', 'architect'],
+      ['reviewer', 'skeptic'],
+    ]);
     // §3.5: one seat, and only an overseer may fill it.
-    expect(patterns[2]?.seats.map((seat) => seat.roles)).toEqual([['overseer']]);
+    expect(patterns[3]?.seats.map((seat) => seat.roles)).toEqual([['overseer']]);
   });
 });
 

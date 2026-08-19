@@ -116,6 +116,10 @@
         "stanceSolicitation": true,
         "requireArtifact": true
       },
+      "review": {
+        "roundCap": 3,
+        "maxRoundCap": 6
+      },
       "overseer": {
         "roundCap": 3,
         "maxRoundCap": 6

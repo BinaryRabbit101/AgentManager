@@ -279,6 +279,50 @@ export function validateCreateAssignment(input: ValidationInput): ValidationResu
     }
   }
 
+  // --- §3.3 / §3.6: the two-seat patterns have exactly two seats ----------
+  //
+  // Both patterns declare two required seats and their `plan()` reads exactly
+  // two members, so a third was never anything but an inert row: it never took a
+  // turn, never got a prompt, and still counted against
+  // `maxConcurrentPerAgent`. That is a user who thinks they seated three people
+  // and a fleet that quietly disagrees, which is the shape of the incident WO5
+  // exists to answer — so it is a **named** refusal here rather than silence in
+  // the planner, exactly as §9-6 already refuses a second overseer seat.
+  //
+  // One member is refused for the mirror reason: a pair with nobody to argue
+  // with, or a change with nobody to review it, is a solo assignment wearing a
+  // pattern's name, and the honest answer is to say so rather than to wait
+  // forever on `no_members`.
+  //
+  // Whether the seated agents *declare* the seats' roles stays a warning
+  // (`role_not_declared` above) — owner decision 2026-08-18: capabilities rank,
+  // they never gate. This rule counts seats, never labels.
+  if (request.pattern === 'pair' || request.pattern === 'review') {
+    const shape =
+      request.pattern === 'pair'
+        ? { seats: 'the drafter and the critic', article: 'A "pair"' }
+        : { seats: 'the implementer and the reviewer', article: 'A "review"' };
+    if (request.members.length === 1) {
+      refusals.push({
+        code: 'seat_unfilled',
+        message:
+          `${shape.article} assignment has two seats, ${shape.seats}, and one member fills only ` +
+          'one of them. Name a second member, or start a solo assignment instead.',
+        details: { pattern: request.pattern, members: request.members.length, seats: 2 },
+      });
+    }
+    if (request.members.length > 2) {
+      refusals.push({
+        code: 'seat_not_in_pattern',
+        message:
+          `${shape.article} assignment has exactly two seats, ${shape.seats}. The extra ` +
+          `member${request.members.length > 3 ? 's hold' : ' holds'} no seat, so nothing would ` +
+          'ever plan a turn for them.',
+        details: { pattern: request.pattern, members: request.members.length, seats: 2 },
+      });
+    }
+  }
+
   // --- §9-6: the lead seat ------------------------------------------------
   // **Owner decision, 2026-08-18**: `capabilities.overseer` is a ranking hint
   // for *suggesting* leads, not a gate on who may hold the seat. So a lead that

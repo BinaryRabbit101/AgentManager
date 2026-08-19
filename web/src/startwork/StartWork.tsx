@@ -105,8 +105,23 @@ import {
   teamworkOptions,
   templateSlug,
   usesSource,
+  type PatternId,
   type Teamwork,
 } from './model';
+
+/**
+ * A `GET /api/patterns` id as the create body types it.
+ *
+ * `PatternSummary.id` is a plain string — the registry may grow — while the
+ * request body names the three this dialog knows how to fill in. Anything else
+ * falls back to the pair rather than posting a pattern whose seats the dialog
+ * never rendered.
+ */
+function patternIdOf(id: string): PatternId {
+  if (id === 'overseer') return 'overseer';
+  if (id === 'review') return 'review';
+  return 'pair';
+}
 
 /** An agent's name for a prompt, falling back to its id (§5.2's deleted-agent rule). */
 function nameFor(agents: readonly AgentView[], agentId: string): string {
@@ -116,7 +131,12 @@ function nameFor(agents: readonly AgentView[], agentId: string): string {
 /** The one-line description of each shape, in the radio's own label (§15). */
 const TEAMWORK_LABELS: Readonly<Record<Teamwork, string>> = {
   solo: 'On their own',
-  pair: 'As an adversarial pair — one drafts, the other looks for the hole in it',
+  pair: 'As an adversarial pair — one drafts a document, the other looks for the hole in it',
+  // WO5: the sentence has to distinguish this from the pair at a glance, and the
+  // distinction is *what comes out* — a document versus a change in the
+  // workspace. A run that wanted the second and picked the first is the incident
+  // this option exists to answer.
+  review: 'Implement and review — one makes the change, the other reviews the code',
   independent: 'Independently — one assignment each, same brief',
   team: 'As a team — one leads, and splits the work into child assignments',
 };
@@ -676,11 +696,16 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
       method: 'POST',
       body: patternRequest({
         projectId,
-        pattern: pattern.id === 'overseer' ? 'overseer' : 'pair',
+        pattern: patternIdOf(pattern.id),
         members,
         goal: teamwork === 'team' ? goalWithWorkers(task, workers) : task,
         scopePaths: scopePathList(scopePaths),
-        artifactPath,
+        // The derived default is the *pair's* — a `docs/…/DRAFT.md` the pattern
+        // requires. A pattern that requires no artifact path gets only what the
+        // user actually typed, which for the review is nothing: its deliverable
+        // is the change in the workspace, and posting a document path by default
+        // is how a review turns back into a pair (WO5).
+        artifactPath: pattern.requires.artifactPath ? artifactPath : (artifactPathRaw ?? ''),
         roundCap,
         tokenBudget,
         // Narrowed to the agents that actually took a seat: the team path seats
@@ -1123,11 +1148,15 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
               ))
             )}
 
-            {teamwork === 'pair' && seated.length === 2 ? (
-              <p className="startwork__note" data-seats="pair">
-                {`${seated[0]?.definition.name ?? '?'} drafts · ${
-                  seated[1]?.definition.name ?? '?'
-                } reviews.`}{' '}
+            {(teamwork === 'pair' || teamwork === 'review') && seated.length === 2 ? (
+              <p className="startwork__note" data-seats={teamwork}>
+                {teamwork === 'review'
+                  ? `${seated[0]?.definition.name ?? '?'} implements · ${
+                      seated[1]?.definition.name ?? '?'
+                    } reviews the change.`
+                  : `${seated[0]?.definition.name ?? '?'} drafts · ${
+                      seated[1]?.definition.name ?? '?'
+                    } reviews.`}{' '}
                 <button
                   type="button"
                   className="button"

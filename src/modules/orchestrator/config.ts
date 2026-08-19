@@ -40,6 +40,21 @@ export const orchestratorConfigSchema = z.strictObject({
       /** A critique of a chat message is a conversation; of a file, a review (§3.3). */
       requireArtifact: z.boolean(),
     }),
+    /**
+     * §3.6's implementer-and-reviewer pattern (WO5).
+     *
+     * The same two keys as the pair and the same numbers, because the shape of
+     * the loop is the same — one implementer turn plus one reviewer turn is a
+     * round, and three rounds is "build it, fix what the review found, fix what
+     * the second review found". They are its **own** keys rather than the pair's
+     * read twice: a team reviewing real changes and a pair critiquing a document
+     * are different kinds of work to bound, and one number for both would make
+     * lengthening a code review also lengthen every document pair.
+     */
+    review: z.strictObject({
+      roundCap: positiveInt,
+      maxRoundCap: positiveInt,
+    }),
     /** §3.5's lead-and-children pattern. */
     overseer: z.strictObject({
       /**
@@ -176,6 +191,7 @@ export type OrchestratorConfig = z.infer<typeof orchestratorConfigSchema>;
 export const ORCHESTRATOR_CONFIG_DEFAULTS: OrchestratorConfig = {
   patterns: {
     pair: { roundCap: 3, maxRoundCap: 6, stanceSolicitation: true, requireArtifact: true },
+    review: { roundCap: 3, maxRoundCap: 6 },
     overseer: { roundCap: 3, maxRoundCap: 6 },
   },
   budgets: {

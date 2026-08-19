@@ -133,8 +133,21 @@ export const REFUSAL_CODES = [
   /** §9-3 */ 'nesting_depth',
   /** §9-4 */ 'unsupported_pattern',
   /** §9-5 */ 'invalid_role',
-  /** §9-6, §3.5 — a seat the pattern does not have (the overseer's lone lead). */
+  /**
+   * §9-6, §3.5, §3.6 — a member the pattern has no seat for.
+   *
+   * The overseer's lone lead, and from WO5 the third member of a two-seat
+   * `pair` or `review`: `plan()` reads exactly two, so a third was only ever an
+   * inert row that still counted against `maxConcurrentPerAgent`.
+   */
   'seat_not_in_pattern',
+  /**
+   * §3.3, §3.6 — a two-seat pattern given one member (WO5).
+   *
+   * The mirror of the rule above and a different remedy: that one says *remove
+   * somebody*, this one says *add somebody, or start a solo instead*.
+   */
+  'seat_unfilled',
   /** §9-7 */ 'agent_not_found',
   /** §9-7 */ 'member_archived',
   /** §9-7 */ 'member_at_capacity',

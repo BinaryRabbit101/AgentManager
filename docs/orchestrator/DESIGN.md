@@ -725,12 +725,18 @@ prompt says a report is a claim" (§3.5), and the write-capable approval gate is
 children run concurrently because each is its own assignment with its own loop, and §3.5 records why
 the parent still reviews them in batches.
 
-**Review loop.** `implementer` → `reviewer` → implementer, terminating on the reviewer's `accept`
-— structurally the pair with a different seat vocabulary and a different prompt set, plus one real
-addition: the reviewer runs against a **diff**, not a file, which needs a git-diff capture that
-projects would own. It is deliberately *not* shipped in v1 despite being nearly free, because it is
-the first pattern that edits code concurrently and therefore the first that needs worktrees, scope
-enforcement and the write gate all working together.
+**Review loop.** It is **built** — §3.6 is what shipped, and the sketch's own reason for deferring
+it has been answered by the intervening milestones: worktrees, scope enforcement and the write gate
+are all working, which is what it was waiting for. The one thing it named that is *not* built is the
+git-diff capture: the reviewer is pointed at the files the implementer listed and reads them from
+the workspace, rather than being handed a diff projects would have to produce. §3.6 records what
+that costs and what stands in for it.
+
+**A four-seat plan-then-build pattern** — architect + skeptic agreeing a plan, then implementer +
+reviewer building it — stays deferred. It is a *composition* of two patterns rather than a new one,
+and composing them is WO6's handoff: a converged pair hands its artifact to a `review` assignment.
+Building it as a single five-turn driver would put the plan/build boundary inside one assignment's
+turn table, where a restart cannot see it and the budget cannot be split across it.
 
 ### 3.5 `overseer` — a lead that decomposes, and children that do the work
 
@@ -820,6 +826,87 @@ writing `converged` on it would set §2.2's completion phase on work nobody acce
 spend is the children's budgets. That is deliberate rather than overlooked: each child's budget is
 checked against the parent's remainder at the moment it is created (§9-8), which is arithmetic
 instead of a planning constant, and §7.5 is what keeps the remainder honest across the tree.
+
+### 3.6 `review` — implementer ↔ reviewer over real changes
+
+**Why it exists** (owner report, 2026-08-19). A four-agent run ended after round two having produced
+one document saying the seats agreed: nothing implemented, no questions asked. The root cause was
+structural, not behavioural. Every pattern this build shipped terminated on a critic accepting an
+*artifact document*, and neither pair prompt contained the word "implement". The run succeeded at
+the only thing any pattern was built to produce. `review` is the pattern that produces the other
+thing.
+
+**Shape.** Two seats, and structurally the pair with one difference that is not cosmetic.
+`implementer` (role `implementer` or `architect`, **`write: true`**) makes the change; `reviewer`
+(role `reviewer` or `skeptic`, `write: false`) reads it. A round is one implementer turn followed by
+one reviewer turn, and the **reviewer is the round-closing seat** — `rounds_used` is incremented on
+its report, exactly as the pair's is on the critic's. Reads are never scoped (§2.5), so a read-only
+reviewer still opens every file the implementer touched; a reviewer that could edit would be a
+second implementer with a verdict.
+
+```jsonc
+// pattern_config_json for `review`
+{ "roundCap": 3,                       // config default; user-adjustable 1..orchestrator.patterns.review.maxRoundCap
+  "seats": { "implementer": "kim-implementer", "reviewer": "rex-reviewer" },
+  "convergence": "reviewer-accepts" }  // the only value
+// requires: { roundCap: true, tokenBudget: true }   // **no** artifactPath
+```
+
+**The deliverable is the working tree, not a document.** `requires.artifactPath` is `false` and
+`scope.artifactPath` stays optional — a doc-plus-code run may still declare one, and when it does
+the pair's artifact guard (§3.3) applies to it unchanged. Requiring one would put the pattern
+straight back into producing a file that says work happened, which is the failure it exists to
+prevent.
+
+**Turn order and `plan()`, exactly.**
+
+| State | Plan |
+|---|---|
+| No turns | Round 1, `implementer`, `startSession`. Prompt intent `implement`: *"Make the change this goal describes in the workspace: edit the code, add or update the tests… Writing a document about the change is not the work."* |
+| Last turn = `implementer`, reported, and the run declared an `artifactPath` whose `artifact_hash` is `null` | Same as §3.3: one `artifact_missing` re-plan, then **halt** `no_artifact`. |
+| Last turn = `implementer`, reported with an **empty `artifacts` list** — first such turn of the round | Same round, **`implementer`** again, `continueFrom`, `retryOf` recorded. Prompt intent `implementation_missing`: *"Your report was received but it named no files at all… Make the change in the workspace now and report again."* |
+| Last turn = `implementer`, reported with an empty `artifacts` list, **second such turn of the round** | Round continues to the `reviewer`. Not a halt — see *the no-change guard* below. |
+| Last turn = `implementer`, reported (files named) | Same round, `reviewer`. Prompt intent `review_changes`: read the files and the diff around them, judge the code and not the description of it. |
+| Last turn = `reviewer`, `verdict.decision === 'accept'` **and** `verdict.blocking` empty | **Terminate** `converged`. |
+| Last turn = `reviewer`, otherwise | If `round + 1 > roundCap` → **terminate** `round_cap`. Else round + 1, `implementer`, `continueFrom`, prompt intent `reimplement` carrying the blocking issues verbatim. |
+| `blocked` / `unstructured` / `failed` | §3.3's three seat-agnostic rows, unchanged — one implementation, both sequential patterns. |
+
+**The no-change guard, and the signal it is honest about.** §3.3's artifact guard works because the
+engine has real evidence: `onSessionEnded` hashes `scope.artifactPath` and writes `null` when
+nothing is there. This pattern declares no path, so there is no hash. Ground truth would be a
+workspace `git status` — projects owns one (`worktree.ts`) — but `plan()` is pure over persisted
+assignment state and may not query anything (§3.1), so reaching it would mean widening
+`AssignmentState` and the engine's state resolution. The cheapest signal that already exists in the
+turn plumbing is used instead: **`report_status`'s `artifacts` list**, which the required-close
+sentence asks every implementer turn for by name. An empty list is the seat's own *structured* claim
+that it touched nothing — the same field the overseer's review turn is handed as "files it claims to
+have touched" (§3.5) — and it is read before the reviewer is planned, because a reviewer turn spent
+discovering that nothing changed is the same wasted quarter-round §3.3 refuses to spend.
+
+It is a claim rather than evidence, and the design follows from that in one place: the **second**
+empty report of a round falls through to the reviewer rather than halting. A model that did the work
+and forgot to list it and a model that did nothing look identical from here, the reviewer is the seat
+that can tell them apart by reading the workspace, and the round cap is the outer bound. The pair
+halts `no_artifact` because it has a declared path to name on the card; a halt card that said "no
+file at the artifact path" on an assignment with no artifact path would be a wrong diagnosis in
+front of a human, and the halt vocabulary gains nothing here it can honestly say.
+
+**Member count is enforced, for both two-seat patterns.** `plan()` reads exactly two members, so a
+third was only ever an inert row — it never took a turn, never got a prompt, and still counted
+against `maxConcurrentPerAgent`. §9 now refuses it by name (`seat_not_in_pattern`) for `pair` and
+`review` alike, and refuses a single member (`seat_unfilled`) with the remedy in the message: name a
+second, or start a solo. Whether the seated agents *declare* the seats' roles stays a
+`role_not_declared` **warning** — owner decision 2026-08-18: capabilities rank, they never gate.
+
+**Cost shape.** The same as the pair's, because the shape of the loop is the same: two seats, one
+turn each per round. So `patterns.review` carries its own `roundCap`/`maxRoundCap` (3 and 6) rather
+than reading the pair's twice — lengthening a code review must not also lengthen every document
+pair — and the token default is `budgets.defaultPairTokens`, which is one number bounding one shape.
+
+**Out of scope.** The four-seat plan-then-build pattern stays deferred (§3.4). The reviewer reads
+files rather than a diff, and no engine change was needed beyond registering the pattern in the
+three places that dispatch on a pattern id: the round-closing seat, the per-pattern round-cap
+ceiling, and `GET /api/patterns`' defaults.
 
 ---
 
@@ -1688,6 +1775,12 @@ foundation §2.3 already put it and is not duplicated here. Runner's `question.h
 "orchestrator": {
   "patterns": {
     "pair": { "roundCap": 3, "maxRoundCap": 6, "stanceSolicitation": true, "requireArtifact": true },
+    // §3.6: the pair's shape — two seats, one turn each per round — so the same two numbers,
+    // and its **own** keys rather than the pair's read twice: a team reviewing real changes
+    // and a pair critiquing a document are different kinds of work to bound, and one number
+    // for both would make lengthening a code review also lengthen every document pair. Its
+    // token default is `budgets.defaultPairTokens`, which bounds that one shape.
+    "review": { "roundCap": 3, "maxRoundCap": 6 },
     // §3.5: round 1 decomposes, every later round reviews. No `tokenBudget` default — §9-8
     // requires the user to choose one, because a default cap on work that creates more work
     // is a number nobody agreed to.

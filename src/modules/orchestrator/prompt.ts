@@ -325,13 +325,22 @@ function build(
  * turn.
  */
 function isMultiSeat(patternId: string): boolean {
-  return patternId === 'pair' || patternId === 'overseer';
+  return patternId === 'pair' || patternId === 'review' || patternId === 'overseer';
 }
 
 function seatSentence(input: ComposePromptInput): string {
   const of = input.roundCap === null ? '' : ` of ${String(input.roundCap)}`;
   if (input.patternId === 'pair') {
     return `You are the ${input.spec.seat} (role: ${input.role}) in an adversarial pair. Round ${String(input.spec.round)}${of}.`;
+  }
+  if (input.patternId === 'review') {
+    // §3.6: named for what the seats do, not for the argument they have. "An
+    // adversarial pair" is a description of a conversation; this one has to read
+    // as a piece of work with a gate on it.
+    return (
+      `You are the ${input.spec.seat} (role: ${input.role}) on a change that is implemented and ` +
+      `then reviewed. Round ${String(input.spec.round)}${of}.`
+    );
   }
   if (input.patternId === 'overseer') {
     // §3.5: the lead is told it is a lead, and told what the other seats are —
@@ -381,6 +390,48 @@ function intentSentence(input: ComposePromptInput): string {
         `Your report was received but no file exists at ${input.artifactPath ?? 'the artifact path'}. ` +
         'Create that exact file with your draft and report again. A report without this file on ' +
         'disk will be sent back.'
+      );
+    // --- §3.6's four, and every one of them names the workspace ------------
+    //
+    // The incident these sentences answer: a run whose seats agreed in a
+    // document and implemented nothing. `draft` and `critique` above are about
+    // an artifact on purpose; these are about the change on purpose, and the
+    // difference has to be in the one sentence the seat reads rather than left
+    // to the goal to imply.
+    case 'implement':
+      return (
+        'Make the change this goal describes in the workspace: edit the code, add or update the ' +
+        'tests, and leave the tree in a state a reviewer can read. Writing a document about the ' +
+        'change is not the work. List every file you touched in your report — a turn that ' +
+        'changes nothing will be sent back.' +
+        (input.artifactPath === null
+          ? ''
+          : ` This assignment also declares ${input.artifactPath}; write it as well as the code.${onDisk}`)
+      );
+    case 'reimplement':
+      return (
+        'Answer every blocking issue below by changing the workspace — or explain why an issue ' +
+        'is wrong. Edit the code and the tests; agreeing with the review is not the same as ' +
+        'fixing it. List every file you touched in your report.' +
+        (input.artifactPath === null ? '' : ` Keep ${input.artifactPath} in step.${onDisk}`)
+      );
+    case 'implementation_missing':
+      // Blunt, and it names the consequence, for the same reason
+      // `artifact_missing` is blunt: this is an instruction being given a second
+      // time, and §4.2's rule that a refusal a model understands is one it does
+      // not retry applies to those too.
+      return (
+        'Your report was received but it named no files at all, so as far as this assignment can ' +
+        'tell nothing changed. Make the change in the workspace now and report again, listing ' +
+        'every file you touched. If you believe the change was already made, say which files ' +
+        'hold it.'
+      );
+    case 'review_changes':
+      return (
+        'Review the actual change: read the files the implementer listed and the diff around ' +
+        'them, and check the tests. Judge the code in the workspace, not the description of it — ' +
+        'a report is a claim and the tree is the evidence. List the issues that block it, be ' +
+        'specific, and be hard to please. Do not negotiate wording.'
       );
     case 'retry':
       return `Your previous turn ended without a structured report. Do the work, then you MUST call ${REPORT_STATUS_TOOL} before you finish.`;
@@ -453,6 +504,13 @@ function terminationLines(input: ComposePromptInput): readonly string[] {
         'empty blocking list. An "accept, but these are blocking" report counts as "revise".',
     );
   }
+  if (input.patternId === 'review') {
+    lines.push(
+      'Convergence: this assignment finishes when the reviewer reports decision "accept" with an ' +
+        'empty blocking list, against the change in the workspace. An "accept, but these are ' +
+        'blocking" report counts as "revise".',
+    );
+  }
   if (input.patternId === 'overseer') {
     lines.push(
       'Convergence: this assignment finishes when you report decision "accept" with an empty ' +
@@ -478,7 +536,11 @@ function requiredCloseLine(input: ComposePromptInput): string {
       'not the prose.'
     );
   }
-  const verdictSeat = input.patternId === 'pair' && input.spec.seat === 'critic';
+  // The round-closing seat of each two-seat pattern — the one whose `verdict`
+  // the convergence rule reads.
+  const verdictSeat =
+    (input.patternId === 'pair' && input.spec.seat === 'critic') ||
+    (input.patternId === 'review' && input.spec.seat === 'reviewer');
   return verdictSeat
     ? `Before you finish, call ${REPORT_STATUS_TOOL} with your verdict — decision "accept" or ` +
         '"revise", and every blocking issue listed. The engine reads the structure, not the prose.'

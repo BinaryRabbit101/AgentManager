@@ -38,12 +38,21 @@ import { projectLaunchRefusal } from '../api/types';
  * agents on the same brief, separately" is a real thing to want and used to be
  * unreachable without opening the launch flow twice.
  */
-export type Teamwork = 'solo' | 'pair' | 'independent' | 'team';
+export type Teamwork = 'solo' | 'pair' | 'review' | 'independent' | 'team';
 
-/** What a selection of this size may be shaped as, in the order it is offered. */
+/**
+ * What a selection of this size may be shaped as, in the order it is offered.
+ *
+ * `review` joins the two-agent row for WO5, and it is offered **beside** the
+ * pair rather than instead of it because they produce different things: a pair
+ * converges on a *document* the drafter wrote, a review converges on the
+ * *change* the implementer made. The 2026-08-19 incident was a run that wanted
+ * the second and got the first, and the fix is a question the user can answer
+ * rather than a default nobody can see.
+ */
 export function teamworkOptions(count: number): readonly Teamwork[] {
   if (count <= 1) return ['solo'];
-  if (count === 2) return ['pair', 'independent'];
+  if (count === 2) return ['pair', 'review', 'independent'];
   return ['team', 'independent'];
 }
 
@@ -61,11 +70,15 @@ export function teamworkFor(count: number, chosen: Teamwork | null): Teamwork {
 }
 
 /** Which orchestrator pattern a shape posts, or `null` when it posts solos. */
-export function patternFor(teamwork: Teamwork): 'pair' | 'overseer' | null {
+export function patternFor(teamwork: Teamwork): PatternId | null {
   if (teamwork === 'pair') return 'pair';
+  if (teamwork === 'review') return 'review';
   if (teamwork === 'team') return 'overseer';
   return null;
 }
+
+/** The orchestrator patterns this dialog can post — never `solo`, which has its own route. */
+export type PatternId = 'pair' | 'review' | 'overseer';
 
 /** §6: "Role defaults to `implementer` where the agent declares it, else `capabilities.roles[0]`." */
 export function defaultRole(agent: AgentView | undefined): string | undefined {
@@ -286,7 +299,7 @@ export function soloRequest(input: {
 
 export interface PatternRequest {
   readonly projectId: string;
-  readonly pattern: 'pair' | 'overseer';
+  readonly pattern: PatternId;
   readonly members: readonly SeatMember[];
   readonly goal?: string;
   readonly scope: { readonly paths: readonly string[]; readonly artifactPath?: string };
@@ -316,7 +329,7 @@ export function scopePathList(raw: string): readonly string[] {
  */
 export function patternRequest(input: {
   readonly projectId: string;
-  readonly pattern: 'pair' | 'overseer';
+  readonly pattern: PatternId;
   readonly members: readonly SeatMember[];
   readonly goal: string;
   readonly scopePaths: readonly string[];

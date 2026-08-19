@@ -1,6 +1,6 @@
 /**
- * The pattern abstraction and the three patterns this build ships (DESIGN §3.1,
- * §3.3, §3.5; IMPLEMENTATION M5-1/M5-6, M6-1..3 and M10-1..3).
+ * The pattern abstraction and the four patterns this build ships (DESIGN §3.1,
+ * §3.3, §3.5, §3.6; IMPLEMENTATION M5-1/M5-6, M6-1..3, M10-1..3 and WO5).
  *
  * ## A pattern is a pure state machine over persisted state
  *
@@ -112,6 +112,28 @@ export type TurnIntent =
    * report harder would be a wrong diagnosis in the one sentence it reads.
    */
   | 'artifact_missing'
+  /**
+   * §3.6: the review pattern's first implementer turn — make the change.
+   *
+   * Not `draft`, and the difference is the whole reason WO5 exists: `draft`
+   * names a file to write, and a seat told to write a file writes a file. The
+   * deliverable here is the workspace.
+   */
+  | 'implement'
+  /** §3.6: a later implementer turn, answering the reviewer's blocking list. */
+  | 'reimplement'
+  /**
+   * §3.6: the implementer reported without naming a single file it touched.
+   *
+   * The analogue of `artifact_missing` for a pattern whose deliverable is not
+   * one declared path: the engine has no hash to check, but a `report_status`
+   * with an empty `artifacts` list is the seat's own structured claim that it
+   * changed nothing — and sending the reviewer in to review nothing costs half a
+   * round to learn a fact the report already carries.
+   */
+  | 'implementation_missing'
+  /** §3.6: the reviewer's turn — review the change, not the prose. */
+  | 'review_changes'
   | 'answered'
   /** §3.5: the overseer's first turn — turn the goal into child assignments. */
   | 'decompose'
@@ -428,6 +450,7 @@ export const PAIR_CARD_SEAT_ORDER: readonly string[] = [CRITIC_SEAT, DRAFTER_SEA
 
 export function cardSeatOrder(patternId: string): readonly string[] {
   if (patternId === 'pair') return PAIR_CARD_SEAT_ORDER;
+  if (patternId === 'review') return REVIEW_CARD_SEAT_ORDER;
   // §3.5: one seat, so the order is that seat — stated rather than left empty,
   // because "this pattern has no card order" and "this pattern has one seat" are
   // different facts and the UI branches on the list it is given.
@@ -610,6 +633,294 @@ export const PAIR_PATTERN: PatternDef = {
         blocking: last.report?.verdict?.blocking ?? [],
       },
       ...continuation(turns, DRAFTER_SEAT),
+      priority: 'normal',
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// `review` — implementer ↔ reviewer over real changes (§3.6, WO5)
+// ---------------------------------------------------------------------------
+
+export const IMPLEMENTER_SEAT = 'implementer';
+export const REVIEWER_SEAT = 'reviewer';
+
+/**
+ * §3.6's two seats.
+ *
+ * Structurally the pair with a different vocabulary — and one difference that is
+ * not cosmetic: **the deliverable is the working tree, not a document**. The
+ * incident of 2026-08-19 is what this pattern is for. A four-agent run ended
+ * having produced one file saying the seats agreed, because every pattern this
+ * build shipped terminated on a critic accepting an artifact and neither pair
+ * prompt contained the word "implement". The seats below cannot produce that
+ * outcome: the implementer is told to change the workspace and the reviewer is
+ * told to read the change.
+ *
+ * `implementer` writes; `reviewer` does not. Reads are never scoped (§2.5), so a
+ * read-only reviewer can still open every file the implementer touched — which
+ * is the whole of its job, and a reviewer that could edit would be a second
+ * implementer with a verdict.
+ */
+export const REVIEW_SEATS: readonly SeatDef[] = [
+  {
+    key: IMPLEMENTER_SEAT,
+    roles: ['implementer', 'architect'],
+    required: true,
+    preferredTier: 'max',
+    write: true,
+  },
+  {
+    key: REVIEWER_SEAT,
+    roles: ['reviewer', 'skeptic'],
+    required: true,
+    preferredTier: 'balanced',
+    write: false,
+  },
+];
+
+/**
+ * §6.2's card ordering: the reviewer first, for the pair's reason.
+ *
+ * "The seat that exists to find problems is the seat whose objection you want at
+ * the top."
+ */
+export const REVIEW_CARD_SEAT_ORDER: readonly string[] = [REVIEWER_SEAT, IMPLEMENTER_SEAT];
+
+/**
+ * Members → §3.6's seats.
+ *
+ * By role, like {@link seatsOf}, with the reviewer allowed to be a `skeptic` and
+ * the implementer an `architect` — the create dialog ranks by declared role and
+ * the owner decision of 2026-08-18 makes the seating authoritative, so both
+ * lookups accept the neighbouring role rather than leaving a seat empty over a
+ * label. The implementer lookup deliberately runs first and the reviewer is
+ * chosen from what is left, so one agent declaring both roles cannot take both
+ * seats.
+ */
+export function reviewSeatsOf(members: readonly StateMember[]): {
+  implementer?: StateMember;
+  reviewer?: StateMember;
+} {
+  const ordered = [...members].sort((a, b) => a.seatOrder - b.seatOrder);
+  const implementer =
+    ordered.find((member) => member.role === 'implementer') ??
+    ordered.find((member) => member.role === 'architect');
+  const reviewer = ordered
+    .filter((member) => member.agentId !== implementer?.agentId)
+    .find((member) => member.role === 'reviewer' || member.role === 'skeptic');
+  return {
+    ...(implementer === undefined ? {} : { implementer }),
+    ...(reviewer === undefined ? {} : { reviewer }),
+  };
+}
+
+/**
+ * §8.1's `no_artifact` counter, for a pattern with nothing to hash.
+ *
+ * Counts the implementer turns of one round that reported while claiming **no**
+ * touched files. Same shape and same scoping as
+ * {@link artifactMissingTurns} — one round, `reported` turns only — because it
+ * is the same guard: a seat that says it finished and left nothing behind.
+ */
+export function implementationMissingTurns(turns: readonly TurnRow[], round: number): number {
+  return turns.filter(
+    (turn) =>
+      turn.seat === IMPLEMENTER_SEAT &&
+      turn.round === round &&
+      turn.status === 'reported' &&
+      (turn.report?.artifacts ?? []).length === 0,
+  ).length;
+}
+
+export const REVIEW_PATTERN: PatternDef = {
+  id: 'review',
+  driver: 'sequential',
+  // **No `artifactPath`**, and that is the design rather than an omission: the
+  // deliverable is the change in the workspace. A run that also wants a document
+  // may still declare one — `scope.artifactPath` stays optional and the pair's
+  // artifact guard below applies when it is set — but requiring one would put
+  // the pattern straight back into producing a file that says work happened.
+  requires: { roundCap: true, tokenBudget: true },
+  seats: REVIEW_SEATS,
+
+  validate(config, members) {
+    const diagnostics: Diagnostic[] = [];
+    const bySeat = reviewSeatsOf(members);
+    if (bySeat.implementer === undefined) {
+      diagnostics.push({
+        level: 'error',
+        code: 'seat_unfilled',
+        message:
+          'The review pattern needs an implementer seat held by an implementer or an architect.',
+      });
+    }
+    if (bySeat.reviewer === undefined) {
+      diagnostics.push({
+        level: 'error',
+        code: 'seat_unfilled',
+        message: 'The review pattern needs a reviewer seat held by a reviewer or a skeptic.',
+      });
+    }
+    if (members.length > REVIEW_SEATS.length) {
+      diagnostics.push({
+        level: 'error',
+        code: 'seat_not_in_pattern',
+        message:
+          'The review pattern has exactly two seats, the implementer and the reviewer. A third ' +
+          'member holds no seat, so nothing would ever plan a turn for them.',
+      });
+    }
+    if (config.convergence !== undefined && config.convergence !== 'reviewer-accepts') {
+      diagnostics.push({
+        level: 'error',
+        code: 'unsupported_convergence',
+        message: `"${config.convergence}" is not a convergence rule this build ships; the review pattern's only value is "reviewer-accepts".`,
+      });
+    }
+    return diagnostics;
+  },
+
+  plan(state) {
+    const seats = reviewSeatsOf(state.members);
+    const implementer = seats.implementer;
+    const reviewer = seats.reviewer;
+    if (implementer === undefined || reviewer === undefined) {
+      return { wait: true, reason: 'no_members' };
+    }
+
+    const turns = state.turns;
+    const last = turns.at(-1);
+
+    // No turns → round 1, the implementer, a fresh session.
+    if (last === undefined) {
+      return {
+        seat: IMPLEMENTER_SEAT,
+        agentId: implementer.agentId,
+        round: 1,
+        prompt: { intent: 'implement', seat: IMPLEMENTER_SEAT, round: 1 },
+        priority: 'normal',
+      };
+    }
+
+    if (last.status === 'planned' || last.status === 'running') {
+      return { wait: true, reason: 'turn_in_flight' };
+    }
+
+    const seatOf = (key: string): StateMember =>
+      key === IMPLEMENTER_SEAT ? implementer : reviewer;
+
+    const unfinished = unfinishedTurn(state, last, seatOf(last.seat).agentId);
+    if (unfinished !== undefined) return unfinished;
+
+    // --- last.status === 'reported' ---
+
+    if (last.seat === IMPLEMENTER_SEAT) {
+      // A review run that *also* declared an artifact path is held to the pair's
+      // guard on it: the file was asked for, so a report without it is the same
+      // "nothing to review" the pair refuses to spend a turn discovering.
+      if (requiresArtifact(state) && last.artifactHash === null && state.resumeRequested !== true) {
+        if (artifactMissingTurns(turns, IMPLEMENTER_SEAT, last.round) >= 2) {
+          return { halt: true, haltReason: 'no_artifact' };
+        }
+        return {
+          seat: IMPLEMENTER_SEAT,
+          agentId: implementer.agentId,
+          round: last.round,
+          prompt: {
+            intent: 'artifact_missing',
+            seat: IMPLEMENTER_SEAT,
+            round: last.round,
+            retryOfTurnId: last.id,
+          },
+          ...continuation(turns, IMPLEMENTER_SEAT),
+          priority: 'normal',
+        };
+      }
+
+      // §3.6's no-change guard, and the cheapest honest one available: the
+      // engine hashes a *declared* path and this pattern declares none, so the
+      // only evidence at plan time is the seat's own structured report — an
+      // empty `artifacts` list is the implementer saying, in the field the
+      // engine reads rather than in prose, that it touched nothing. One re-plan,
+      // for exactly the reason the artifact guard re-plans once: a model that
+      // did the work and forgot to list it and a model that did nothing look
+      // identical from here, and one blunt instruction distinguishes them for a
+      // continued session rather than a fresh one.
+      //
+      // The second one falls **through to the reviewer** rather than halting.
+      // The reviewer is the seat that can tell those two apart by reading the
+      // workspace, and the round cap is the outer bound — where the pair halts
+      // `no_artifact` it has a declared path to name on the card, and a halt
+      // whose card said "no file at the artifact path" on an assignment that has
+      // no artifact path would be a wrong diagnosis in front of a human.
+      if (
+        (last.report?.artifacts ?? []).length === 0 &&
+        implementationMissingTurns(turns, last.round) < 2 &&
+        state.resumeRequested !== true
+      ) {
+        return {
+          seat: IMPLEMENTER_SEAT,
+          agentId: implementer.agentId,
+          round: last.round,
+          prompt: {
+            intent: 'implementation_missing',
+            seat: IMPLEMENTER_SEAT,
+            round: last.round,
+            retryOfTurnId: last.id,
+          },
+          ...continuation(turns, IMPLEMENTER_SEAT),
+          priority: 'normal',
+        };
+      }
+
+      return {
+        seat: REVIEWER_SEAT,
+        agentId: reviewer.agentId,
+        round: last.round,
+        prompt: {
+          intent: 'review_changes',
+          seat: REVIEWER_SEAT,
+          round: last.round,
+          handoff: handoffFrom(last),
+        },
+        ...continuation(turns, REVIEWER_SEAT),
+        priority: 'normal',
+      };
+    }
+
+    // The reviewer reported: converge, cap out, or run another round. Exactly
+    // §3.3's structural rule — `accept` **and** an empty blocking list.
+    if (isConverged(last)) {
+      return {
+        done: true,
+        closeReason: 'converged',
+        summary: `The reviewer accepted the change with no blocking issues after ${String(last.round)} round(s).`,
+      };
+    }
+
+    const cap = state.roundCap;
+    if (roundsWouldExceedCap(last.round + 1, cap)) {
+      return {
+        done: true,
+        closeReason: 'round_cap',
+        summary: `The review reached its ${String(cap)}-round cap without the reviewer accepting.`,
+      };
+    }
+
+    const nextRound = last.round + 1;
+    return {
+      seat: IMPLEMENTER_SEAT,
+      agentId: implementer.agentId,
+      round: nextRound,
+      prompt: {
+        intent: 'reimplement',
+        seat: IMPLEMENTER_SEAT,
+        round: nextRound,
+        handoff: handoffFrom(last),
+        blocking: last.report?.verdict?.blocking ?? [],
+      },
+      ...continuation(turns, IMPLEMENTER_SEAT),
       priority: 'normal',
     };
   },
@@ -884,8 +1195,13 @@ export function planChildSolo(state: AssignmentState): PlanResult {
   };
 }
 
-/** The registry of patterns this build ships (M5-1, M10-1). */
-export const PATTERNS: readonly PatternDef[] = [SOLO_PATTERN, PAIR_PATTERN, OVERSEER_PATTERN];
+/** The registry of patterns this build ships (M5-1, M10-1, WO5). */
+export const PATTERNS: readonly PatternDef[] = [
+  SOLO_PATTERN,
+  PAIR_PATTERN,
+  REVIEW_PATTERN,
+  OVERSEER_PATTERN,
+];
 
 export function patternFor(id: string): PatternDef | undefined {
   return PATTERNS.find((pattern) => pattern.id === id);

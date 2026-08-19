@@ -522,7 +522,7 @@ question now, and the selection asks it:
 | Agents selected | What is offered |
 |---|---|
 | 1 | **On their own** — a solo assignment, `POST /api/assignments/solo` |
-| 2 | **Adversarial pair** (orchestrator §3.3) or **Independently** — two solos, one brief |
+| 2 | **Adversarial pair** (orchestrator §3.3), **Implement and review** (orchestrator §3.6) or **Independently** — two solos, one brief |
 | 3+ | **Team** — an `overseer` lead that decomposes (orchestrator §3.5) — or **Independently** |
 
 ```
@@ -548,7 +548,10 @@ Start work                                                [×]
 │  ▸ Options       implementer · read only · no work items │   ← collapsed
 │                                                          │
 │  How they work                                           │
-│  ( ) Adversarial pair — one drafts, one critiques        │
+│  ( ) Adversarial pair — one drafts a document, the       │
+│      other looks for the hole in it                      │
+│  ( ) Implement and review — one makes the change, the    │
+│      other reviews the code                              │
 │  ( ) Independently — one assignment each, same brief     │
 │                                                          │
 │  ▸ Permissions   acceptEdits · 12 allow · 4 deny         │   ← collapsed, solo only
@@ -593,6 +596,20 @@ token budget.
 
 - **Adversarial pair** shows which selected agent drafts and which reviews, ranked by declared role,
   with **Swap seats** because who drafts is the user's call and a ranking is not a decision.
+- **Implement and review** *(2026-08-19, WO5)* is the second two-agent shape, and it is offered
+  **beside** the pair rather than replacing it, because the two produce different things: a pair
+  converges on a *document* the drafter wrote, a review converges on the *change* the implementer
+  made. The one-line copy is the whole distinction and carries the noun — *"one drafts a document,
+  the other looks for the hole in it"* against *"one makes the change, the other reviews the code"*.
+  The 2026-08-19 incident was a run that wanted the second, was only offered the first, and ended
+  with a document saying the seats agreed and nothing implemented; the fix is a question the user
+  can answer rather than a default nobody can see. Seating follows the pattern's own declared seats
+  from `GET /api/patterns` — first agent implements, second reviews — with the same **Swap seats**
+  the pair has, and the note reads *"Ada implements · Sam reviews the change."* It requires **no
+  artifact path**: orchestrator §3.6's deliverable is the working tree, so no field renders and the
+  create body carries none. The derived `docs/…/DRAFT.md` default is the *pair's*, and is now sent
+  only by patterns whose `requires.artifactPath` is `true` — posting a document path by default is
+  how a review turns back into a pair.
 - **Team** asks which selected agent **leads**. The lead is the assignment's *only* member: an
   `overseer`'s workers are not seats of it, they hold seats in the child assignments the lead mints
   (orchestrator §3.5). The others ride in the goal as a line — *"Prefer seating these agents in child

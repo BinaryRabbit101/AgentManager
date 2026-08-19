@@ -154,6 +154,73 @@ describe('the shape of the work is driven by the selection (§6)', () => {
     expect(within(sheet).getByText(/Sam drafts · Ada reviews\./u)).toBeInTheDocument();
   });
 
+  /**
+   * WO5's option, and the incident behind it (orchestrator §3.6).
+   *
+   * Two agents used to have exactly one collaborative shape, and it converged
+   * on a *document*. A run that wanted code got the document and called it
+   * done. So the radio has to be there, its copy has to say which is which, and
+   * choosing it has to post a body with no artifact path in it — a
+   * `docs/…/DRAFT.md` default is how a review turns back into a pair.
+   */
+  it('offers the review beside the pair, with copy that distinguishes them', async () => {
+    mount(<App />, { route: ROUTE, respond: serving({}) });
+    open();
+    const sheet = await dialog();
+
+    const pair = await within(sheet).findByRole('radio', { name: /adversarial pair/iu });
+    const review = within(sheet).getByRole('radio', { name: /Implement and review/u });
+    expect(pair).toBeChecked();
+    expect(review).not.toBeChecked();
+    // The one line each, and the difference is what comes out.
+    expect(pair).toHaveAccessibleName(/drafts a document/u);
+    expect(review).toHaveAccessibleName(/makes the change, the other reviews the code/u);
+    expect(within(sheet).getByRole('radio', { name: /Independently/u })).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(review);
+    expect(review).toBeChecked();
+    // The seating is shown in the review's own words, and swappable.
+    await waitFor(() =>
+      expect(
+        within(sheet).getByText(/Ada implements · Sam reviews the change\./u),
+      ).toBeInTheDocument(),
+    );
+    await user.click(within(sheet).getByRole('button', { name: 'Swap seats' }));
+    expect(
+      within(sheet).getByText(/Sam implements · Ada reviews the change\./u),
+    ).toBeInTheDocument();
+  });
+
+  it('posts pattern "review" with two seated members and no artifactPath', async () => {
+    const posts: Posted[] = [];
+    mount(<App />, { route: ROUTE, respond: serving({ posts, gateLiable: [] }) });
+    open();
+    const sheet = await dialog();
+
+    const user = userEvent.setup();
+    await user.click(await within(sheet).findByRole('radio', { name: /Implement and review/u }));
+    await fillIn(sheet, user, 'Give the retry loop a ceiling');
+    // The pattern declares no artifact path, so the dialog renders no field for
+    // one — the deliverable is the change in the workspace.
+    await user.click(within(sheet).getByText('Rounds, budget and scope', { selector: 'summary' }));
+    expect(within(sheet).queryByLabelText('Artifact path')).toBeNull();
+
+    await user.click(within(sheet).getByRole('button', { name: /Review/u }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+
+    const body = posts[0]?.body ?? {};
+    expect(body['pattern']).toBe('review');
+    expect(body['members']).toEqual([
+      { agentId: 'ada', role: 'implementer' },
+      { agentId: 'sam', role: 'reviewer' },
+    ]);
+    // Absent, not empty: the review's deliverable is the tree.
+    expect(body['scope']).toEqual({ paths: [] });
+    expect(body['roundCap']).toBe(3);
+    expect(body['tokenBudget']).toBe(400_000);
+  });
+
   it('takes the pattern’s seats, cap and budget from GET /api/patterns', async () => {
     mount(<App />, { route: ROUTE, respond: serving({}) });
     open();

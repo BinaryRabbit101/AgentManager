@@ -153,9 +153,22 @@ describe('§9 rule 3 — nesting depth', () => {
 });
 
 describe('§9 rule 4 — the pattern ships with a driver', () => {
-  it('refuses unsupported_pattern for review, which is still v2 (§3.4)', () => {
-    const result = validateCreateAssignment(input({ pattern: 'review' }));
+  it('refuses unsupported_pattern for a pattern this build has no driver for', () => {
+    const result = validateCreateAssignment(input({ pattern: 'swarm' as 'pair' }));
     expect(codes(result)).toContain('unsupported_pattern');
+  });
+
+  it('no longer refuses review, which shipped with its own driver (§3.6)', () => {
+    const result = validateCreateAssignment(
+      input({
+        pattern: 'review',
+        members: [
+          { agentId: 'sam', role: 'implementer' },
+          { agentId: 'iris', role: 'reviewer' },
+        ],
+      }),
+    );
+    expect(codes(result)).not.toContain('unsupported_pattern');
   });
 
   it('no longer refuses overseer, which shipped with its own driver (§3.5)', () => {
@@ -594,7 +607,7 @@ describe('refusals are collected, not thrown one at a time', () => {
     const result = validateCreateAssignment(
       input(
         {
-          pattern: 'review',
+          pattern: 'swarm' as 'pair',
           members: [{ agentId: 'sam', role: 'implementer' }],
           scope: { paths: ['../x'] },
         },

@@ -112,6 +112,7 @@ import {
   planChildSolo,
   LEAD_SEAT,
   PATTERNS,
+  REVIEWER_SEAT,
   type AssignmentState,
   type ChildState,
   type HaltReason,
@@ -900,11 +901,13 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
    * The seat whose report ends a round.
    *
    * For the pair it is the critic — the drafter's turn is half a round. For the
+   * review it is the reviewer, for exactly the same reason (§3.6). For the
    * overseer it is the lead, because it holds the only seat: one turn *is* one
    * round there (decompose, then one review per batch of finished children).
    */
   function isRoundClosingSeat(row: AssignmentRow, turn: TurnRow): boolean {
     if (row.pattern === 'pair') return turn.seat === 'critic';
+    if (row.pattern === 'review') return turn.seat === REVIEWER_SEAT;
     return row.pattern === 'overseer' && turn.seat === LEAD_SEAT;
   }
 
@@ -1022,9 +1025,9 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
    * draft-and-critique, and one number for both would bound the wrong thing.
    */
   function maxRoundCapFor(pattern: string): number {
-    return pattern === 'overseer'
-      ? config.patterns.overseer.maxRoundCap
-      : config.patterns.pair.maxRoundCap;
+    if (pattern === 'overseer') return config.patterns.overseer.maxRoundCap;
+    if (pattern === 'review') return config.patterns.review.maxRoundCap;
+    return config.patterns.pair.maxRoundCap;
   }
 
   /**
@@ -1490,6 +1493,7 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
 
       return PATTERNS.map((pattern): PatternSummary => {
         const pair = pattern.id === 'pair';
+        const review = pattern.id === 'review';
         const overseer = pattern.id === 'overseer';
         return {
           id: pattern.id,
@@ -1503,19 +1507,25 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
           defaults: {
             roundCap: pair
               ? config.patterns.pair.roundCap
-              : overseer
-                ? config.patterns.overseer.roundCap
-                : null,
+              : review
+                ? config.patterns.review.roundCap
+                : overseer
+                  ? config.patterns.overseer.roundCap
+                  : null,
             // §7.2: the overseer's budget has **no** default, and the dialog is
             // told so with a `null` it must make the user fill in — a default
             // cap on work that creates more work is a number nobody agreed to.
-            tokenBudget: pair ? config.budgets.defaultPairTokens : null,
+            // The review shares the pair's: it is the same two-seat shape with
+            // the same round accounting, so the same estimate bounds it.
+            tokenBudget: pair || review ? config.budgets.defaultPairTokens : null,
           },
           maxRoundCap: pair
             ? config.patterns.pair.maxRoundCap
-            : overseer
-              ? config.patterns.overseer.maxRoundCap
-              : null,
+            : review
+              ? config.patterns.review.maxRoundCap
+              : overseer
+                ? config.patterns.overseer.maxRoundCap
+                : null,
           cardSeatOrder: cardSeatOrder(pattern.id),
           ...(entries === undefined ? {} : { candidates: candidatesFor(pattern, entries) }),
         };

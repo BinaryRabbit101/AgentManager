@@ -140,14 +140,17 @@ function plan(turns: readonly TurnRow[], overrides: Partial<AssignmentState> = {
 // ---------------------------------------------------------------------------
 
 describe('the pattern registry (M5-1)', () => {
-  it('ships exactly the three patterns it has drivers for, and names their drivers', () => {
+  it('ships exactly the patterns it has drivers for, and names their drivers', () => {
     expect(PATTERNS.map((pattern) => [pattern.id, pattern.driver])).toEqual([
       ['solo', 'none'],
       ['pair', 'sequential'],
+      // `review` shipped in WO5 (§3.6) — see `review.test.ts` for its own suite.
+      ['review', 'sequential'],
       ['overseer', 'sequential'],
     ]);
-    // `review` is still v2 (§3.4): it needs a git-diff capture projects owns.
-    expect(patternFor('review')).toBeUndefined();
+    // A pattern with no driver is not in the registry, whatever a caller asks
+    // for: this is what `unsupported_pattern` is derived from.
+    expect(patternFor('swarm')).toBeUndefined();
   });
 
   it('declares what a pair requires: an artifact, a round cap and a budget', () => {

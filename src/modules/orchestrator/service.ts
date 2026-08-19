@@ -809,11 +809,17 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
    */
   function defaultBudget(request: CreateAssignmentRequest): number | null {
     if (isMachineCreated(request.createdBy)) return null; // §9-8 already refused a null
-    return request.pattern === 'pair' ? config.budgets.defaultPairTokens : null;
+    // §3.6's review is the pair's shape — two seats, one turn each per round —
+    // so it is bounded by the same estimate rather than by a second number that
+    // would have to be kept in step with it for no reason.
+    return request.pattern === 'pair' || request.pattern === 'review'
+      ? config.budgets.defaultPairTokens
+      : null;
   }
 
   function defaultRoundCap(request: CreateAssignmentRequest): number | null {
     if (request.pattern === 'pair') return config.patterns.pair.roundCap;
+    if (request.pattern === 'review') return config.patterns.review.roundCap;
     // §3.5: round 1 decomposes and every later round reviews, so an overseer
     // without a cap is a lead that can keep re-delegating forever.
     if (request.pattern === 'overseer') return config.patterns.overseer.roundCap;

@@ -28,14 +28,20 @@ export function isAssignmentRole(value: unknown): value is AssignmentRole {
 }
 
 /**
- * The patterns this build ships with a driver (§9-4). `review` is still v2.
+ * The patterns this build ships with a driver (§9-4).
  *
- * `overseer` joined them in M10 (§3.5). What did **not** change is what a
- * machine may create: `create_assignment`'s own schema still accepts only
- * `solo | pair`, so an overseer cannot mint another overseer however this list
- * grows (§9-3 refuses the nesting as well, which is the second lock).
+ * `overseer` joined them in M10 (§3.5) and `review` in WO5 (§3.6). What did
+ * **not** change is what a machine may create: `create_assignment`'s own schema
+ * still accepts only `solo | pair`, so an overseer cannot mint another overseer
+ * however this list grows (§9-3 refuses the nesting as well, which is the second
+ * lock).
  */
-export const SUPPORTED_PATTERNS: readonly AssignmentPattern[] = ['solo', 'pair', 'overseer'];
+export const SUPPORTED_PATTERNS: readonly AssignmentPattern[] = [
+  'solo',
+  'pair',
+  'review',
+  'overseer',
+];
 
 export function isAssignmentPattern(value: unknown): value is AssignmentPattern {
   return value === 'solo' || value === 'pair' || value === 'review' || value === 'overseer';
