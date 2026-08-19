@@ -71,6 +71,30 @@ export interface AssignmentContext {
   readonly tokensUsed: number;
   readonly roundCap: number | null;
   readonly roundsUsed: number;
+  /**
+   * Tool gates the user pre-answered for this seat (orchestrator §2.3, WO4 §2).
+   *
+   * A list of bare tool names, already scoped to this assignment *and* this
+   * agent by the provider. Runner matches on the name and nothing else — §5.1's
+   * "runner matches no rule patterns and consults no rule set" is intact,
+   * because this is not a rule set: it is a set of answers, and the only thing
+   * an answer can do is stand in for a card the compiled permissions already
+   * decided to raise.
+   *
+   * Optional, so a provider that predates the field (and the M3 stub) is not
+   * lying about it. Absent reads as "nothing pre-answered", which is the
+   * behaviour every session had before this existed.
+   */
+  readonly preGrantedTools?: readonly string[] | undefined;
+  /**
+   * `scope.artifactPath`, when the assignment declares one (orchestrator §2.5).
+   *
+   * Runner does not write it, read it or enforce it — it carries it onto a
+   * permission card so a deny can name what it would cost (WO4 addendum §6).
+   * Optional and nullable so a provider that has no artifact says so rather
+   * than sending an empty string that reads as a path.
+   */
+  readonly artifactPath?: string | null | undefined;
 }
 
 /**
@@ -81,7 +105,16 @@ export interface AssignmentContext {
  * `createAssignmentContextStub`, with the same type on both sides.
  */
 export interface AssignmentContextProvider {
-  getAssignmentContext(assignmentId: string): Promise<AssignmentContext>;
+  /**
+   * @param options - the seat the context is wanted for. Optional, and a
+   * provider may ignore it, but the launch chain always names the agent it is
+   * about to start: `preGrantedTools` is scoped to `(assignment, agent, tool)`
+   * and cannot be resolved without it (orchestrator §2.3).
+   */
+  getAssignmentContext(
+    assignmentId: string,
+    options?: { readonly agentId?: string },
+  ): Promise<AssignmentContext>;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +156,11 @@ export interface AskQuestionRequest {
    * - `agentId` — who that rule would be added to. On the request already, but
    *   the card projection does not surface it and the client's roster edit is
    *   addressed to it.
+   * - `seatRole` / `pattern` — which seat of which collaboration is asking
+   *   (WO4 addendum §6). "Allow the agent to use Bash?" from an unnamed seat in
+   *   a two-seat pair is a decision made without knowing whose work is stopped.
+   * - `artifactPath` — set **only** when the gated input itself names the
+   *   assignment's artifact, so a deny can say what it costs without guessing.
    */
   readonly context?:
     | {
@@ -130,6 +168,9 @@ export interface AskQuestionRequest {
         toolInput?: unknown;
         durableRule?: string;
         agentId?: string;
+        seatRole?: string;
+        pattern?: string;
+        artifactPath?: string;
       }
     | undefined;
   /** ISO deadline for the inline hold — stage 1 of §5.4. */

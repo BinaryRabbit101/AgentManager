@@ -114,7 +114,12 @@ describe('creating an overseer assignment (M10-1, §9-6, §7.2)', () => {
 
     const turns = harness.turns.list(assignmentId);
     expect(turns).toHaveLength(1);
-    expect(turns[0]).toMatchObject({ round: 1, seat: LEAD_SEAT, agentId: 'iris', status: 'running' });
+    expect(turns[0]).toMatchObject({
+      round: 1,
+      seat: LEAD_SEAT,
+      agentId: 'iris',
+      status: 'running',
+    });
     expect(harness.runner.started).toHaveLength(1);
     const prompt = harness.runner.started[0]?.prompt ?? '';
     expect(prompt).toContain('You are the lead');
@@ -215,9 +220,9 @@ describe('the lead’s tools are mounted, the workers’ are not (§4.1)', () =>
       scope: { paths: ['docs/x/'], artifactPath: 'docs/x/DESIGN.md' },
     });
     await flush();
-    expect(
-      harness.toolset({ assignmentId: pair.assignmentId, agentId: 'ada' }).toolNames,
-    ).toEqual([...WORKER_TOOL_NAMES]);
+    expect(harness.toolset({ assignmentId: pair.assignmentId, agentId: 'ada' }).toolNames).toEqual([
+      ...WORKER_TOOL_NAMES,
+    ]);
   });
 
   it('gives the lead all six and a child’s worker exactly four', async () => {
@@ -234,7 +239,12 @@ describe('the lead’s tools are mounted, the workers’ are not (§4.1)', () =>
 
     const refused = await harness
       .toolset({ assignmentId: childId, agentId: 'ada' })
-      .call('create_assignment', { pattern: 'solo', goal: 'more work', members: [], tokenBudget: 1 });
+      .call('create_assignment', {
+        pattern: 'solo',
+        goal: 'more work',
+        members: [],
+        tokenBudget: 1,
+      });
     expect(payloadOf(refused)['code']).toBe('not_an_overseer');
   });
 });
@@ -425,14 +435,16 @@ describe('the review round (M10-2, §3.5)', () => {
     });
 
     const parent = harness.service.get(parentId);
-    expect(parent).toMatchObject({ status: 'open', phase: 'halted', haltReason: 'review_unresolved' });
+    expect(parent).toMatchObject({
+      status: 'open',
+      phase: 'halted',
+      haltReason: 'review_unresolved',
+    });
     // Exactly one card, and it is a gate the user answers — not a second halt.
     const cards = harness.inbox.list({ assignmentId: parentId, status: 'open' });
     expect(cards).toHaveLength(1);
     expect(cards[0]?.kind).toBe('approval_gate');
-    expect(
-      harness.events.filter((event) => event.type === 'assignment.halted'),
-    ).toHaveLength(1);
+    expect(harness.events.filter((event) => event.type === 'assignment.halted')).toHaveLength(1);
   });
 });
 
@@ -440,11 +452,13 @@ describe('the projection the UI renders the team from (M10-4, §11.1, §11.2)', 
   it('carries every child’s id, goal, phase, outcome and tokens', async () => {
     const parentId = await makeOverseer();
     const first = (await delegate(parentId, { goal: 'Write the plan' }))['assignmentId'] as string;
-    const second = (await delegate(parentId, {
-      goal: 'Review the retention policy',
-      members: [{ agentId: 'sam', role: 'skeptic' }],
-      tokenBudget: 50_000,
-    }))['assignmentId'] as string;
+    const second = (
+      await delegate(parentId, {
+        goal: 'Review the retention policy',
+        members: [{ agentId: 'sam', role: 'skeptic' }],
+        tokenBudget: 50_000,
+      })
+    )['assignmentId'] as string;
     harness.storage.store.assignments.addTokensUsed(first, 12_000);
 
     const view = harness.service.get(parentId);

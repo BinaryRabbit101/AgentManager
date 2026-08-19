@@ -81,6 +81,15 @@ export function createAssignmentContextStub(
           tokensUsed: row.tokensUsed,
           roundCap: row.roundCap,
           roundsUsed: row.roundsUsed,
+          // A third field the row cannot answer: pre-grants live in an
+          // orchestrator-owned column this stub deliberately does not read,
+          // because reading another element's column through foundation's
+          // generic repository is exactly the boundary the header refuses. No
+          // pre-grants means every gate asks, which is the behaviour every
+          // session had before the column existed.
+          preGrantedTools: [],
+          // The base row has no artifact column either; it is orchestrator's own.
+          artifactPath: null,
         };
       });
     },
@@ -103,6 +112,7 @@ export function resolveAssignmentContextProvider(
   const provided = fromRegistry?.getAssignmentContext;
   if (typeof provided !== 'function') return fallback;
   return {
-    getAssignmentContext: (assignmentId) => provided.call(fromRegistry, assignmentId),
+    getAssignmentContext: (assignmentId, options) =>
+      provided.call(fromRegistry, assignmentId, options),
   };
 }

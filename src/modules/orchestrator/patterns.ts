@@ -870,7 +870,11 @@ export function planChildSolo(state: AssignmentState): PlanResult {
 
   if (last.status === 'failed') {
     if (consecutiveFailures(turns) < 2) return retryPlan(state, last, member.agentId);
-    return { done: true, closeReason: 'failed', summary: 'Two consecutive turns of the child failed.' };
+    return {
+      done: true,
+      closeReason: 'failed',
+      summary: 'Two consecutive turns of the child failed.',
+    };
   }
 
   return {
@@ -1075,9 +1079,7 @@ function answeredOrWait(state: AssignmentState, last: TurnRow, agentId: string):
     decision.answeredAt < last.endedAt;
   if (answer === undefined || stale) {
     const answerable = state.hasOpenQuestion !== false || blockedAgain(state.turns, last);
-    return answerable
-      ? { wait: true, reason: 'awaiting_answer' }
-      : retryPlan(state, last, agentId);
+    return answerable ? { wait: true, reason: 'awaiting_answer' } : retryPlan(state, last, agentId);
   }
   return {
     seat: last.seat,

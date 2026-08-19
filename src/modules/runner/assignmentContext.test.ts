@@ -56,6 +56,11 @@ describe('the stub', () => {
       status: 'open',
       write: true,
       scopeRules: {},
+      // Two more the base row cannot answer, and the stub says so rather than
+      // guessing: no pre-grants means every gate asks, which is the behaviour
+      // every session had before the column existed.
+      preGrantedTools: [],
+      artifactPath: null,
       tokenBudget: 50_000,
       tokensUsed: 0,
       roundCap: null,

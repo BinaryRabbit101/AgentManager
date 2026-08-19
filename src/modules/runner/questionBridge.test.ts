@@ -498,11 +498,7 @@ describe('a tool call the rules did not decide (M7 acceptance 2 and 3)', () => {
     try {
       // A compound command: its first token describes the first clause only, so
       // there is no prefix rule to offer and the card keeps §5.1's original two.
-      const pending = fix.canUseTool(
-        'Bash',
-        { command: 'git status; rm -rf .' },
-        callOptions(),
-      );
+      const pending = fix.canUseTool('Bash', { command: 'git status; rm -rf .' }, callOptions());
       await settle();
       expect(bridge.asks[0]?.options).toEqual([ALLOW_ONCE_OPTION, DENY_OPTION]);
       expect(bridge.asks[0]?.context?.durableRule).toBeUndefined();
@@ -1238,6 +1234,185 @@ describe('createQuestionCanUseTool in isolation', () => {
       answeredVia: 'local',
       answeredAt: at.toISOString(),
     });
+    await pending;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Assignment-scoped pre-grants — WO4 §2
+// ---------------------------------------------------------------------------
+
+/**
+ * "A pre-granted tool for that agent **in that assignment** proceeds without a
+ * card… without one, the card fires as today."
+ *
+ * The callback is the right place for these because the whole claim is about
+ * what does and does not reach the bridge. `bridge.asks` is therefore the
+ * assertion in every one of them: a pre-grant that still raised a card would be
+ * a feature that changed nothing, and one that suppressed a card it should not
+ * have would be a permission nobody granted.
+ */
+describe('pre-granted tools (WO4 §2)', () => {
+  const at = new Date('2026-08-19T10:00:00.000Z');
+
+  function build(overrides: Partial<Parameters<typeof createQuestionCanUseTool>[0]> = {}): {
+    bridge: ManualBridge;
+    callback: CompiledCanUseTool;
+    preAllowed: string[];
+  } {
+    const bridge = manualBridge('q-pre');
+    const preAllowed: string[] = [];
+    const callback = createQuestionCanUseTool({
+      sessionId: 's1',
+      assignmentId: 'a1',
+      agentId: 'ada',
+      policy: { default: 'deny', humanMayApprove: true, ask: [], denyMessage: 'no' },
+      bridge,
+      holdMs: 900_000,
+      expireHours: 24,
+      clock: () => at,
+      timer: () => () => undefined,
+      onPreAllowed: (event) => preAllowed.push(event.toolName),
+      ...overrides,
+    });
+    return { bridge, callback, preAllowed };
+  }
+
+  it('allows the call with no card at all, and says so', async () => {
+    const { bridge, callback, preAllowed } = build({ preGrantedTools: ['Bash'] });
+
+    const result = await callback('Bash', { command: 'npm run build' }, callOptions());
+
+    // Byte for byte the *Allow once* result: the input is echoed and nothing
+    // about the live session's permissions changed (§5.1).
+    expect(result).toEqual({
+      behavior: 'allow',
+      updatedInput: { command: 'npm run build' },
+      toolUseID: 'toolu_01',
+      decisionClassification: 'user_temporary',
+    });
+    expect(bridge.asks).toEqual([]);
+    // On the record: a permission that leaves no trace is one nobody can audit.
+    expect(preAllowed).toEqual(['Bash']);
+  });
+
+  it('raises the card as before for a tool nobody pre-answered', async () => {
+    const { bridge, callback, preAllowed } = build({ preGrantedTools: ['Read'] });
+
+    const pending = callback('Bash', { command: 'npm run build' }, callOptions());
+    await settle();
+
+    expect(bridge.asks).toHaveLength(1);
+    expect(preAllowed).toEqual([]);
+    bridge.answer({
+      questionId: 'q-pre',
+      answer: { optionIds: [DENY_OPTION.id] },
+      answeredVia: 'local',
+      answeredAt: at.toISOString(),
+    });
+    expect((await pending)?.behavior).toBe('deny');
+  });
+
+  it('never pre-answers AskUserQuestion, whatever the list says', async () => {
+    const { bridge, callback, preAllowed } = build({
+      preGrantedTools: ['AskUserQuestion', 'Bash'],
+    });
+
+    const pending = callback('AskUserQuestion', ASK_INPUT, callOptions());
+    await settle();
+
+    // It is not a tool gate (§5.1, §5.3): pre-answering it would discard the
+    // agent's question rather than a permission prompt, and roster refuses an
+    // allow rule on it for the same reason (SDK-NOTES C2).
+    expect(bridge.asks).toHaveLength(1);
+    expect(preAllowed).toEqual([]);
+    bridge.settle({ status: 'cancelled', questionId: 'q-pre', reason: 'test' });
+    await pending;
+  });
+
+  it('cannot reach a session that was given none', async () => {
+    const { bridge, callback } = build({});
+    const pending = callback('Bash', { command: 'ls' }, callOptions());
+    await settle();
+    expect(bridge.asks).toHaveLength(1);
+    bridge.settle({ status: 'cancelled', questionId: 'q-pre', reason: 'test' });
+    await pending;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The informed deny — WO4 addendum §6
+// ---------------------------------------------------------------------------
+
+describe('a gate card says who is asking and what a deny costs (WO4 addendum §6)', () => {
+  const at = new Date('2026-08-19T10:00:00.000Z');
+
+  function build(overrides: Partial<Parameters<typeof createQuestionCanUseTool>[0]> = {}): {
+    bridge: ManualBridge;
+    callback: CompiledCanUseTool;
+  } {
+    const bridge = manualBridge('q-ctx');
+    const callback = createQuestionCanUseTool({
+      sessionId: 's1',
+      assignmentId: 'a1',
+      agentId: 'ada',
+      policy: { default: 'deny', humanMayApprove: true, ask: [], denyMessage: 'no' },
+      bridge,
+      holdMs: 900_000,
+      expireHours: 24,
+      clock: () => at,
+      timer: () => () => undefined,
+      ...overrides,
+    });
+    return { bridge, callback };
+  }
+
+  it('carries the seat and the pattern onto the card', async () => {
+    const { bridge, callback } = build({ seat: { role: 'architect', pattern: 'pair' } });
+    const pending = callback('Bash', { command: 'ls' }, callOptions());
+    await settle();
+
+    expect(bridge.asks[0]?.context).toMatchObject({ seatRole: 'architect', pattern: 'pair' });
+    bridge.settle({ status: 'cancelled', questionId: 'q-ctx', reason: 'test' });
+    await pending;
+  });
+
+  it('names the artifact only when this call’s own input names it', async () => {
+    const { bridge, callback } = build({ artifactPath: 'docs/assignments/x/DRAFT.md' });
+
+    // A write straight at the artifact: denying this provably stops that file.
+    const first = callback(
+      'Write',
+      { file_path: 'C:\\ws\\docs\\assignments\\x\\DRAFT.md' },
+      callOptions(),
+    );
+    await settle();
+    expect(bridge.asks[0]?.context).toMatchObject({
+      artifactPath: 'docs/assignments/x/DRAFT.md',
+    });
+    bridge.settle({ status: 'cancelled', questionId: 'q-ctx', reason: 'test' });
+    await first;
+
+    // A shell command that has nothing to do with it: no hint. The broader
+    // "this seat probably needs Bash to finish" is the speculation the addendum
+    // told us not to build, and a wrong hint frightens a user out of a correct
+    // deny.
+    const second = callback('Bash', { command: 'npm test' }, callOptions({ requestId: 'req_02' }));
+    await settle();
+    expect(bridge.asks[1]?.context).not.toHaveProperty('artifactPath');
+    bridge.settle({ status: 'cancelled', questionId: 'q-ctx', reason: 'test' });
+    await second;
+  });
+
+  it('says nothing at all when the assignment gave it nothing to say', async () => {
+    const { bridge, callback } = build({});
+    const pending = callback('Bash', { command: 'ls' }, callOptions());
+    await settle();
+
+    const context = bridge.asks[0]?.context ?? {};
+    expect(context).not.toHaveProperty('seatRole');
+    expect(context).not.toHaveProperty('artifactPath');
+    bridge.settle({ status: 'cancelled', questionId: 'q-ctx', reason: 'test' });
     await pending;
   });
 });

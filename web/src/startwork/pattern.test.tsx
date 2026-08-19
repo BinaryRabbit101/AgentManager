@@ -43,11 +43,25 @@ function serving(options: {
   status?: number;
   posts?: Posted[];
   agents?: readonly ReturnType<typeof anAgent>[];
+  /** What roster's preflight says would gate, per agent (WO4 §1). */
+  gateLiable?: readonly { tool: string; reason: string; remembered: boolean }[];
 }): Responder {
   const agents = options.agents ?? [ADA, SAM];
   return (url, init) => {
     const path = url.split('?')[0] ?? url;
     if (init.method === 'POST') {
+      // The permission preflight probes roster once per selected seat before
+      // anything is created. It is a read dressed as a POST, so it is answered
+      // here and deliberately **not** recorded in `posts`: the assertions below
+      // are about what the dialog *creates*, and counting probes among them
+      // would break every one of them on an unrelated preflight change.
+      if (path.endsWith('/validate')) {
+        return json({
+          effective: { mode: 'default', allow: [], deny: [], ask: [], elevation: null },
+          diagnostics: [],
+          gateLiable: options.gateLiable ?? [],
+        });
+      }
       options.posts?.push({
         url: path,
         body: JSON.parse(init.body as string) as Record<string, unknown>,
@@ -145,14 +159,23 @@ describe('the shape of the work is driven by the selection (§6)', () => {
     open();
     const sheet = await dialog();
 
-    // The defaults arrive pre-filled, in tokens, from the server's summary.
-    await waitFor(() => expect(within(sheet).getByLabelText(/Round cap/u)).toHaveValue(3));
+    // The defaults arrive pre-filled, in tokens, from the server's summary —
+    // and behind one disclosure now (WO4 §3), whose summary prints them so the
+    // user can accept them without opening it.
+    await waitFor(() =>
+      expect(within(sheet).getByText(/3 rounds · 400,000 tokens/u)).toBeInTheDocument(),
+    );
+    await userEvent
+      .setup()
+      .click(within(sheet).getByText('Rounds, budget and scope', { selector: 'summary' }));
+    expect(within(sheet).getByLabelText(/Round cap/u)).toHaveValue(3);
     expect(within(sheet).getByLabelText('Token budget')).toHaveValue(400_000);
     expect(within(sheet).getByLabelText(/Round cap \(max 6\)/u)).toBeInTheDocument();
-    // `pair` is the one pattern that requires an artifact, and says so.
-    expect(
-      within(sheet).getByLabelText(/Artifact path \(required by this pattern\)/u),
-    ).toBeInTheDocument();
+    // `pair` is the one pattern that requires an artifact, and it arrives
+    // filled from the goal rather than empty-and-required (WO4 §3).
+    expect(within(sheet).getByLabelText<HTMLInputElement>('Artifact path').value).toMatch(
+      /^docs\/assignments\/.+\/DRAFT\.md$/u,
+    );
   });
 
   it('lists the whole roster with its open-assignment count, hiding nobody (§16-9)', async () => {
@@ -518,5 +541,117 @@ describe('a remote start of two ungranted agents (§13.4, IMPLEMENTATION §10)',
     expect(posts[1]?.body['confirmRemoteAccess']).toBe(true);
     expect(await screen.findByText(/nothing has started/iu)).toBeInTheDocument();
     expect(document.querySelectorAll('[data-grant-prompt="true"]')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The permission preflight — WO4 §1, §2, §3
+// ---------------------------------------------------------------------------
+
+/**
+ * "One extra second in the dialog instead of N stalls mid-run."
+ *
+ * The observed pair run had two "Allow the agent to use Bash?" cards answered
+ * mid-flight, each of which pauses the session and costs a trip to the machine.
+ * The plumbing to pre-answer them existed — roster's dry-run compile — and the
+ * dialog simply did not ask.
+ */
+describe('the permission preflight (WO4 §1–§3)', () => {
+  const GATES = [
+    { tool: 'Bash', reason: 'not_auto_allowed', remembered: false },
+    { tool: 'Edit', reason: 'ask_rule', remembered: true },
+  ] as const;
+
+  it('shows a chip per seat once validate resolves, defaulting the remembered ones on', async () => {
+    mount(<App />, { route: ROUTE, respond: serving({ gateLiable: [...GATES] }) });
+    open();
+    const sheet = await dialog();
+
+    // The preflight compiles against agent x project, so it waits for a project:
+    // there is nothing to compile against until one is chosen.
+    await fillIn(sheet, userEvent.setup(), 'Improve the telemetry page');
+
+    // One row per selected agent, and the whole roster's worth of chips on each
+    // — the preflight asks per `(agent, project)` because roster composes that
+    // way, and a merged answer would be a set no session runs under.
+    const ada = await waitFor(() => {
+      const row = sheet.querySelector('[data-agent="ada"]');
+      if (row === null) throw new Error('no preflight row for ada yet');
+      return row as HTMLElement;
+    });
+    expect(sheet.querySelector('[data-agent="sam"]')).not.toBeNull();
+
+    // Default OFF for a tool nobody has allowed before…
+    expect(
+      within(ada).getByRole('checkbox', { name: /Pre-allow Bash for Ada/u }),
+    ).not.toBeChecked();
+    // …and ON for one this agent already carries a rule about on this project.
+    expect(within(ada).getByRole('checkbox', { name: /Pre-allow Edit for Ada/u })).toBeChecked();
+  });
+
+  it('writes the ticked chips into the create call, scoped to the agent', async () => {
+    const posts: Posted[] = [];
+    mount(<App />, { route: ROUTE, respond: serving({ posts, gateLiable: [...GATES] }) });
+    open();
+    const sheet = await dialog();
+
+    const user = userEvent.setup();
+    await fillIn(sheet, user, 'Improve the telemetry page');
+    const ada = await waitFor(() => {
+      const row = sheet.querySelector('[data-agent="ada"]');
+      if (row === null) throw new Error('no preflight row for ada yet');
+      return row as HTMLElement;
+    });
+    await user.click(within(ada).getByRole('checkbox', { name: /Pre-allow Bash for Ada/u }));
+    await user.click(within(sheet).getByRole('button', { name: /Review/u }));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    const body = posts[0]?.body ?? {};
+    // Ada's Bash (ticked by hand) and both seats' Edit (ticked by default,
+    // because roster says they have been allowed here before). Never anybody
+    // else's, and never a tool the preflight did not name.
+    expect(body['preGrants']).toEqual([
+      { agentId: 'ada', tool: 'Bash' },
+      { agentId: 'ada', tool: 'Edit' },
+      { agentId: 'sam', tool: 'Edit' },
+    ]);
+  });
+
+  it('sends no preGrants key at all when nothing is ticked', async () => {
+    const posts: Posted[] = [];
+    mount(<App />, { route: ROUTE, respond: serving({ posts, gateLiable: [] }) });
+    open();
+    const sheet = await dialog();
+
+    const user = userEvent.setup();
+    await fillIn(sheet, user, 'Improve the telemetry page');
+    await user.click(within(sheet).getByRole('button', { name: /Review/u }));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // Absent, not `[]`: the server must be able to tell "nothing was
+    // pre-allowed" from "this client does not do pre-grants".
+    expect(posts[0]?.body).not.toHaveProperty('preGrants');
+  });
+
+  it('submits a pair with nothing but a project, two agents and a task', async () => {
+    const posts: Posted[] = [];
+    mount(<App />, { route: ROUTE, respond: serving({ posts, gateLiable: [] }) });
+    open();
+    const sheet = await dialog();
+
+    const user = userEvent.setup();
+    // §3's minimal path, exactly: pick project → tick agents (the intent did) →
+    // type the task → Start. The artifact path, the cap and the budget are
+    // defaults the user never touched.
+    await fillIn(sheet, user, 'Improve the telemetry page');
+    await user.click(within(sheet).getByRole('button', { name: /Review/u }));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    const scope = posts[0]?.body['scope'] as { artifactPath?: string };
+    expect(scope.artifactPath).toMatch(
+      /^docs\/assignments\/improve-the-telemetry-page-.+\/DRAFT\.md$/u,
+    );
+    expect(posts[0]?.body['roundCap']).toBe(3);
+    expect(posts[0]?.body['tokenBudget']).toBe(400_000);
   });
 });

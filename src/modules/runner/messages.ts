@@ -178,6 +178,31 @@ export interface ResultFacts {
   readonly errors: readonly string[];
 }
 
+/**
+ * The tool names out of `result.permission_denials` (WO4 addendum §5).
+ *
+ * The array's entries are `{ tool_name, tool_use_id, tool_input }`, and only the
+ * first is taken: `tool_input` is the agent's own text and would put an
+ * arbitrary command line on a persisted event and a turn row, which is the
+ * `session.tool.*` preview argument (§10) applied to a smaller payload. The name
+ * is what a reader needs — "the write was denied" is the diagnosis a count could
+ * not give.
+ *
+ * Read defensively because `ResultFacts.permissionDenials` is typed
+ * `readonly unknown[]`: this file's whole job is turning SDK shapes into facts
+ * runner can rely on, and an entry that is not a record is dropped rather than
+ * crashing the settle of a session that otherwise finished.
+ */
+export function deniedToolNames(denials: readonly unknown[]): readonly string[] {
+  const names: string[] = [];
+  for (const denial of denials) {
+    if (typeof denial !== 'object' || denial === null) continue;
+    const name = (denial as Record<string, unknown>)['tool_name'];
+    if (typeof name === 'string' && name !== '') names.push(name);
+  }
+  return names;
+}
+
 export function readResult(message: ResultMessage): ResultFacts {
   const success = message.subtype === 'success';
   return {

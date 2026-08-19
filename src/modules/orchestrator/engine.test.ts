@@ -620,9 +620,7 @@ describe('a failed launch is retried rather than left wedged (§3.1, WO1)', () =
 
     await harness.timers.run(); // the first retry — which also fails
     await flush();
-    expect(
-      harness.turns.list(assignmentId).map((turn) => [turn.status, turn.exitReason]),
-    ).toEqual([
+    expect(harness.turns.list(assignmentId).map((turn) => [turn.status, turn.exitReason])).toEqual([
       ['failed', 'launch_failed'],
       ['failed', 'launch_failed'],
     ]);
@@ -1022,5 +1020,89 @@ describe('safeJoin', () => {
     expect(safeJoin('/root', 'docs/x/DESIGN.md')).toContain('DESIGN.md');
     expect(safeJoin('/root', '../secrets.txt')).toBeUndefined();
     expect(safeJoin('/root', 'docs/../../secrets.txt')).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Denials are visible where the work is judged — WO4 addendum §5
+// ---------------------------------------------------------------------------
+
+/**
+ * The incident this comes from: a drafter reported success, `git status` was
+ * clean, and the evidence that a denied write had caused it sat in a number
+ * rendered nowhere. A single deny does not stop a session — the agent loses one
+ * call and keeps going — and the `tool_denials` breaker only trips at five, so
+ * one fatal deny sails under everything.
+ */
+describe('denials reach the turn row and the cards (WO4 addendum §5)', () => {
+  it('keeps the denied tool names, not only the count', async () => {
+    const assignmentId = await makePair();
+    await finishTurn(
+      assignmentId,
+      { state: 'done', headline: 'Draft' },
+      { permissionDenials: 2, permissionDeniedTools: ['Write', 'Bash'] },
+    );
+
+    const turn = harness.turns.list(assignmentId)[0];
+    expect(turn?.permissionDenials).toBe(2);
+    expect(turn?.permissionDeniedTools).toEqual(['Write', 'Bash']);
+  });
+
+  it('leaves the names null when the runner sent only a count', async () => {
+    const assignmentId = await makePair();
+    await finishTurn(assignmentId, { state: 'done', headline: 'Draft' }, { permissionDenials: 1 });
+
+    const turn = harness.turns.list(assignmentId)[0];
+    expect(turn?.permissionDenials).toBe(1);
+    // `null`, never `[]`: an older row must be able to say "I cannot tell you
+    // which", and the count is then the whole story.
+    expect(turn?.permissionDeniedTools).toBeNull();
+  });
+
+  it('sums the assignment’s denials onto the view', async () => {
+    const assignmentId = await makePair();
+    await finishTurn(
+      assignmentId,
+      { state: 'done', headline: 'Draft' },
+      { permissionDenials: 2, permissionDeniedTools: ['Write'] },
+    );
+    await finishTurn(
+      assignmentId,
+      { state: 'done', headline: 'Nope', verdict: REVISE },
+      { permissionDenials: 1, permissionDeniedTools: ['Bash'] },
+    );
+
+    expect(harness.service.get(assignmentId).permissionDenials).toBe(3);
+  });
+
+  /** The completion card the pair's round cap raises, or `undefined`. */
+  function completionCard(assignmentId: string): { prompt: string } | undefined {
+    return harness.inbox
+      .list({ assignmentId, status: 'open' })
+      .find((one) => one.context?.toolName === ROUND_CAP_CARD);
+  }
+
+  it('puts the total on the completion card', async () => {
+    const assignmentId = await makePair({ roundCap: 1 });
+    await finishTurn(
+      assignmentId,
+      { state: 'done', headline: 'Draft' },
+      { permissionDenials: 2, permissionDeniedTools: ['Write', 'Bash'] },
+    );
+    await finishTurn(assignmentId, { state: 'done', headline: 'Nope', verdict: REVISE });
+
+    // "it finished but was denied X times", readable at the moment the result
+    // is judged rather than three scrolls up the timeline.
+    expect(completionCard(assignmentId)?.prompt).toContain('2 tool calls were denied');
+  });
+
+  it('says nothing about denials on a clean run', async () => {
+    const assignmentId = await makePair({ roundCap: 1 });
+    await finishTurn(assignmentId, { state: 'done', headline: 'Draft' });
+    await finishTurn(assignmentId, { state: 'done', headline: 'Nope', verdict: REVISE });
+
+    // Silent at zero: a card that says "0 denied" on every clean run teaches the
+    // reader to skip the line.
+    expect(completionCard(assignmentId)?.prompt).not.toContain('denied');
   });
 });

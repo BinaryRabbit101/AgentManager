@@ -52,6 +52,7 @@ import {
 } from './draft.js';
 import { projectRosterForOverseer, type OverseerRosterEntry } from './overseer.js';
 import type { PermissionPolicy, RawPermissionSet } from './permissions.js';
+import { gateLiableTools, type GateLiableTool } from './preflight.js';
 import type { ProjectContext, SessionToolsetProvider } from './sessionOptions.js';
 import { duplicateAgentId, duplicateDefinition } from './duplicate.js';
 import { RosterValidationError, issuesFromZod } from './errors.js';
@@ -173,6 +174,16 @@ export interface ValidateResult {
   /** True when the assignment layer was assumed rather than supplied — a
    *  preview is not a launch and there is no assignment yet. */
   readonly assumedWriteAccess: boolean;
+  /**
+   * The tools this pair would stop and ask about at runtime (§6.3, WO4 §1).
+   *
+   * Additive, and derived entirely from `effective` plus the compiled policy —
+   * a caller that ignores it sees exactly the response it saw before. It exists
+   * because `effective` answers "what rules apply" and a start dialog needs
+   * "what will interrupt me", and re-deriving the second from the first on the
+   * client would put a copy of §6.1's evaluation order in the browser.
+   */
+  readonly gateLiable: readonly GateLiableTool[];
 }
 
 /** `GET /agents/:id/export` — the bytes and the name to offer them under (§9.4). */
@@ -1172,6 +1183,16 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
         declaredElevation,
         allowPermissionElevation: policy.allowPermissionElevation,
         assumedWriteAccess: write === undefined,
+        // The compiled *policy* is what makes this answerable — `effective`
+        // alone cannot say whether an uncovered tool escalates to a human or is
+        // denied outright, because that turns on the mode (§6.1). It is read
+        // here rather than returned raw: `humanMayApprove` is roster's
+        // derivation and shipping it to a client would invite a second one.
+        gateLiable: gateLiableTools({
+          effective: compiled.effective,
+          policy: compiled.policy,
+          diagnostics: [],
+        }),
       };
     },
 

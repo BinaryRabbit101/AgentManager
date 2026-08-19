@@ -314,21 +314,13 @@ describe('GET /api/patterns drives the create dialog (§16-9, M9-4)', () => {
     // **Owner decision, 2026-08-18**: the dialog *ranks*, it does not filter.
     // Every agent is offered for every seat; the ones that declare the seat's
     // role come first and are labelled, and the user's choice is authoritative.
-    expect(pair?.candidates?.['critic']?.map((one) => one.agentId)).toEqual([
-      'sam',
-      'ada',
-      'kim',
-    ]);
+    expect(pair?.candidates?.['critic']?.map((one) => one.agentId)).toEqual(['sam', 'ada', 'kim']);
     expect(pair?.candidates?.['critic']?.map((one) => one.declaresRole)).toEqual([
       true,
       false,
       false,
     ]);
-    expect(pair?.candidates?.['drafter']?.map((one) => one.agentId)).toEqual([
-      'ada',
-      'kim',
-      'sam',
-    ]);
+    expect(pair?.candidates?.['drafter']?.map((one) => one.agentId)).toEqual(['ada', 'kim', 'sam']);
     expect(pair?.candidates?.['drafter']?.[0]).toMatchObject({
       name: 'Ada',
       available: true,

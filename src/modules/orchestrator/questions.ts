@@ -102,6 +102,25 @@ export interface RecommendationView {
 // The bridge's pinned shapes (runner §5.2, verbatim)
 // ---------------------------------------------------------------------------
 
+/**
+ * What a card carries beside its prompt (§11.1).
+ *
+ * `toolName` and `toolInput` are runner §5.2's own; everything else is
+ * **additive** and rides through this element verbatim, which is the property
+ * that let runner add `durableRule` without an orchestrator change. The open
+ * index signature is what makes that true in the types as well as in practice.
+ *
+ * `round` is the one field orchestrator writes itself: runner has no turn rows
+ * and these are the only place the number exists (WO4 addendum §6).
+ */
+export interface QuestionContext {
+  readonly toolName?: string;
+  readonly toolInput?: unknown;
+  /** The round the asking session's turn belongs to, when it has one. */
+  readonly round?: number;
+  readonly [field: string]: unknown;
+}
+
 export interface QuestionOption {
   readonly id: string;
   readonly label: string;
@@ -126,7 +145,7 @@ export interface AskRequest {
   readonly options?: readonly QuestionOption[] | undefined;
   readonly multiSelect?: boolean | undefined;
   readonly allowFreeText?: boolean | undefined;
-  readonly context?: { toolName?: string; toolInput?: unknown } | undefined;
+  readonly context?: QuestionContext | undefined;
   /** ISO deadline for the inline hold. Recorded; the hold itself is runner's. */
   readonly holdUntil: string;
   /** ISO deadline for the question itself. */
@@ -186,7 +205,7 @@ export interface QuestionCard {
   readonly options: readonly QuestionOption[];
   readonly multiSelect: boolean;
   readonly allowFreeText: boolean;
-  readonly context: { toolName?: string; toolInput?: unknown } | null;
+  readonly context: QuestionContext | null;
   readonly createdAt: string;
   readonly holdUntil: string | null;
   readonly expiresAt: string | null;
@@ -283,7 +302,7 @@ interface QuestionEnvelope {
   readonly allowFreeText?: boolean;
   readonly holdUntil?: string;
   readonly expiresAt?: string;
-  readonly context?: { toolName?: string; toolInput?: unknown };
+  readonly context?: QuestionContext;
   /** The seat that raised it, for attribution when it carries no recommendation. */
   readonly agentId?: string;
 }

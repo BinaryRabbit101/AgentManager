@@ -169,7 +169,12 @@ const FILES: readonly Row[] = [
   // Fact 3: these would collapse to a bare `Edit`, which auto-approves every
   // file edit anywhere ahead of `canUseTool`. No rule is the honest answer.
   { name: 'no path derives nothing', tool: 'Write', input: {}, rule: undefined },
-  { name: 'an empty path derives nothing', tool: 'Edit', input: { file_path: '' }, rule: undefined },
+  {
+    name: 'an empty path derives nothing',
+    tool: 'Edit',
+    input: { file_path: '' },
+    rule: undefined,
+  },
   {
     name: 'a `*` path derives nothing',
     tool: 'Edit',

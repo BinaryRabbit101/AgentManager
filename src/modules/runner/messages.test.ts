@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  deniedToolNames,
   isInitMessage,
   outcomeForResult,
   readAssistant,
@@ -128,5 +129,24 @@ describe('result', () => {
       status: 'failed',
       exitReason: 'error_during_execution',
     });
+  });
+});
+
+describe('deniedToolNames (WO4 addendum §5)', () => {
+  it('takes the tool name and nothing else from each denial', () => {
+    expect(
+      deniedToolNames([
+        { tool_name: 'Write', tool_use_id: 'tu_1', tool_input: { file_path: 'secret.md' } },
+        { tool_name: 'Bash', tool_use_id: 'tu_2', tool_input: { command: 'rm -rf /' } },
+      ]),
+    ).toEqual(['Write', 'Bash']);
+  });
+
+  it('drops an entry it cannot read rather than losing the settle', () => {
+    // `ResultFacts.permissionDenials` is `readonly unknown[]`, and a session that
+    // otherwise finished must not fail to settle over a shape change here.
+    expect(deniedToolNames([null, 'Bash', { tool_name: '' }, { tool_name: 'Read' }])).toEqual([
+      'Read',
+    ]);
   });
 });

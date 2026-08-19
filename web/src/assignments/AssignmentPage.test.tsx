@@ -509,3 +509,72 @@ describe('a solo assignment renders through the same view (§10.3)', () => {
     expect(screen.getByText(/120,000 tokens used · no budget set/u)).toBeInTheDocument();
   });
 });
+
+describe('denials are visible where the work is judged (WO4 addendum §5)', () => {
+  /** One round whose drafter reported success with N of its calls refused. */
+  function conversationWithDenials(
+    permissionDenials: number,
+    permissionDeniedTools: readonly string[] | null,
+  ): ReturnType<typeof aConversation> {
+    const base = aConversation();
+    const first = base.rounds[0];
+    if (first === undefined) throw new Error('the fixture lost its first round');
+    return aConversation({
+      rounds: [
+        {
+          round: 1,
+          entries: first.entries.map((entry) =>
+            entry.type === 'turn' && entry.seat === 'drafter'
+              ? { ...entry, permissionDenials, permissionDeniedTools }
+              : entry,
+          ),
+        },
+        ...base.rounds.slice(1),
+      ],
+    });
+  }
+
+  it('renders the chip, with the denied tools, on a turn that lost calls', async () => {
+    mountAssignment(
+      serving({ conversation: conversationWithDenials(2, ['Write', 'Write', 'Bash']) }),
+    );
+    await heading();
+
+    const chip = document.querySelector('[data-denials="2"]');
+    // The names, deduplicated — three refused `Write` calls are one fact about
+    // `Write`, and the count already carries "three".
+    expect(chip?.textContent).toBe('2 tool calls denied — Write, Bash');
+  });
+
+  it('falls back to the count on a row that predates the names', async () => {
+    mountAssignment(serving({ conversation: conversationWithDenials(1, null) }));
+    await heading();
+
+    expect(document.querySelector('[data-denials="1"]')?.textContent).toBe('1 tool call denied');
+  });
+
+  it('renders nothing at all when nothing was denied', async () => {
+    mountAssignment(serving({ conversation: conversationWithDenials(0, []) }));
+    await heading();
+
+    // A chip on every clean turn is noise that hides the one turn that is not.
+    expect(document.querySelector('.turn__denials')).toBeNull();
+  });
+
+  it('carries the assignment’s total onto the completion banner', async () => {
+    mountAssignment(serving({ assignment: anAssignment({ permissionDenials: 3 }) }));
+    await heading();
+
+    const banner = document.querySelector('[data-banner="converged"]');
+    expect(banner?.textContent).toContain('3 tool calls were denied while this ran.');
+  });
+
+  it('says nothing on the banner when the total is zero', async () => {
+    mountAssignment(serving({ assignment: anAssignment({ permissionDenials: 0 }) }));
+    await heading();
+
+    expect(document.querySelector('[data-banner="converged"]')?.textContent).not.toContain(
+      'denied',
+    );
+  });
+});

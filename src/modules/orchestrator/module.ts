@@ -56,6 +56,7 @@ import { createPatternEngine, type PatternEngine } from './engine.js';
 import { createEngineRoutes } from './engineRoutes.js';
 import { createMailboxRepository, type MailboxRepository } from './messages.js';
 import { createNotifier, realNotifyTimers, type Notifier, type NotifyTimers } from './notify.js';
+import { withAskingTurn } from './cards.js';
 import { createQuestionInbox, type QuestionInbox } from './questions.js';
 import { createQuestionRoutes } from './questionRoutes.js';
 import { createAssignmentRepository, type AssignmentRepository } from './repository.js';
@@ -157,6 +158,10 @@ export function createOrchestratorModule(
         repository,
         inbox: () => built.inbox,
         toolset: () => built.toolset,
+        // Not lazy, unlike the two above: the turn repository is built at the
+        // top of this block, so the read model's denial total has it from the
+        // first call (WO4 addendum §5).
+        turns,
         sessions: ctx.store.sessions,
         questions: ctx.store.questions,
         bus: ctx.bus,
@@ -228,7 +233,10 @@ export function createOrchestratorModule(
         joinWindowMs: ctx.config.orchestrator.questions.joinWindowMs,
         // §7.1's split: runner raises the kind, orchestrator says what the card
         // offers.
-        cardPolicy: applyBudgetCardPolicy,
+        // Two shapings, one hook: orchestrator's budget options (§7.1) and the
+        // round a tool gate belongs to (WO4 addendum §6). The turn is stamped
+        // first so the budget policy's own rewrite carries it too.
+        cardPolicy: (request) => applyBudgetCardPolicy(withAskingTurn(turns, request)),
         // §7.3's ordering rule, in the one place every answer passes through.
         onAnswered: (card) => {
           budgets.onAnswered(card);

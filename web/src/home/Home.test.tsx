@@ -125,7 +125,8 @@ function serving(options: {
         });
       }
       default:
-        if ((path ?? '').endsWith('/avatar')) return new Response(new Blob(['png']), { status: 200 });
+        if ((path ?? '').endsWith('/avatar'))
+          return new Response(new Blob(['png']), { status: 200 });
         return json({ error: 'not_found', message: `No fixture for ${path ?? url}.` }, 404);
     }
   };
@@ -210,7 +211,9 @@ describe('home is the three regions, in priority order (§2.4)', () => {
 
     // 3. Recently finished: the outcome as a word, linking to the transcript.
     const recent = region('Recently finished');
-    await waitFor(() => expect(recent.querySelector('[data-session-id="ses_done"]')).not.toBeNull());
+    await waitFor(() =>
+      expect(recent.querySelector('[data-session-id="ses_done"]')).not.toBeNull(),
+    );
     expect(within(recent).getByText('done')).toBeInTheDocument();
     expect(within(recent).getByText('Rewrote the importer')).toBeInTheDocument();
     expect(within(recent).getByText('tool error')).toBeInTheDocument();
@@ -245,11 +248,12 @@ describe('home is the three regions, in priority order (§2.4)', () => {
     // sentence and the only one that says what to do about it.
     const running = region('Running now');
     await waitFor(() => expect(within(running).getByText(/Nothing has run yet/u)).toBeVisible());
-    expect(within(running).getByRole('link', { name: /Launch an agent at a project/u })).toHaveAttribute(
-      'href',
-      '/projects',
-    );
-    expect(within(region('Recently finished')).getByText(/Nothing has finished yet/u)).toBeVisible();
+    expect(
+      within(running).getByRole('link', { name: /Launch an agent at a project/u }),
+    ).toHaveAttribute('href', '/projects');
+    expect(
+      within(region('Recently finished')).getByText(/Nothing has finished yet/u),
+    ).toBeVisible();
   });
 
   it('offers Start work from the running region, without hunting for an agent first', async () => {
@@ -276,9 +280,9 @@ describe('home is the three regions, in priority order (§2.4)', () => {
     // A lifecycle frame invalidates `['sessions']`, so the regions refetch —
     // which is the only reason they are allowed not to poll.
     await waitFor(() =>
-      expect(
-        mounted.calls.filter((url) => url.startsWith('/api/sessions')).length,
-      ).toBeGreaterThan(before),
+      expect(mounted.calls.filter((url) => url.startsWith('/api/sessions')).length).toBeGreaterThan(
+        before,
+      ),
     );
   });
 });

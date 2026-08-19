@@ -24,6 +24,7 @@ import { Link } from 'react-router-dom';
 import type { QuestionCard } from '../api/types';
 
 import {
+  denyConsequence,
   ALLOW_ALWAYS_OPTION_ID,
   alwaysAllowPreview,
   askedAgo,
@@ -75,6 +76,7 @@ export function QuestionCardView({
   // The call being gated (§11.1's `context`). "Allow the agent to use Bash?" is
   // not answerable without it.
   const call = gatedCall(card);
+  const consequence = denyConsequence(card);
   // Present only when the server offered the third option *and* named the rule
   // it would add. The card shows that rule on the button, so the user approves a
   // rule rather than a vibe (runner §5.1, §11.2's argument about the gated call).
@@ -129,10 +131,7 @@ export function QuestionCardView({
             )}
           </p>
           {call.detail === undefined || call.detail === call.summary ? null : (
-            <details
-              open={showCall}
-              onToggle={(event) => setShowCall(event.currentTarget.open)}
-            >
+            <details open={showCall} onToggle={(event) => setShowCall(event.currentTarget.open)}>
               <summary>Show the whole call</summary>
               {/*
                 §1.4: the agent's own tool input is untrusted, so it lands as a
@@ -142,6 +141,17 @@ export function QuestionCardView({
             </details>
           )}
         </div>
+      )}
+
+      {/*
+        WO4 addendum §6. Under the call and above the attribution, because it
+        is about *this* call: one line, no nagging, and nothing at all when the
+        server sent no context to say it with.
+      */}
+      {consequence === undefined ? null : (
+        <p className="question-card__consequence" role="note">
+          {consequence}
+        </p>
       )}
 
       <p className="question-card__asked">

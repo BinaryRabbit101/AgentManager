@@ -439,6 +439,10 @@ export type {
   ValidateResult,
 } from './service.js';
 
+// The preflight §9.1 hangs off `validate`: which tools would stop and ask.
+export { PREFLIGHT_TOOL_CATALOGUE, gateLiableTools } from './preflight.js';
+export type { GateLiableTool } from './preflight.js';
+
 export { ROSTER_API_PREFIX, createRosterRoutes } from './routes.js';
 export type { RosterRoutesDeps } from './routes.js';
 

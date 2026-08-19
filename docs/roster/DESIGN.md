@@ -398,6 +398,20 @@ settings. The compiler emits them through the SDK's inline `settings` object rat
 files. Anything matching an `ask` rule reaches `canUseTool`, which the runner routes to the
 orchestrator's question card and the UI's inbox — the same channel as `AskUserQuestion`.
 
+**Which tools would gate, answered before anything runs** *(added 2026-08-19, WO4 §1)*. An `ask`
+rule is not the only way a call reaches `canUseTool`: §6.1's "restriction is expressed with deny,
+never by omission from allow" has the corollary that a tool covered by *no* bare-name allow also
+escalates, and under `plan`/`dontAsk` is denied outright instead. Deciding which of the three a tool
+gets therefore needs the compiled **policy** as well as the rule set — which is why `outcomeForTool`
+takes a `CompiledPermissions` and why the answer is served rather than re-derived by a client.
+`validate` returns it as `gateLiable` (§9.1).
+
+The catalogue it is computed over is a **decision, not a lookup**: `allowedTools` is an auto-approve
+list rather than an inventory, so nothing in the system enumerates the tools a session will expose.
+`preflight.ts` names them — `Bash` first, then the three file-mutating tools, then the read, search
+and fetch tools — and deliberately omits MCP tools, whose names differ per agent and per integration
+and would turn a glance into a list. An MCP gate that fires mid-run stays a question card.
+
 ---
 
 ## 7. Skills packaging
@@ -507,6 +521,21 @@ with no roster-specific work.
 `POST /agents/:id/validate` exists for the UI: before launching, show the user the *effective*
 permission set for this agent on this project, including any elevation. Permission composition
 that the user cannot see is permission composition they will not trust.
+
+Its body is `{ projectId?, write?, role? }` and its response carries, beside `effective` and
+`diagnostics`, a **`gateLiable`** array — the tools that would stop and ask at runtime, in the order
+the caller renders them (§6.3). Each entry is `{ tool, reason, remembered }`:
+
+| Field | Meaning |
+|---|---|
+| `reason` | `ask_rule` — some layer said "always check with me"; or `not_auto_allowed` — the default-deny escalation. Somebody's stated intent and the absence of a grant are different facts, and the chip the user reads should say which. |
+| `remembered` | The effective allow set already carries a rule *about* this tool. This is the honest reading of "was this agent allowed this before, here": the Always-allow memory is stored as ordinary rules in `permissions.allow` (§6.2), there is no per-project rule store and no marker separating a remembered rule from a typed one — but `effective.allow` is the set *after* the project layer intersected, and a bare-name allow would have made the tool auto-approve rather than gate-liable, so a `remembered` chip can only have come from a scoped rule, which is exactly what `durableAllowRule` writes. |
+
+The consumer is ui §6's permission preflight, which turns each entry into a chip with a **Pre-allow
+for this assignment** toggle, defaulted from `remembered`. `write` matters to the answer: a
+read-only assignment removes the file-mutating tools outright (§6.2), so its chip list is a
+different list, and asking with the wrong posture would offer to pre-answer gates the run cannot
+raise.
 
 **The wire-only fields.** `POST /agents` and `PATCH /agents/:id` accept three keys that are not
 definition fields, because the things they name are files beside `agent.json` rather than entries

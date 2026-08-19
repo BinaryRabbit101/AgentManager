@@ -9,6 +9,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { withAskingTurn } from './cards.js';
 import { InvalidRequestError } from './errors.js';
 import {
   normalisePrompt,
@@ -809,5 +810,49 @@ describe('the inbox projection (§11.1, ui R5)', () => {
     expect(h.inbox.list()[0]?.id).toBe(newer);
     expect(h.inbox.list({ assignmentId: second.assignmentId })).toHaveLength(1);
     expect(h.inbox.list({ status: 'answered' })).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Which turn is asking — WO4 addendum §6
+// ---------------------------------------------------------------------------
+
+/**
+ * The *seat* half of "which seat/turn is asking" is runner's: it holds the role
+ * at gate time and puts it on the request. The *turn* is not — runner has no
+ * turn rows, and these are the only place the number exists — so it is stamped
+ * on the way through, by the same `cardPolicy` hook §7.3 already uses to shape
+ * a card before its row is written.
+ */
+describe('withAskingTurn (WO4 addendum §6)', () => {
+  const request = {
+    sessionId: 'ses_1',
+    assignmentId: 'asg_1',
+    agentId: 'ada',
+    kind: 'question' as const,
+    prompt: 'Allow the agent to use Bash?',
+    holdUntil: '2026-08-19T10:15:00.000Z',
+    expiresAt: '2026-08-20T10:00:00.000Z',
+    context: { toolName: 'Bash', seatRole: 'architect' },
+  };
+
+  it('stamps the round of the turn the asking session belongs to', () => {
+    const stamped = withAskingTurn({ findBySession: () => ({ round: 2 }) }, request);
+    // Everything runner sent is still there: the stamp is additive, and the
+    // context rides through this element verbatim by design.
+    expect(stamped.context).toEqual({ toolName: 'Bash', seatRole: 'architect', round: 2 });
+  });
+
+  it('leaves a card with no turn behind it exactly as it was', () => {
+    // A solo has no driver and therefore no turn rows (§2.3), and an
+    // engine-raised card has no session at all.
+    expect(withAskingTurn({ findBySession: () => undefined }, request).context).toEqual(
+      request.context,
+    );
+    expect(
+      withAskingTurn({ findBySession: () => ({ round: 2 }) }, { ...request, sessionId: null })
+        .context,
+    ).toEqual(request.context);
+    expect(withAskingTurn(undefined, request).context).toEqual(request.context);
   });
 });

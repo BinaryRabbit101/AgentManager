@@ -127,6 +127,7 @@ import {
 } from './liveSessions.js';
 import {
   classifyRateLimit,
+  deniedToolNames,
   outcomeForResult,
   readAssistant,
   readStreamDelta,
@@ -559,7 +560,13 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
 
     try {
       // --- step 3: assignment context ------------------------------------
-      const context = await deps.assignmentContext.getAssignmentContext(session.assignmentId);
+      // The seat is named, not inferred. Orchestrator resolves `role` by the
+      // sole-member shortcut when it is not, and resolves `preGrantedTools` not
+      // at all — a pre-grant belongs to one agent and guessing which would
+      // pre-answer a card somebody else's user never saw (orchestrator §2.3).
+      const context = await deps.assignmentContext.getAssignmentContext(session.assignmentId, {
+        agentId: session.agentId,
+      });
       if (context.status !== 'open') {
         // §6.2: "Admission re-checks assignment status and project status,
         // because both can change while queued."
@@ -699,6 +706,35 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
                 holdMs: config.question.holdMs,
                 expireHours: config.question.expireHours,
                 clock: deps.clock,
+                // WO4 §2: gates this seat's user already answered in the dialog.
+                // Orchestrator scoped the list to (assignment, agent) — runner
+                // matches the bare name and nothing else.
+                preGrantedTools: context.preGrantedTools ?? [],
+                // WO4 addendum §6: who is asking, and what a deny would cost.
+                seat: { ...(role === null ? {} : { role }), pattern: context.pattern },
+                ...(context.artifactPath === undefined || context.artifactPath === null
+                  ? {}
+                  : { artifactPath: context.artifactPath }),
+                onPreAllowed: (preAllowed) => {
+                  // Recorded in both places a permission decision is read: the
+                  // timeline (a persisted diagnostic) and the transcript. A
+                  // gate answered before it was asked is still a gate answered.
+                  emit('session.diagnostic', session, {
+                    severity: 'info',
+                    code: 'tool_pre_allowed',
+                    message:
+                      `"${preAllowed.toolName}" was pre-allowed for this assignment, so no ` +
+                      'permission card was raised. Pre-grants are scoped to this assignment and ' +
+                      "expire with it; they do not change the agent's standing permissions.",
+                    toolName: preAllowed.toolName,
+                  });
+                  transcript?.append('system', {
+                    event: 'permission.pre_allowed',
+                    toolName: preAllowed.toolName,
+                    assignmentId: session.assignmentId,
+                    agentId: session.agentId,
+                  });
+                },
                 onRaised: (raised) => {
                   emit('session.question.raised', session, {
                     questionId: raised.questionId,
@@ -1047,6 +1083,11 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
         turns,
         costUsdEstimate: outcome.lastResult.costUsd,
         permissionDenials: outcome.lastResult.permissionDenials.length,
+        // WO4 addendum §5: the names, not only the count. They have been in the
+        // SDK's array since M8 and the transcript has kept them; what nobody
+        // could read was *which* call the agent lost, which is the difference
+        // between "2 tool calls denied" and "the write was denied".
+        permissionDeniedTools: deniedToolNames(outcome.lastResult.permissionDenials),
         durationMs: outcome.lastResult.durationMs,
       });
     } catch (error) {
@@ -1188,6 +1229,8 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       readonly turns: number;
       readonly costUsdEstimate?: number;
       readonly permissionDenials?: number;
+      /** The denied calls' tool names, in the order the SDK reported them. */
+      readonly permissionDeniedTools?: readonly string[];
       readonly durationMs?: number;
       readonly message?: string;
     },
@@ -1217,6 +1260,12 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       ...(detail.durationMs === undefined ? {} : { durationMs: detail.durationMs }),
       ...(detail.costUsdEstimate === undefined ? {} : { costUsdEstimate: detail.costUsdEstimate }),
       permissionDenials: detail.permissionDenials ?? 0,
+      // Absent rather than empty when the session recorded none: a consumer
+      // must be able to tell "nothing was denied" from "this build did not
+      // say", which is the same distinction 0005's nullable column keeps.
+      ...(detail.permissionDeniedTools === undefined || detail.permissionDeniedTools.length === 0
+        ? {}
+        : { permissionDeniedTools: detail.permissionDeniedTools }),
       summary,
       transcriptBytes: record.transcriptBytes,
       ...(detail.message === undefined ? {} : { message: detail.message }),

@@ -45,6 +45,7 @@ import { KIND_LABELS, STRENGTH_EMPHASIS, strengthWord } from '../questions/card'
 import { useAppStore } from '../state/store';
 
 import {
+  denialNote,
   attribution,
   budgetLine,
   closeWord,
@@ -322,6 +323,7 @@ function TurnEntry({
   const agent = agents.get(turn.agentId);
   const who = attribution(turn, agent?.definition.name);
   const note = turnStatusNote(turn);
+  const denials = denialNote(turn);
   const verdict = turn.report?.verdict;
 
   return (
@@ -384,6 +386,19 @@ function TurnEntry({
       {note === undefined ? null : (
         <p className="turn__status" data-turn-status={turn.status}>
           {note}
+        </p>
+      )}
+
+      {/*
+        WO4 addendum §5. A warning chip rather than a status note, because a
+        denial is orthogonal to how the turn ended: the incident run's drafter
+        `reported` — the happy path — with its artifact write refused. Rendered
+        for any completed turn with denials, which is why it sits outside the
+        `note` branch that only speaks on unhappy statuses.
+      */}
+      {denials === undefined ? null : (
+        <p className="turn__denials" data-denials={turn.permissionDenials} role="note">
+          {denials}
         </p>
       )}
 

@@ -116,6 +116,16 @@ export interface TurnRow {
    */
   readonly permissionDenials: number;
   /**
+   * The denied calls' tool names, when the runner that ended this turn sent
+   * them (WO4 addendum §5).
+   *
+   * `null` — not `[]` — for a row written before 0005, so a reader can tell
+   * "nothing was denied" from "this row cannot say". The count stays the
+   * fallback for the second case, and the breaker never reads this at all: §8.1
+   * counts denials, and a name is for the human reading the turn card.
+   */
+  readonly permissionDeniedTools: readonly string[] | null;
+  /**
    * Why the turn ended, in runner's §2.3 vocabulary — or `launch_failed`, which
    * the engine writes when no session ever existed to carry one.
    *
@@ -143,6 +153,8 @@ export interface CompleteTurnInput {
   readonly artifactHash?: string | null | undefined;
   /** Runner's count for the session, when `session.ended` carried one (§8.1). */
   readonly permissionDenials?: number | undefined;
+  /** The names behind that count, when `session.ended` carried them (addendum §5). */
+  readonly permissionDeniedTools?: readonly string[] | undefined;
   /** Runner's `exit_reason`, or `launch_failed` when no session was ever started. */
   readonly exitReason?: string | null | undefined;
 }
@@ -208,12 +220,14 @@ interface RawTurn {
   readonly started_at: string | null;
   readonly ended_at: string | null;
   readonly permission_denials: number;
+  readonly permission_denied_tools: string | null;
   readonly exit_reason: string | null;
 }
 
 const COLUMNS =
   'id, assignment_id, round, seat, agent_id, session_id, prev_session_id, status, ' +
-  'report_json, output_text, artifact_hash, started_at, ended_at, permission_denials, exit_reason';
+  'report_json, output_text, artifact_hash, started_at, ended_at, permission_denials, ' +
+  'permission_denied_tools, exit_reason';
 
 export interface TurnRepositoryOptions {
   readonly db: Database;
@@ -264,6 +278,9 @@ export function createTurnRepository(options: TurnRepositoryOptions): TurnReposi
   const setDenials = db.prepare<[number, string]>(
     'UPDATE assignment_turns SET permission_denials = ? WHERE id = ?',
   );
+  const setDeniedTools = db.prepare<[string, string]>(
+    'UPDATE assignment_turns SET permission_denied_tools = ? WHERE id = ?',
+  );
   const setExitReason = db.prepare<[string | null, string]>(
     'UPDATE assignment_turns SET exit_reason = ? WHERE id = ?',
   );
@@ -284,6 +301,30 @@ export function createTurnRepository(options: TurnRepositoryOptions): TurnReposi
       // report" rather than a throw that would strand the whole assignment.
       options.log?.('assignment_turns.report_json did not parse; the turn reads as unreported', {
         turnId: id,
+      });
+      return null;
+    }
+  }
+
+  /**
+   * 0005's column, read back — `null` stays `null` (WO4 addendum §5).
+   *
+   * The distinction the column exists to keep: `null` means "this row predates
+   * the names", and `[]` means "the session recorded none". Collapsing them
+   * would make every old turn claim it had nothing denied, which is exactly the
+   * silence the addendum is about. A value that will not parse degrades to
+   * `null` for the same reason `parseReport` degrades to "no report": the count
+   * is still there and still true.
+   */
+  function parseDeniedTools(json: string | null): readonly string[] | null {
+    if (json === null) return null;
+    try {
+      const parsed: unknown = JSON.parse(json);
+      if (!Array.isArray(parsed)) return null;
+      return parsed.filter((name): name is string => typeof name === 'string');
+    } catch {
+      options.log?.('assignment_turns.permission_denied_tools did not parse; the count stands', {
+        json,
       });
       return null;
     }
@@ -311,6 +352,7 @@ export function createTurnRepository(options: TurnRepositoryOptions): TurnReposi
         startedAt: row.started_at,
         endedAt: row.ended_at,
         permissionDenials: row.permission_denials,
+        permissionDeniedTools: parseDeniedTools(row.permission_denied_tools),
         exitReason: row.exit_reason,
         retryOfTurnId: previous,
       };
@@ -400,6 +442,12 @@ export function createTurnRepository(options: TurnRepositoryOptions): TurnReposi
       // lose it.
       if (input.permissionDenials !== undefined) {
         setDenials.run(Math.max(0, Math.trunc(input.permissionDenials)), id);
+      }
+      // Only when the names were actually sent. A runner that reports a count
+      // and no names must leave the column NULL, because writing `'[]'` would
+      // turn "did not say" into "denied nothing" (0005).
+      if (input.permissionDeniedTools !== undefined) {
+        setDeniedTools.run(JSON.stringify([...input.permissionDeniedTools]), id);
       }
       // Written on the turn for the same reason `permission_denials` is: the
       // value arrives exactly once, and a turn that failed at launch has no

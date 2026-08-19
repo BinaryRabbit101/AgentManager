@@ -138,6 +138,23 @@ export interface AssignmentContext {
   readonly tokensUsed: number;
   readonly roundCap: number | null;
   readonly roundsUsed: number;
+  /**
+   * The tool names this **seat** may not be asked about (§2.3, WO4 §2).
+   *
+   * Already filtered to the agent the context was resolved for, because the
+   * scope of a pre-grant is `(assignment, agent, tool)` and a list runner had to
+   * filter itself would be a list runner could filter wrongly. Empty when the
+   * caller named no agent — the sole-seat shortcut `role` takes is deliberately
+   * *not* taken here: guessing a seat costs a prompt addendum, guessing a
+   * pre-grant costs a permission gate somebody wanted.
+   */
+  readonly preGrantedTools: readonly string[];
+  /**
+   * `scope.artifactPath` (§2.5), for the one thing runner does with it: name it
+   * on a permission card whose input targets that file, so a deny is informed
+   * rather than blind (WO4 addendum §6). Null when the assignment declares none.
+   */
+  readonly artifactPath: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +164,24 @@ export interface AssignmentContext {
 export interface AssignmentMemberRequest {
   readonly agentId: string;
   readonly role: AssignmentRole;
+}
+
+/**
+ * One gate the user pre-answered in the Start-work dialog (§2.3, WO4 §2).
+ *
+ * Scope is `(assignment, agent, tool)` and nothing wider. It is **not** a
+ * permission: roster's `compilePermissions` remains the sole composer (roster
+ * §6.2), and a pre-grant can only pre-answer a card the compiled permissions
+ * would have raised — a tool the deny set removed raises no card, so a
+ * pre-grant on it grants nothing. That is the whole difference from roster's
+ * Always-allow, which edits the agent's baseline and outlives every assignment.
+ */
+export interface PreGrant {
+  readonly agentId: string;
+  /** A bare tool name — `Bash`, `Edit`, `mcp__gmail__send`. Never a scoped rule:
+   *  a pre-grant answers "do not stop and ask about this tool", and a pattern
+   *  would be a rule, which is roster's to compose and not orchestrator's. */
+  readonly tool: string;
 }
 
 /** `POST /api/assignments` (§2.3 path 2) and `create_assignment` (path 3). */
@@ -161,6 +196,8 @@ export interface CreateAssignmentRequest {
   readonly roundCap?: number | null;
   readonly workItemIds?: readonly string[];
   readonly patternConfig?: Readonly<Record<string, unknown>>;
+  /** Gates the user pre-answered in the dialog, scoped to this assignment (§2.3). */
+  readonly preGrants?: readonly PreGrant[];
   /** Defaults to `'user'`; the MCP tool passes `overseer:<agentId>` (M4). */
   readonly createdBy?: CreatedBy;
   /** Set by `create_assignment` only; a user-created assignment has no parent. */
@@ -180,6 +217,8 @@ export interface CreateSoloRequest {
   readonly scope?: AssignmentScope;
   readonly goal?: string;
   readonly workItemIds?: readonly string[];
+  /** Gates the user pre-answered in the dialog (§2.3, WO4 §2). */
+  readonly preGrants?: readonly PreGrant[];
   readonly createdBy?: CreatedBy;
 }
 
@@ -264,6 +303,25 @@ export interface AssignmentView {
    * it is served as two numbers so the UI can also show where the spend went.
    */
   readonly childTokensUsed: number;
+  /**
+   * The gates pre-answered at creation (§2.3, WO4 §2).
+   *
+   * On the view because a standing permission the user cannot see is a standing
+   * permission they will not trust — the same argument roster §9.1 makes for
+   * the permission preview, applied to the narrower thing. Empty for every
+   * assignment created without any.
+   */
+  readonly preGrants: readonly PreGrant[];
+  /**
+   * Σ of `permission_denials` across this assignment's turns (WO4 addendum §5).
+   *
+   * On the assignment rather than computed by the client because "it finished
+   * but was denied X times" has to be readable at the moment the result is
+   * judged, and the conversation view is not the only place a result is judged.
+   * Zero when nothing was ever denied, which is the case the UI renders as
+   * nothing at all.
+   */
+  readonly permissionDenials: number;
 }
 
 /** One child on {@link AssignmentView} — enough to render the team, no more. */

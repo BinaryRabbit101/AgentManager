@@ -225,3 +225,108 @@ describe('the route (DESIGN §9.1)', () => {
     expect(text).not.toContain('ya29.');
   });
 });
+
+/**
+ * WO4 §1's acceptance: "`validate` response enumerates gate-liable tools per
+ * agent (extend if it does not already)."
+ *
+ * The dialog cannot answer "which tools will interrupt me" from `effective`
+ * alone — §6.1's evaluation order also turns on the mode, and a client that
+ * re-derived it would be a second implementation of the thing §6.2 says has
+ * exactly one. So the answer travels on the response.
+ */
+describe('the gate-liable preflight (§6.3, §9.1; WO4 §1)', () => {
+  it('names the tools that would stop and ask, Bash first', async () => {
+    const service = serviceWith();
+    const result = await service.validate('priya-bugfix', { projectId: 'littlepocketmuseum' });
+
+    const tools = result.gateLiable.map((entry) => entry.tool);
+    expect(tools.length).toBeGreaterThan(0);
+    // Order is the contract, not the caller's comparator: WO4 §1 asks for
+    // "Bash first among them" and the array itself is what says so.
+    expect(tools[0]).toBe('Bash');
+    // Every entry is genuinely undecided by name. A bare-name deny removes the
+    // tool outright (§6.1) and a bare-name allow auto-approves it, so neither
+    // can appear here — unless an `ask` rule outranks the allow, which is the
+    // one way a granted tool still stops.
+    for (const entry of result.gateLiable) {
+      expect(result.effective.deny).not.toContain(entry.tool);
+      if (result.effective.allow.includes(entry.tool)) {
+        expect(result.effective.ask).toContain(entry.tool);
+      }
+    }
+  });
+
+  it('separates an explicit ask rule from the default-deny escalation', async () => {
+    const service = serviceWith();
+    const result = await service.validate('priya-bugfix', { projectId: 'littlepocketmuseum' });
+
+    // The project declares `ask: ['Edit']`, which is somebody's stated intent;
+    // everything else here is simply not granted, and the user reading a chip
+    // deserves to know which of the two they are looking at.
+    const edit = result.gateLiable.find((entry) => entry.tool === 'Edit');
+    expect(edit?.reason).toBe('ask_rule');
+    const bash = result.gateLiable.find((entry) => entry.tool === 'Bash');
+    expect(bash?.reason).toBe('not_auto_allowed');
+  });
+
+  it('marks a tool the agent already carries a rule about as remembered', async () => {
+    const service = serviceWith();
+    const result = await service.validate('priya-bugfix', { projectId: 'littlepocketmuseum' });
+
+    // The fixture allows `Bash(npm run test:*)` — exactly the shape the question
+    // card's "Always allow" writes (§6.2). `Bash` is still gate-liable, because a
+    // scoped grant never auto-approves the tool by name (§6.1), but the dialog
+    // can now default its chip to ON: this pair has been here before.
+    expect(result.gateLiable.find((entry) => entry.tool === 'Bash')?.remembered).toBe(true);
+    // `WebSearch` is named by no rule at all, so its chip defaults to OFF.
+    expect(result.gateLiable.find((entry) => entry.tool === 'WebSearch')?.remembered).toBe(false);
+  });
+
+  it('drops a tool once an Always-allow has made it auto-approve', async () => {
+    const service = serviceWith();
+    expect(
+      (await service.validate('priya-bugfix', { projectId: 'littlepocketmuseum' })).gateLiable.map(
+        (entry) => entry.tool,
+      ),
+    ).toContain('WebSearch');
+
+    // A bare-name grant is what "Always allow" writes for a tool with no usable
+    // scope (runner §5.1's table). The call then never reaches `canUseTool` at
+    // all, so there is no card left to pre-answer and the chip must go.
+    service.allowRule('priya-bugfix', { rule: 'WebSearch' });
+
+    expect(
+      (await service.validate('priya-bugfix', { projectId: 'littlepocketmuseum' })).gateLiable.map(
+        (entry) => entry.tool,
+      ),
+    ).not.toContain('WebSearch');
+  });
+
+  it('drops a tool the write-false floor removed outright', async () => {
+    const service = serviceWith();
+    const readOnly = await service.validate('priya-bugfix', {
+      projectId: 'littlepocketmuseum',
+      write: false,
+    });
+
+    // §6.2's mutating-tool deny removes `Edit`/`Write`/`NotebookEdit` by bare
+    // name. There is no card to pre-answer for a tool that does not exist, and
+    // a pre-grant on one would be a permission the compiler never granted.
+    for (const tool of ['Edit', 'Write', 'NotebookEdit']) {
+      expect(readOnly.gateLiable.map((entry) => entry.tool)).not.toContain(tool);
+    }
+  });
+
+  it('rides the route, so the dialog reads it from one response', async () => {
+    const routes = createRosterRoutes({ service: serviceWith(), logger: silentLogger() });
+    const answer = await callRoute(routes, 'POST', '/api/roster/agents/:id/validate', {
+      params: { id: 'priya-bugfix' },
+      body: { projectId: 'littlepocketmuseum', write: true },
+    });
+
+    expect(answer.status).toBe(200);
+    const body = answer.body as { gateLiable?: readonly { tool: string }[] };
+    expect(body.gateLiable?.[0]?.tool).toBe('Bash');
+  });
+});
