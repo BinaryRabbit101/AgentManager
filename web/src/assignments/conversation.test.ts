@@ -224,6 +224,7 @@ describe('the round strip (§10.2)', () => {
                   excerpt: null,
                   startedAt: '2026-08-17T09:05:00.000Z',
                   endedAt: null,
+                  exitReason: null,
                   retryOfTurnId: null,
                 },
               ],
