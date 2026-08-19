@@ -22,6 +22,7 @@
  * | `turn_failures` | {@link consecutiveFailures} | the pattern's `plan()` | §3.3 retries the seat once first; the halt is the second failure |
  * | `unstructured` | {@link unstructuredForSeat} | the pattern's `plan()` | §3.3 re-plans once with a stricter instruction first |
  * | `no_progress` | {@link artifactUnchanged} | the pattern's `plan()` | it needs the seat vocabulary (`drafter`) only the pattern knows |
+ * | `no_artifact` | {@link artifactMissingTurns} | the pattern's `plan()` | §3.3 re-plans the drafter once with the path named; the halt is the second miss |
  * | `tool_denials` | {@link denialBreaker} | engine, pre-`plan()` | nothing in a pattern's table mentions permissions |
  * | `tool_flood` | the toolset's per-session caps (§4.2) | engine, on the toolset's signal | the call must be refused *as it happens*, not at the next plan |
  * | `stale` | {@link staleSinceMs} | engine, the periodic sweep | there is no next `plan()` to hang it off — that is the point |
@@ -41,6 +42,7 @@ export const BREAKER_NAMES = [
   'turn_failures',
   'unstructured',
   'no_progress',
+  'no_artifact',
   'tool_denials',
   'tool_flood',
   'stale',
@@ -103,6 +105,36 @@ export function artifactUnchanged(current: TurnRow, previous: TurnRow | undefine
   if (previous === undefined) return false;
   if (current.artifactHash === null || previous.artifactHash === null) return false;
   return current.artifactHash === previous.artifactHash;
+}
+
+/**
+ * §8.1 `no_artifact`: turns of one seat, in one round, that reported without
+ * leaving a file behind.
+ *
+ * `artifact_hash` is the engine's own evidence — `onSessionEnded` hashes
+ * `scope.artifactPath` and stores `null` when nothing is there to read — so this
+ * counts the turns where the seat *claimed* it was finished and the disk
+ * disagreed. Scoped to a round because the guard is about one drafting attempt:
+ * a round the drafter fixed is not evidence against the next one, and a counter
+ * that spanned rounds would halt an assignment whose first round merely started
+ * badly.
+ *
+ * Only `reported` turns count. An `unstructured`, `failed` or `blocked` turn has
+ * its own row in §3.3's table and its own breaker; charging it here would halt
+ * on evidence another rule is already acting on.
+ */
+export function artifactMissingTurns(
+  turns: readonly TurnRow[],
+  seat: string,
+  round: number,
+): number {
+  return turns.filter(
+    (turn) =>
+      turn.seat === seat &&
+      turn.round === round &&
+      turn.status === 'reported' &&
+      turn.artifactHash === null,
+  ).length;
 }
 
 /** The highest `permission_denials` any one session of this assignment recorded. */

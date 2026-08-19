@@ -31,6 +31,7 @@
  * cap terminates it late. Neither agent can extend the cap.
  */
 import {
+  artifactMissingTurns,
   artifactUnchanged,
   consecutiveFailures,
   roundsWouldExceedCap,
@@ -62,6 +63,18 @@ export const HALT_REASONS = [
   'turn_failures',
   'no_report',
   'no_progress',
+  /**
+   * §3.3/§8.1: the drafting seat reported twice in one round without a file
+   * existing at `scope.artifactPath`.
+   *
+   * Distinct from `no_progress`, which is about an artifact that stopped
+   * *changing*: this one is about an artifact that never existed, and the two
+   * want different cards and different next moves. Distinct from `no_report`
+   * too — the seat did call `report_status`; it simply reported work nobody can
+   * read. Sending the critic in to review nothing spends a quarter of the
+   * default budget's estimate discovering the same fact the engine already has.
+   */
+  'no_artifact',
   'permission_fight',
   'tool_flood',
   'stale',
@@ -91,6 +104,14 @@ export type TurnIntent =
   | 'critique'
   | 'revise'
   | 'retry'
+  /**
+   * §3.3: the drafter reported, but nothing exists at `scope.artifactPath`.
+   *
+   * Not `retry`, which is the "you produced no structured report" instruction.
+   * The seat here *did* report; what is missing is the file, and telling it to
+   * report harder would be a wrong diagnosis in the one sentence it reads.
+   */
+  | 'artifact_missing'
   | 'answered'
   /** §3.5: the overseer's first turn — turn the goal into child assignments. */
   | 'decompose'
@@ -493,6 +514,41 @@ export const PAIR_PATTERN: PatternDef = {
     // --- last.status === 'reported' ---
 
     if (last.seat === DRAFTER_SEAT) {
+      // §8.1 `no_artifact`, and it comes first because it is the more basic
+      // failure: `no_progress` compares two hashes and cannot fire when there is
+      // no hash at all.
+      //
+      // The engine has already done the looking — `onSessionEnded` hashes
+      // `scope.artifactPath` and writes `null` when the file is not there — so
+      // this branch spends nothing to learn that the critic would be reviewing
+      // an empty room. §3.3's own cost shape is why that matters: a critic turn
+      // is a quarter of a 3-round pair's estimate, and in the observed run it
+      // was spent entirely on "I can't find the artifact".
+      if (requiresArtifact(state) && last.artifactHash === null && state.resumeRequested !== true) {
+        // One re-plan first, for the same reason §3.3 retries an unstructured
+        // turn once: a model that skipped the write and a scope whose path the
+        // seat misread look identical from here, and one explicit instruction
+        // naming the exact path distinguishes them cheaply.
+        if (artifactMissingTurns(turns, DRAFTER_SEAT, last.round) >= 2) {
+          return { halt: true, haltReason: 'no_artifact' };
+        }
+        return {
+          seat: DRAFTER_SEAT,
+          agentId: drafter.agentId,
+          round: last.round,
+          prompt: {
+            intent: 'artifact_missing',
+            seat: DRAFTER_SEAT,
+            round: last.round,
+            retryOfTurnId: last.id,
+          },
+          // The seat resumes its own session: it already holds the draft in
+          // context, and a fresh session would ask it to write the file twice.
+          ...continuation(turns, DRAFTER_SEAT),
+          priority: 'normal',
+        };
+      }
+
       // §8.1 `no_progress`: two consecutive drafter turns with an unchanged
       // artifact hash while claiming a revision. This is the "politely looping
       // forever" guard the round cap alone does not catch — the cap would still
@@ -906,6 +962,42 @@ export function seatsOf(members: readonly StateMember[]): {
     ...(drafter === undefined ? {} : { drafter }),
     ...(critic === undefined ? {} : { critic }),
   };
+}
+
+/**
+ * `pattern_config_json` as `plan()` may read it — never throwing.
+ *
+ * The column is orchestrator's own free JSON (§2.1) and nothing revalidates it
+ * on read, so a row written by an older build, or hand-edited, must not be able
+ * to crash the planner. Unparsable is the empty config, which is the same thing
+ * as "no overrides".
+ */
+function patternConfigOf(json: string): Readonly<Record<string, unknown>> {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (typeof parsed !== 'object' || parsed === null) return {};
+    return parsed as Readonly<Record<string, unknown>>;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Whether the artifact guard applies to this assignment (§3.3's
+ * `requireArtifact`, config default `true`).
+ *
+ * Two ways out, and both are honest rather than lenient. An assignment with no
+ * `artifactPath` has nothing to hash, so the hash would be `null` forever and
+ * the guard would re-plan the drafter until it halted on a rule it cannot
+ * satisfy. And `requireArtifact: false` is the config saying this pair is
+ * critiquing something other than a file — the one shape §3.3 warns is a
+ * conversation rather than a review, but a shape the flag exists to allow.
+ * Anything else — a missing key, a key of the wrong type — is the default:
+ * guard on.
+ */
+function requiresArtifact(state: AssignmentState): boolean {
+  if (state.assignment.artifactPath === null) return false;
+  return patternConfigOf(state.assignment.patternConfigJson)['requireArtifact'] !== false;
 }
 
 /**

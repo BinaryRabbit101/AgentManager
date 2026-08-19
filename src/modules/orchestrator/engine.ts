@@ -1542,6 +1542,8 @@ export function haltPrompt(
   switch (haltReason) {
     case 'no_progress':
       return `The drafting seat submitted an unchanged ${row.artifactPath ?? 'artifact'} while reporting a revision, twice. Continue anyway, or close the assignment?`;
+    case 'no_artifact':
+      return `The drafting seat reported twice in the same round without leaving a file at ${row.artifactPath ?? 'the artifact path'}, so there is nothing for the critic to review. Continue anyway and let the critic look, or close the assignment?`;
     case 'no_report':
       return 'The same seat finished two turns without calling report_status, so the engine has no verdict to read. Continue with a stricter instruction, or close the assignment?';
     case 'turn_failures':

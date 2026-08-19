@@ -8,10 +8,21 @@
  * argument is that a self-reported number looks precise and is not, so the check
  * is a scan of the serialised card rather than a spot-check of one field.
  */
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { FLEET_STATES } from './status.js';
-import { endSession, flush, makeHarness, PROJECT_ID, type Harness } from './__tests__/helpers.js';
+import {
+  endSession,
+  flush,
+  makeHarness,
+  makeTempDir,
+  PROJECT_ID,
+  type Harness,
+  type TempDir,
+} from './__tests__/helpers.js';
 
 const AGENTS = [
   { id: 'ada', name: 'Ada', roles: ['architect' as const] },
@@ -20,14 +31,27 @@ const AGENTS = [
 ];
 
 let harness: Harness;
+let workspace: TempDir;
 
 beforeEach(() => {
-  harness = makeHarness({ agents: AGENTS });
+  // A real workspace, because §3.3's artifact guard reads `scope.artifactPath`
+  // off disk before it will spend the critic's turn: a harness with nowhere to
+  // look re-plans the drafter instead of advancing, and the assertions about
+  // turn *counts* below would be about that instead.
+  workspace = makeTempDir('agentmanager-status-ws-');
+  harness = makeHarness({ agents: AGENTS, workspaceCwd: workspace.path });
 });
 
 afterEach(() => {
   harness.cleanup();
+  workspace.cleanup();
 });
+
+/** What the drafter would have written, so its turn hands over to the critic. */
+function writeDraft(): void {
+  mkdirSync(join(workspace.path, 'docs', 'x'), { recursive: true });
+  writeFileSync(join(workspace.path, 'docs', 'x', 'DESIGN.md'), '# Design\n', 'utf8');
+}
 
 async function makePair(): Promise<string> {
   const created = await harness.service.createAssignment({
@@ -331,6 +355,7 @@ describe('event replay reconstructs an assignment (§16-10, M9-5)', () => {
 
     // One full round, driven as the engine drives it.
     const first = harness.turns.active(assignmentId);
+    writeDraft();
     await harness.toolset({ assignmentId, agentId: 'ada' }).call('report_status', {
       state: 'done',
       headline: 'Draft complete',

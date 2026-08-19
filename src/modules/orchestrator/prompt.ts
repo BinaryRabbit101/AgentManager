@@ -132,7 +132,7 @@ function build(
   sections.push(1);
 
   // --- 2. Your seat --------------------------------------------------------
-  parts.push(section('2. Your seat', [seatSentence(input), intentSentence(input.spec)]));
+  parts.push(section('2. Your seat', [seatSentence(input), intentSentence(input)]));
   sections.push(2);
 
   // --- 3. The handoff -----------------------------------------------------
@@ -244,14 +244,43 @@ function seatSentence(input: ComposePromptInput): string {
   return `You are the ${input.role} on this assignment.`;
 }
 
-function intentSentence(spec: PromptSpec): string {
+/**
+ * §3.3's instruction line — the one sentence that says what this turn is *for*.
+ *
+ * `draft` and `revise` name the path and the condition rather than saying "the
+ * artifact named above", because "above" is section 1 and a model that skips it
+ * produces a report with no file behind it — the exact failure `no_artifact`
+ * exists to catch. Saying it here costs a clause and removes a whole round.
+ */
+function intentSentence(input: ComposePromptInput): string {
+  const spec = input.spec;
+  // The engine's own acceptance test, in the words the seat reads. Omitted when
+  // there is no path to name: a promise about a file nobody declared is noise.
+  const onDisk =
+    input.artifactPath === null
+      ? ''
+      : ' Your report is accepted only if that file exists on disk when you finish.';
   switch (spec.intent) {
     case 'draft':
-      return 'Write the first draft of the artifact named above.';
+      return input.artifactPath === null
+        ? 'Write the first draft of the artifact named above.'
+        : `Write the artifact file at ${input.artifactPath} — create it if it does not exist.${onDisk}`;
     case 'critique':
       return 'Read the artifact and list the issues that block it. Be specific and be hard to please.';
     case 'revise':
-      return 'Revise the artifact to answer every blocking issue below, or explain why an issue is wrong.';
+      return input.artifactPath === null
+        ? 'Revise the artifact to answer every blocking issue below, or explain why an issue is wrong.'
+        : `Revise the artifact file at ${input.artifactPath} to answer every blocking issue ` +
+            `below, or explain why an issue is wrong.${onDisk}`;
+    case 'artifact_missing':
+      // Deliberately blunt, and it names the consequence: §4.2's rule that a
+      // refusal a model understands is a refusal it does not retry applies just
+      // as well to an instruction it is being given a second time.
+      return (
+        `Your report was received but no file exists at ${input.artifactPath ?? 'the artifact path'}. ` +
+        'Create that exact file with your draft and report again. A report without this file on ' +
+        'disk will be sent back.'
+      );
     case 'retry':
       return `Your previous turn ended without a structured report. Do the work, then you MUST call ${REPORT_STATUS_TOOL} before you finish.`;
     case 'answered':

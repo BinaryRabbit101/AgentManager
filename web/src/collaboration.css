@@ -114,6 +114,15 @@
   border-color: var(--accent);
 }
 
+/* The round being worked right now: outlined in the accent but not filled, so
+   it reads as neither empty nor finished. The ring is the second signal, since
+   colour is never the only one (§15). */
+.assignment__pip[data-in-progress='true'] {
+  border-color: var(--accent);
+  background: var(--surface-sunken);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
 .assignment__budget {
   position: relative;
   display: inline-flex;

@@ -22,7 +22,11 @@ import {
   haltWord,
   isSolo,
   isUnseen,
+  currentRound,
+  hasTurnInFlight,
+  phaseInFlight,
   phaseWord,
+  roundLabel,
   roundPips,
   seatColumn,
   seatsOf,
@@ -133,6 +137,89 @@ describe('the round strip (§10.2)', () => {
   it('has no pips at all without a cap — a bar with no end is a lie', () => {
     expect(roundPips(4, null)).toEqual([]);
     expect(roundPips(0, 0)).toEqual([]);
+  });
+
+  /**
+   * `rounds_used` counts *finished* rounds, so on its own it reads `Round 0 of
+   * 3` for the whole of round 1 — the stretch the user is most likely watching.
+   */
+  it('counts the round in flight, not the last one finished', () => {
+    expect(roundLabel(0, 3, true)).toBe('Round 1 of 3');
+    expect(roundLabel(0, 3, false)).toBe('Round 0 of 3');
+    expect(roundLabel(1, 3, false)).toBe('Round 1 of 3');
+    expect(roundLabel(1, 3, true)).toBe('Round 2 of 3');
+    expect(roundLabel(2, null, true)).toBe('Round 3');
+  });
+
+  it('never counts past the cap: `Round 4 of 3` would contradict its own second half', () => {
+    expect(currentRound(3, 3, true)).toBe(3);
+    expect(roundLabel(3, 3, true)).toBe('Round 3 of 3');
+  });
+
+  it('marks the round in flight as a third pip state — neither empty nor filled', () => {
+    const running = roundPips(0, 3, true);
+    expect(running.map((pip) => [pip.done, pip.inProgress])).toEqual([
+      [false, true],
+      [false, false],
+      [false, false],
+    ]);
+
+    // The critic reported: the same round is finished, and no pip is in flight.
+    const idle = roundPips(1, 3, false);
+    expect(idle.map((pip) => [pip.done, pip.inProgress])).toEqual([
+      [true, false],
+      [false, false],
+      [false, false],
+    ]);
+
+    // Round 2 in flight: one done, one working, one empty. Never both on a pip.
+    expect(roundPips(1, 3, true).map((pip) => [pip.done, pip.inProgress])).toEqual([
+      [true, false],
+      [false, true],
+      [false, false],
+    ]);
+    expect(roundPips(3, 3, true).every((pip) => !pip.inProgress)).toBe(true);
+  });
+
+  it('reads "in flight" off the turn statuses the server sent, never off a guess', () => {
+    expect(hasTurnInFlight(undefined)).toBe(false);
+    // The default fixture is a finished three-round pair.
+    expect(hasTurnInFlight(aConversation())).toBe(false);
+    expect(
+      hasTurnInFlight(
+        aConversation({
+          rounds: [
+            {
+              round: 1,
+              entries: [
+                {
+                  type: 'turn',
+                  turnId: 't1',
+                  seat: 'drafter',
+                  agentId: 'ada',
+                  role: 'architect',
+                  sessionId: 'ses_1',
+                  status: 'running',
+                  report: null,
+                  excerpt: null,
+                  startedAt: '2026-08-17T09:05:00.000Z',
+                  endedAt: null,
+                  retryOfTurnId: null,
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('uses the phase where a list row has no turn table to read', () => {
+    expect(phaseInFlight(anAssignment({ status: 'open', phase: 'running' }))).toBe(true);
+    expect(phaseInFlight(anAssignment({ status: 'open', phase: 'awaiting_user' }))).toBe(false);
+    expect(phaseInFlight(anAssignment({ status: 'open', phase: 'halted' }))).toBe(false);
+    // A closed assignment is never mid-turn, whatever phase word it kept.
+    expect(phaseInFlight(anAssignment({ status: 'closed', phase: 'running' }))).toBe(false);
   });
 });
 

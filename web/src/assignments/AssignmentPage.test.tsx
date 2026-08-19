@@ -192,6 +192,100 @@ describe('phase, rounds and tokens are visible without scrolling (§10.2)', () =
     expect([...pips].every((pip) => pip.getAttribute('data-done') === 'true')).toBe(true);
   });
 
+  /**
+   * The observed pair run showed `Round 0 of 3` for the whole of round 1: the
+   * server increments `rounds_used` when the critic reports, and the header
+   * printed it raw. Two assertions, one per side of the transition.
+   */
+  it('reads Round 1 of 3 with pip 1 in progress while round 1 is still running', async () => {
+    mountAssignment(
+      serving({
+        assignment: anAssignment({
+          status: 'open',
+          phase: 'running',
+          roundsUsed: 0,
+          closeReason: null,
+        }),
+        conversation: aConversation({
+          phase: 'running',
+          status: 'open',
+          roundsUsed: 0,
+          closeReason: null,
+          rounds: [
+            {
+              round: 1,
+              entries: [
+                {
+                  type: 'turn',
+                  turnId: 't1a',
+                  seat: 'drafter',
+                  agentId: 'ada',
+                  role: 'architect',
+                  sessionId: 'ses_1a',
+                  status: 'running',
+                  report: null,
+                  excerpt: null,
+                  startedAt: '2026-08-17T09:05:00.000Z',
+                  endedAt: null,
+                  retryOfTurnId: null,
+                },
+              ],
+            },
+          ],
+        }),
+      }),
+    );
+    await heading();
+
+    const header = document.querySelector('.assignment__header') as HTMLElement;
+    await waitFor(() => {
+      expect(
+        within(header).getByText('Round 1 of 3', { selector: '[aria-hidden="true"]' }),
+      ).toBeInTheDocument();
+    });
+
+    const pips = [...header.querySelectorAll('.assignment__pip')];
+    expect(pips).toHaveLength(3);
+    // Neither empty nor filled: the round is being worked.
+    expect(pips[0]?.getAttribute('data-in-progress')).toBe('true');
+    expect(pips[0]?.getAttribute('data-done')).toBe('false');
+    expect(pips.slice(1).every((pip) => pip.getAttribute('data-in-progress') === 'false')).toBe(
+      true,
+    );
+  });
+
+  it('reads the same Round 1 of 3 once the critic reported, with pip 1 done', async () => {
+    mountAssignment(
+      serving({
+        assignment: anAssignment({
+          status: 'open',
+          phase: 'awaiting_user',
+          roundsUsed: 1,
+          closeReason: null,
+        }),
+        conversation: aConversation({
+          phase: 'awaiting_user',
+          status: 'open',
+          roundsUsed: 1,
+          closeReason: null,
+          rounds: [aConversation().rounds[0]!],
+        }),
+      }),
+    );
+    await heading();
+
+    const header = document.querySelector('.assignment__header') as HTMLElement;
+    await waitFor(() => {
+      expect(
+        within(header).getByText('Round 1 of 3', { selector: '[aria-hidden="true"]' }),
+      ).toBeInTheDocument();
+    });
+
+    const pips = [...header.querySelectorAll('.assignment__pip')];
+    expect(pips[0]?.getAttribute('data-done')).toBe('true');
+    expect(pips.every((pip) => pip.getAttribute('data-in-progress') === 'false')).toBe(true);
+  });
+
   it('pins the header in the stylesheet rather than by hope', () => {
     const css = readFileSync(resolve(process.cwd(), 'web', 'src', 'collaboration.css'), 'utf8');
     const block = css.slice(css.indexOf('.assignment__header {'));

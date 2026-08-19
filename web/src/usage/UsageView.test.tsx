@@ -92,7 +92,13 @@ const USAGE = {
     'Counts AgentManager sessions only. Your interactive Claude usage shares the same plan windows and is not visible here.',
 };
 
-function serving(options: { usageStatus?: number; puts?: Put[] } = {}): Responder {
+function serving(
+  options: {
+    usageStatus?: number;
+    puts?: Put[];
+    assignment?: ReturnType<typeof anAssignment>;
+  } = {},
+): Responder {
   return (url, init) => {
     const path = url.split('?')[0] ?? url;
     if (init.method === 'PUT') {
@@ -107,7 +113,9 @@ function serving(options: { usageStatus?: number; puts?: Put[] } = {}): Responde
     }
     if (path === '/api/runner/queue') return json(QUEUE);
     if (path === '/api/assignments') {
-      return json({ assignments: [anAssignment({ status: 'open', phase: 'running' })] });
+      return json({
+        assignments: [options.assignment ?? anAssignment({ status: 'open', phase: 'running' })],
+      });
     }
     if (path === '/api/roster/agents') return json({ agents: [], diagnostics: [] });
     if (path === '/api/projects') return json({ projects: [] });
@@ -246,5 +254,43 @@ describe('per-assignment spend is tokens (§12 panel 3, §16.8)', () => {
     });
     expect(row.textContent).toContain('120,000 of 400,000 tokens');
     expect(within(row).getByRole('link')).toHaveAttribute('href', '/assignments/asg_1');
+  });
+
+  /**
+   * The same honest count as the assignment header (ui §10.2): `rounds_used` is
+   * a count of *finished* rounds, so a running assignment on 0 is working its
+   * first — and `0 of 3` on this table would say the opposite of what is true.
+   */
+  it('counts the round in flight, not the last one finished', async () => {
+    mountUsage(
+      serving({
+        assignment: anAssignment({
+          status: 'open',
+          phase: 'running',
+          roundsUsed: 0,
+          closeReason: null,
+        }),
+      }),
+    );
+    const row = await waitFor(() => {
+      const found = document.querySelector('[data-assignment-id="asg_1"]');
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(within(row).getByText('1 of 3')).toBeInTheDocument();
+  });
+
+  it('keeps the raw count once nothing is in flight', async () => {
+    mountUsage(
+      serving({
+        assignment: anAssignment({ status: 'open', phase: 'awaiting_user', roundsUsed: 1 }),
+      }),
+    );
+    const row = await waitFor(() => {
+      const found = document.querySelector('[data-assignment-id="asg_1"]');
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(within(row).getByText('1 of 3')).toBeInTheDocument();
   });
 });

@@ -458,14 +458,26 @@ a conversation, while a critique of a file is a review with a diff.
 
 | State | Plan |
 |---|---|
-| No turns | Round 1, `drafter`, `startSession`. Prompt: goal + scope + "write the first draft to `<artifactPath>`". |
-| Last turn = `drafter`, reported | Same round, `critic`. `startSession` (round 1) or `continueFrom` (round ≥ 2). Prompt carries the drafter's headline, the artifact path, and "list blocking issues; call `report_status` with `verdict`". |
+| No turns | Round 1, `drafter`, `startSession`. Prompt: goal + scope + "write the artifact file at `<artifactPath>` — create it if it does not exist; your report is accepted only if that file exists on disk when you finish". |
+| Last turn = `drafter`, reported, **and `artifact_hash` is `null`** (nothing exists at `<artifactPath>`) — first such turn of the round | Same round, **`drafter`** again, `continueFrom`, `retryOf` recorded. Prompt intent `artifact_missing`: *"Your report was received but no file exists at `<artifactPath>`. Create that exact file with your draft and report again. A report without this file on disk will be sent back."* |
+| Last turn = `drafter`, reported, `artifact_hash` `null`, **and that is the second such turn of the round** | **Halt** `no_artifact` (§8.1). The critic is never sent in. |
+| Last turn = `drafter`, reported (artifact present) | Same round, `critic`. `startSession` (round 1) or `continueFrom` (round ≥ 2). Prompt carries the drafter's headline, the artifact path, and "list blocking issues; call `report_status` with `verdict`". |
 | Last turn = `critic`, `verdict.decision === 'accept'` **and** `verdict.blocking` empty | **Terminate** `converged`. |
 | Last turn = `critic`, otherwise | If `roundsUsed + 1 > roundCap` → **terminate** `round_cap`. Else round + 1, `drafter`, `continueFrom`, prompt carrying the blocking issues verbatim. |
 | Last turn = `drafter`, and the artifact hash is unchanged from the previous round **and** the report claims a revision | **Halt** `no_progress` (§8). |
 | Last turn `unstructured` and it is the first such for that seat | Re-plan the **same** seat and round with an explicit "you must call `report_status`" instruction. `retryOf` recorded on the new turn row. |
 | Last turn `unstructured` twice for the same seat, or `failed`/`orphaned` twice consecutively | **Halt** `turn_failures`. |
 | Last turn `blocked` (the seat's `request_user_decision` expired its hold and it stopped) | Wait. On `question.answered`, re-plan the **same** seat and round with the answer prepended. |
+
+**No critic turn without an artifact.** `requireArtifact` (default `true`) is enforced by the engine,
+not by asking the critic to notice. `onSessionEnded` already hashes `scope.artifactPath` and stores
+`null` on the turn row when the file is not there, so `plan()` knows before it spends anything that
+there is nothing to critique. A critic turn is roughly a quarter of a 3-round pair's estimate, and
+spending it to discover a missing file — then messaging a drafter who will not read the mail until
+its next launch — is the most expensive possible way to learn a fact the engine already has. The
+guard is skipped only when the assignment declares no `artifactPath`, or `requireArtifact` is
+explicitly `false`; on *Continue anyway* the critic is planned, because a human who looked at the
+evidence and said go on is the one authority that outranks the counter.
 
 **Convergence: LLM proposes, deterministic rule decides.** The critic proposes `accept` or `revise`;
 the engine converges only on `accept` **with an empty blocking list**. An "accept, but these three
@@ -1012,6 +1024,7 @@ All are **deterministic counters over persisted state**, evaluated by the engine
 | `turn_failures` | 2 consecutive turn sessions ending `failed` or `orphaned` in one assignment | Halt `turn_failures`, `approval_gate` card carrying both `exit_reason`s and the last error. |
 | `unstructured` | The same seat produces 2 turns with no `report_status` | Halt `no_report`, card offering *Retry with stricter instruction* / *Accept the prose output* / *Close*. |
 | `no_progress` | 2 consecutive drafter turns with an unchanged `artifact_hash` while claiming a revision | Halt `no_progress`. This is the "politely looping forever" guard the round cap alone does not catch. |
+| `no_artifact` | 2 `reported` drafter turns **in one round** with `artifact_hash` `null` — nothing exists at `scope.artifactPath` (§3.3, `requireArtifact`) | Re-plan the drafter once with the `artifact_missing` instruction naming the path; on the second miss halt `no_artifact`, card offering *Continue anyway* (send the critic in regardless) / *Close*. Distinct from `no_progress` (an artifact that stopped changing) and from `no_report` (the seat did report — there is just no file behind it). |
 | `tool_denials` | `permission_denials` ≥ `breakers.denialsPerSession` (5) in one session, or any denials in 3 consecutive turns | Halt `permission_fight`, card naming the denied tools and offering the roster/project edit that would fix it. An agent repeatedly hitting a wall is a configuration bug, not an agent bug. |
 | `tool_flood` | Per-session MCP call caps exceeded (§4.2) | Refuse the call, halt `tool_flood`, and `RunnerService.stop` that session. |
 | `stale` | An `open` assignment with no turn transition for `assignment.maxAgeHours` (24) | Halt `stale`, card offering *Continue* / *Close*. Catches wedges nothing else notices. |

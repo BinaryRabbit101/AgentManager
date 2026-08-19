@@ -26,7 +26,13 @@ import { useAssignments, useRunnerQueue, useRunnerUsage } from '../api/queries';
 import { failureOf } from '../api/result';
 import { CAPACITY_MAX, CAPACITY_MIN, type QueueEntry, type RunnerQueue } from '../api/types';
 import { useServices } from '../app/AppContext';
-import { budgetLine, formatTokens, phaseWord } from '../assignments/conversation';
+import {
+  budgetLine,
+  currentRound,
+  formatTokens,
+  phaseInFlight,
+  phaseWord,
+} from '../assignments/conversation';
 import { CAPACITY_RAISE_REASON, canRaiseCapacity, isRemoteClient } from '../remote/access';
 import { useAppStore } from '../state/store';
 
@@ -113,10 +119,16 @@ export function UsageView(): ReactElement {
                     <td>{assignment.pattern}</td>
                     <td>{phaseWord(assignment.phase)}</td>
                     <td>{budgetLine(assignment.tokensUsed, assignment.tokenBudget).text}</td>
-                    <td>
+                    {/*
+                      Rounds, counted the way the assignment header counts them:
+                      the round in flight, not the last one finished (§10.2).
+                    */}
+                    <td data-round-in-flight={phaseInFlight(assignment) ? 'true' : 'false'}>
                       {assignment.roundCap === null
-                        ? String(assignment.roundsUsed)
-                        : `${String(assignment.roundsUsed)} of ${String(assignment.roundCap)}`}
+                        ? String(
+                            currentRound(assignment.roundsUsed, null, phaseInFlight(assignment)),
+                          )
+                        : `${String(currentRound(assignment.roundsUsed, assignment.roundCap, phaseInFlight(assignment)))} of ${String(assignment.roundCap)}`}
                     </td>
                   </tr>
                 ))}

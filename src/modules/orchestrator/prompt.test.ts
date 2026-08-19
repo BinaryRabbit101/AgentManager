@@ -174,6 +174,57 @@ describe('the seven sections (§3.2)', () => {
   });
 });
 
+/**
+ * §3.3's artifact guard, in the half of it that is prose.
+ *
+ * The engine can only refuse a report with no file behind it; what stops the
+ * report happening at all is the instruction, so the instruction names the path
+ * and the condition rather than saying "the artifact named above".
+ */
+describe('the drafting intents name the file and the condition (§3.3)', () => {
+  it('tells a draft turn the exact path and that the file must exist on disk', () => {
+    const composed = composePrompt(input());
+    expect(composed.text).toContain('Write the artifact file at docs/billing/plan.md');
+    expect(composed.text).toContain('create it if it does not exist');
+    expect(composed.text).toContain(
+      'Your report is accepted only if that file exists on disk when you finish.',
+    );
+  });
+
+  it('appends the same file-on-disk condition to a revise turn', () => {
+    const composed = composePrompt(
+      input({ spec: { intent: 'revise', seat: 'drafter', round: 2, blocking: [] } }),
+    );
+    expect(composed.text).toContain('Revise the artifact file at docs/billing/plan.md');
+    expect(composed.text).toContain('answer every blocking issue below');
+    expect(composed.text).toContain(
+      'Your report is accepted only if that file exists on disk when you finish.',
+    );
+  });
+
+  it('renders the artifact_missing intent with the path and the consequence', () => {
+    const composed = composePrompt(
+      input({
+        spec: { intent: 'artifact_missing', seat: 'drafter', round: 1, retryOfTurnId: 't1' },
+      }),
+    );
+    expect(composed.text).toContain(
+      'Your report was received but no file exists at docs/billing/plan.md.',
+    );
+    expect(composed.text).toContain('Create that exact file with your draft and report again.');
+    expect(composed.text).toContain('A report without this file on disk will be sent back.');
+    // Not the retry sentence: this seat *did* report, and a wrong diagnosis in
+    // the one line it reads is worse than none.
+    expect(composed.text).not.toContain('ended without a structured report');
+  });
+
+  it('falls back to the old wording when the assignment declares no artifact path', () => {
+    const composed = composePrompt(input({ artifactPath: null }));
+    expect(composed.text).toContain('Write the first draft of the artifact named above.');
+    expect(composed.text).not.toContain('exists on disk');
+  });
+});
+
 describe('the byte cap (§3.2)', () => {
   it('drops the excerpt first, then the mail bodies, then the decisions', () => {
     const huge = 'x'.repeat(40_000);
