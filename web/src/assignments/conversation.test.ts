@@ -74,8 +74,11 @@ describe('delivery, distinctly (§10.2, orchestrator §16.5)', () => {
 });
 
 describe('turn status is shown only when it is not the happy path (§10.2)', () => {
-  const turn = (status: string): Parameters<typeof turnStatusNote>[0] =>
-    ({ status }) as unknown as Parameters<typeof turnStatusNote>[0];
+  const turn = (
+    status: string,
+    exitReason: string | null = null,
+  ): Parameters<typeof turnStatusNote>[0] =>
+    ({ status, exitReason }) as unknown as Parameters<typeof turnStatusNote>[0];
 
   it('says nothing for a reported or running turn', () => {
     expect(turnStatusNote(turn('reported'))).toBeUndefined();
@@ -87,6 +90,23 @@ describe('turn status is shown only when it is not the happy path (§10.2)', () 
     expect(turnStatusNote(turn('blocked'))).toBe('waiting on a decision');
     expect(turnStatusNote(turn('failed'))).toContain('failed');
     expect(turnStatusNote(turn('orphaned'))).toContain('orphaned');
+  });
+
+  // orchestrator WO1: a failed row with no cause is the one the user cannot act
+  // on, and `launch_failed` has no session to click through to at all.
+  it('names why a turn failed when the server recorded a reason', () => {
+    expect(turnStatusNote(turn('failed', 'launch_failed'))).toBe(
+      'failed — the session could not be started',
+    );
+    expect(turnStatusNote(turn('failed', 'workspace_unavailable'))).toContain('workspace');
+  });
+
+  it('falls back to the code, opened out, rather than inventing a diagnosis', () => {
+    expect(turnStatusNote(turn('failed', 'some_new_reason'))).toBe('failed — some new reason');
+  });
+
+  it('still says just "failed" when nothing recorded a reason', () => {
+    expect(turnStatusNote(turn('failed'))).toBe('failed');
   });
 });
 

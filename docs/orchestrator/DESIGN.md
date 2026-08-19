@@ -320,6 +320,7 @@ interface AssignmentState {               // everything plan() may see, all of i
   assignment: AssignmentRow; members: Member[]; turns: TurnRow[];
   roundsUsed: number; tokensUsed: number; budget: number | null; roundCap: number | null;
   openQuestion?: { id: string; seat: string; answer?: Answer };
+  hasOpenQuestion?: boolean;              // is any card still open? resolved by the engine
   breakers: BreakerCounters;
 }
 
@@ -333,10 +334,11 @@ type Termination = { done: true; closeReason: CloseReason; summary: string }
 rows in, an expected plan out. Convergence logic that lives inside an LLM prompt cannot be tested;
 this can.
 
-The engine's loop is small and entirely event-driven:
+The engine's loop is small and mostly event-driven:
 
 ```
 assignment.created / advance / session.ended / question.answered / assignment.budget.exceeded
+relaunch timer (30 s after a failed launch) / recovery sweep (assignment.recoverAfterMinutes)
         │
         ├─ acquire the per-assignment in-process mutex
         ├─ reload AssignmentState from the DB          (never from memory)
@@ -347,6 +349,48 @@ assignment.created / advance / session.ended / question.answered / assignment.bu
         │     └─ Termination  → close or halt, raise the card, emit events
         └─ release the mutex
 ```
+
+**The loop must never stall silently.** A purely event-driven loop advances only when something
+happens, and its failure mode is an assignment that nothing will ever happen to again. Three
+dead-ends produce it, and all three leave the identical footprint — `status: open`,
+`phase: running`, no turn in `planned`/`running`, no card raised, nothing scheduled:
+
+1. **A launch that threw.** `runner.startSession` rejects, the turn is marked `failed`, and the
+   advance that called it is already spent. The pattern's own retry rule is correct and unreachable.
+2. **An `awaiting_answer` wait nothing will end.** `plan()` waits for an answer that already landed
+   before the seat blocked, or for a card the seat never actually raised.
+3. **A dropped `session.ended`** inside a live process (`reconcileOnBoot` covers restarts; nothing
+   covered this).
+
+So the loop carries **two self-triggers** alongside the bus, and neither of them diagnoses anything —
+both re-enter the same idempotent loop every other trigger enters, and let `plan()` and the breakers
+decide:
+
+- **A one-shot relaunch, 30 seconds after a failed launch.** The fast path for a transient runner
+  error (queue full, SDK hiccup). Exactly one is armed per failure; a second failure trips
+  `turn_failures` (§8.1) rather than arming a third.
+- **A recovery pass in the periodic sweep.** Every open assignment matching the footprint above for
+  `assignment.recoverAfterMinutes` (default 2) is advanced again. It shares the sweep and the
+  shortlist with the `stale` breaker because that shortlist *is* the definition of an assignment
+  nothing is driving; the two differ only in how long it has been true and what they do about it.
+  The `stale` halt is evaluated first and stays authoritative — an assignment idle for a day is one
+  the user must be told about, and quietly re-advancing it would replace that card with another day
+  of silence.
+
+This is safe to repeat because every counter that bounds it is re-derived from `assignment_turns`
+(§8.1): a launch that keeps failing halts `turn_failures` on the second one, a seat that keeps
+producing nothing halts `no_report`, and anything that neither recovers nor halts is still caught by
+`maxAgeHours`. What the recovery pass may **not** do is invent a new terminal state: it plans a turn
+or it plans nothing, exactly as `advance` always did.
+
+The wait in §3.3's blocked row changes with it. Waiting is only correct while an answer is still
+*possible*, so `plan()` is given one more fact — `hasOpenQuestion`, resolved by the engine against
+the inbox and handed over as a boolean so the pattern stays pure. When the latest answer predates the
+turn's `ended_at`, or there is no card at all, and nothing is open, the same seat and round are
+**re-planned** (`retryOf` recorded) instead of waiting forever. The retry either re-raises its
+question — after which the next wait is a real one — or finishes. It runs at most once per
+seat-and-round: `blocked` is the one terminal status no §8.1 counter watches, so the second blocked
+turn in a round waits, and `maxAgeHours` is what the user eventually sees.
 
 ### 3.2 How turns are driven on top of runner's session model
 
@@ -972,6 +1016,17 @@ All are **deterministic counters over persisted state**, evaluated by the engine
 | `tool_flood` | Per-session MCP call caps exceeded (§4.2) | Refuse the call, halt `tool_flood`, and `RunnerService.stop` that session. |
 | `stale` | An `open` assignment with no turn transition for `assignment.maxAgeHours` (24) | Halt `stale`, card offering *Continue* / *Close*. Catches wedges nothing else notices. |
 
+The `stale` sweep carries §3.1's **recovery pass** in the same walk, and the pairing is deliberate.
+Both act on one shortlist — open, not waiting on a human, no turn in `planned`/`running` — because
+that shortlist is exactly "nothing is driving this". They differ only in the elapsed time and the
+verdict: `assignment.recoverAfterMinutes` (2) calls `advance()` again, `assignment.maxAgeHours` (24)
+halts. The halt is evaluated first, so an assignment that has already been idle for a day gets the
+card rather than a quiet re-advance; the recovery only ever touches what the halt did not claim.
+
+The recovery pass is **not a ninth breaker**. It counts nothing, halts nothing and decides nothing —
+it re-enters the loop, and the eight breakers above are what keep a repeatedly-failing assignment
+from spinning. That is why it lives here as a note rather than as a row in the table.
+
 One halt reason is not a breaker and is listed separately for that reason: **`review_unresolved`**
 (§3.5) fires when an overseer's lead finishes a review round without accepting the work and without
 delegating the follow-up it asked for. It is not a counter over turns — it is the pattern's own
@@ -1117,6 +1172,9 @@ GET    /api/assignments                    ?projectId=&status=&phase=&agentId=&l
 GET    /api/assignments/:id                record + members + children + budget + open questions
 PATCH  /api/assignments/:id                tokenBudget, roundCap, goal   (never members or pattern)
 POST   /api/assignments/:id/advance        plan the next turn now (manual kick after a halt)
+                                           — the *manual* face of §3.1's advance; the engine also
+                                           self-triggers on a relaunch timer and the recovery sweep,
+                                           so a wedged assignment no longer needs this route pressed
 POST   /api/assignments/:id/close          { reason }
 GET    /api/assignments/:id/conversation   §11.2 — the readable pair transcript
 GET    /api/questions                      ?status=open&assignmentId=   the inbox
@@ -1178,7 +1236,8 @@ ordered merge of turns and messages for one assignment.
         "sessionId": "01J…", "status": "reported",
         "report": { "state": "done", "headline": "…", "artifacts": [ { "path": "…" } ] },
         "excerpt": "…first 2 KB of the last assistant message…",
-        "tokens": { "input": 0, "output": 0 }, "startedAt": "…", "endedAt": "…" },
+        "tokens": { "input": 0, "output": 0 }, "startedAt": "…", "endedAt": "…",
+        "exitReason": null },   // runner's exit_reason, or "launch_failed"; null on the happy path
       { "type": "message", "from": "ada-architect", "to": "sam-skeptic", "kind": "handoff",
         "body": "…", "delivery": "inlined", "createdAt": "…" },
       { "type": "turn", "seat": "critic", "…": "…",
@@ -1191,6 +1250,13 @@ ordered merge of turns and messages for one assignment.
 Full output is always one click away — every turn carries its `sessionId`, and the transcript is
 runner's `GET /api/sessions/:id/transcript`. Orchestrator stores excerpts, never a second copy of the
 transcript.
+
+**A `failed` turn says why it failed.** `exit_reason` is stored on `assignment_turns` — runner's §2.3
+vocabulary, copied rather than re-declared — for the same reason `permission_denials` is: the value
+arrives exactly once, on `session.ended`. The engine writes its own `launch_failed` there too, and
+that case is the one this column exists for: a turn whose session was never started has no
+`sessionId` to click through to, so the turn row is the only place its story can be told. Without it
+the UI shows a red row and the word "failed", which reads as the agent's fault when it is not.
 
 ### 11.3 Fleet status
 
@@ -1304,7 +1370,11 @@ foundation §2.3 already put it and is not duplicated here. Runner's `question.h
   },
   "budgets": { "defaultPairTokens": 400000, "turnEstimateTokens": 25000,
                "overdraftTokens": 25000, "raiseMaxFactor": 2 },
-  "assignment": { "maxAgeHours": 24, "maxConcurrentPerAgent": 2, "maxNestingDepth": 1 },
+  // `recoverAfterMinutes` is §3.1's recovery pass: how long an open, running assignment with
+  // no turn in flight may sit before the sweep advances it again. Minutes, not hours — it is
+  // the belt to the 30-second relaunch, and its whole value is being short.
+  "assignment": { "maxAgeHours": 24, "recoverAfterMinutes": 2,
+                  "maxConcurrentPerAgent": 2, "maxNestingDepth": 1 },
   "questions": { "joinWindowMs": 120000 },
   "mailbox":   { "inlineMax": 10, "inlineMaxBytes": 8192 },
   "prompt":    { "maxBytes": 16384, "excerptBytes": 2048, "outputCaptureBytes": 32768 },

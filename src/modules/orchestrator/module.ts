@@ -294,6 +294,9 @@ export function createOrchestratorModule(
         clock: ctx.clock,
         config: ctx.config.orchestrator,
         expireHours: ctx.config.runner.question.expireHours,
+        // §3.1's 30-second re-advance after a failed launch. The same injectable
+        // the notifier and the sweep use, so a test drives all three by hand.
+        ...(options.timers === undefined ? {} : { timers: options.timers }),
         log: (level, message, detail) => {
           ctx.logger[level](detail ?? {}, message);
         },
@@ -355,10 +358,16 @@ export function createOrchestratorModule(
       // M7-5's periodic sweep. A self-rescheduling timer rather than an
       // interval, so a slow pass can never overlap itself, and `unref`ed (by
       // `realNotifyTimers`) so it is never the reason the process cannot exit.
+      //
+      // Its cadence is now set by the *recovery* pass rather than by the halt:
+      // §3.1's re-advance is only as prompt as the sweep that calls it, and a
+      // quarter of `maxAgeHours` (six hours) would make a two-minute knob mean
+      // nothing. Half of `recoverAfterMinutes`, floored at 30 seconds, so the
+      // worst case between a wedge and its recovery is one knob's worth.
       const timers = options.timers ?? realNotifyTimers;
       const sweepEveryMs = Math.max(
-        60_000,
-        Math.floor((ctx.config.orchestrator.assignment.maxAgeHours * 3_600_000) / 4),
+        30_000,
+        Math.floor((ctx.config.orchestrator.assignment.recoverAfterMinutes * 60_000) / 2),
       );
       let cancelSweep: (() => void) | undefined;
       let stopped = false;

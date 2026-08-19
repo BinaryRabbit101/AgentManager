@@ -4,6 +4,7 @@
  *
  * ```
  * assignment.created / advance / session.ended / question.answered / assignment.budget.exceeded
+ * relaunch timer (30 s after a failed launch) / recovery sweep (recoverAfterMinutes)
  *         │
  *         ├─ acquire the per-assignment in-process mutex
  *         ├─ reload AssignmentState from the DB          (never from memory)
@@ -47,6 +48,25 @@
  * closes `round_cap`, and one more round raises the cap (bounded by
  * `patterns.pair.maxRoundCap`) and re-enters the loop. The user is still the
  * tie-breaker exactly once, at the end.
+ *
+ * ## Two triggers that are not bus events, and why they exist
+ *
+ * An event-driven loop advances only when something happens, and the failure
+ * mode of that is an assignment nothing will ever happen to again: a launch that
+ * threw (the advance that called it is already spent), a `session.ended` dropped
+ * inside a live process, a blocked seat whose answer landed before it blocked.
+ * All three leave the same footprint — `open`, `phase: running`, no turn in
+ * flight — and none of them raises a card, so the user watches "running" do
+ * nothing.
+ *
+ * So the loop has two self-triggers alongside the bus. {@link scheduleRelaunch}
+ * arms one delayed advance 30 seconds after a failed launch, which is the fast
+ * path for a transient runner error. The periodic sweep's recovery pass is the
+ * slow one: any assignment matching that footprint for
+ * `assignment.recoverAfterMinutes` is advanced again. Neither diagnoses
+ * anything — they re-enter the same idempotent loop every other trigger enters,
+ * and the breakers bound what a repeatedly-failing assignment can cost
+ * (`turn_failures` halts on the second consecutive failure).
  */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -57,6 +77,7 @@ import type { Clock, SessionsRepository, SessionStatus } from '../../storage/ind
 
 import {
   evaluateBreakers,
+  staleSinceMs,
   unstructuredBySeat,
   consecutiveFailures,
   type BreakerTrip,
@@ -70,6 +91,7 @@ import {
 import type { OrchestratorConfig } from './config.js';
 import { AssignmentNotFoundError } from './errors.js';
 import type { MailboxRepository } from './messages.js';
+import { realNotifyTimers, type NotifyTimers } from './notify.js';
 import {
   hasContinuation,
   hasLauncher,
@@ -153,10 +175,12 @@ export interface PatternEngine {
   /** M5-5's boot task. */
   reconcileOnBoot(): Promise<TurnReconciliation>;
   /**
-   * §8.1's `stale` breaker (M7-5), one pass.
+   * §8.1's `stale` breaker (M7-5) **and** §3.1's recovery pass, one tick.
    *
    * Returned as a callable rather than only scheduled, so a test drives one tick
-   * instead of waiting a day for the timer that calls it.
+   * instead of waiting a day for the timer that calls it. The name is kept
+   * because the halt is still what it *reports*; the recovery it also does is in
+   * the log, where a re-advance that worked belongs.
    */
   sweepStale(): Promise<readonly string[]>;
   /**
@@ -187,6 +211,14 @@ export interface PatternEngineOptions {
   readonly config: OrchestratorConfig;
   /** `runner.question.expireHours`, read from runner's config (§12). */
   readonly expireHours: number;
+  /**
+   * The one-shot delay behind the post-launch-failure re-advance (§3.1).
+   *
+   * The same injectable shape the notifier takes, so a test drives the retry by
+   * hand rather than waiting 30 seconds for it — and so the real one `unref`s,
+   * because a pending retry must never be the reason the process cannot exit.
+   */
+  readonly timers?: NotifyTimers | undefined;
   /** Injectable so a test can hash without a workspace on disk. */
   readonly readArtifact?: (absolutePath: string) => string | undefined;
   readonly log?: (
@@ -199,8 +231,19 @@ export interface PatternEngineOptions {
 /** Session statuses that mean the turn's session failed rather than finished. */
 const FAILED_SESSION_STATUSES: readonly SessionStatus[] = ['failed', 'orphaned', 'interrupted'];
 
+/**
+ * How long after a failed launch the engine re-advances on its own (§3.1).
+ *
+ * A constant rather than a config key: it is not a policy anybody tunes, it is
+ * "long enough that a queue-full or an SDK hiccup has passed, short enough that
+ * a user does not see the pair stop". The *policy* knob is
+ * `assignment.recoverAfterMinutes`, which is the sweep behind this.
+ */
+const RELAUNCH_DELAY_MS = 30_000;
+
 export function createPatternEngine(options: PatternEngineOptions): PatternEngine {
   const { repository, turns, mailbox, bus, config } = options;
+  const timers = options.timers ?? realNotifyTimers;
 
   /**
    * One promise chain per assignment (§3.1's "per-assignment in-process mutex").
@@ -337,11 +380,31 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     });
   }
 
+  /**
+   * Is a decision card for this assignment still open?
+   *
+   * The fact `answeredOrWait` needs to tell "the answer has not landed yet"
+   * apart from "nothing will ever answer this seat" (§3.3). It is resolved
+   * *here*, against the inbox, and handed to `plan()` as a boolean — a pattern
+   * that queried the inbox itself would stop being a pure function of persisted
+   * assignment state (§3.1). Engine-raised cards are excluded on the same
+   * grounds `latestDecision` excludes them: a seat is never waiting on the halt
+   * card raised about it.
+   */
+  function hasOpenQuestion(assignmentId: string): boolean {
+    const inbox = options.inbox();
+    if (inbox === undefined) return false;
+    return inbox
+      .list({ assignmentId, status: 'open' })
+      .some((card) => card.kind === 'question' && !isEngineCard(card.context));
+  }
+
   function loadState(row: AssignmentRow, resumeRequested = false): AssignmentState {
     const rows = turns.list(row.id);
     const decision = latestDecision(row.id);
     return {
       ...(resumeRequested ? { resumeRequested } : {}),
+      hasOpenQuestion: hasOpenQuestion(row.id),
       assignment: row,
       scope: parseScope(row),
       members: members(row.id),
@@ -611,13 +674,19 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
       // The turn row exists and its session does not. Marking it `failed` is what
       // keeps the assignment drivable: the pattern's own failure rules then apply,
       // and two consecutive launch failures halt rather than spin.
-      turns.complete(turn.id, { status: 'failed' });
+      turns.complete(turn.id, { status: 'failed', exitReason: 'launch_failed' });
       emitTurnEnded(row, turns.get(turn.id) ?? turn, 'failed', 'launch_failed');
       log('warn', 'a planned turn could not be launched', {
         assignmentId: row.id,
         turnId: turn.id,
         error: String(error),
       });
+      // Nothing else will ever re-trigger this assignment: `launch()` is called
+      // *from* an advance, so the event that led here is already spent. Without
+      // this the pattern's own retry rule (`unfinishedTurn`) is correct and
+      // unreachable, and the pair sits at `running` doing nothing until the
+      // sweep notices. The sweep is still the belt; this is the suspender.
+      scheduleRelaunch(row.id);
       return { kind: 'idle', reason: 'launch_failed' };
     }
 
@@ -676,6 +745,28 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
     };
   }
 
+  /**
+   * The one-shot re-advance behind a failed launch (§3.1).
+   *
+   * Deliberately *not* a loop: this arms exactly one delayed advance, and if it
+   * fails to launch again the second failure trips `turn_failures` and halts.
+   * Nothing is cancelled, because a retry that arrives after the assignment
+   * moved on is an advance that plans nothing — the loop is idempotent by
+   * design, which is what makes a timer a safe trigger for it at all.
+   */
+  function scheduleRelaunch(assignmentId: string): void {
+    timers.after(RELAUNCH_DELAY_MS, async () => {
+      const outcome = await advance(assignmentId).catch((error: unknown) => {
+        log('warn', 'the delayed retry after a failed launch could not advance', {
+          assignmentId,
+          error: String(error),
+        });
+        return { kind: 'idle', reason: 'error' };
+      });
+      log('info', 'a failed launch was retried', { assignmentId, outcome: outcome.kind });
+    });
+  }
+
   /** §6.4's stance solicitation, and the config switch that turns it off. */
   function solicitations(state: AssignmentState): readonly OpenDecision[] {
     if (state.assignment.pattern === 'pair' && !config.patterns.pair.stanceSolicitation) return [];
@@ -730,6 +821,9 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
         status,
         ...(output === null ? {} : { outputText: output }),
         ...(artifactHash === null ? {} : { artifactHash }),
+        // Runner's word for why the session ended, kept on the turn so §11.2 can
+        // say *why* a failed row failed without a second read of `sessions`.
+        ...(exitReason === null ? {} : { exitReason }),
         // §8.1's `tool_denials` input, written where it can be re-derived from.
         ...(typeof payload.permissionDenials === 'number'
           ? { permissionDenials: payload.permissionDenials }
@@ -1210,18 +1304,29 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
   // -------------------------------------------------------------------------
 
   /**
-   * §8.1's `stale`: an `open` assignment with no turn transition for
-   * `assignment.maxAgeHours`.
+   * §8.1's `stale`, and §3.1's recovery pass — one walk of the open assignments.
    *
    * A *sweep* rather than a pre-`plan()` check, because the wedge it catches is
    * precisely the assignment nothing is advancing — there is no next `plan()` to
    * hang the check off. Assignments already waiting on a human are skipped: a
    * card that has been open for a day is the user's to answer, not a second
    * halt to raise on top of it.
+   *
+   * The two passes share the same shortlist — *open, not waiting on a human, no
+   * turn in flight* — because that shortlist **is** the definition of an
+   * assignment nothing is driving. They differ only in how long it has been true
+   * and what they do about it: `recoverAfterMinutes` re-advances, `maxAgeHours`
+   * halts. The stale halt is evaluated first so it stays authoritative — an
+   * assignment idle for a day is one the user must be told about, and quietly
+   * re-advancing it would replace that card with another day of silence.
+   *
+   * Returns the assignments it halted; the recovery is reported in the log,
+   * because a re-advance that worked is a non-event.
    */
   async function sweepStale(): Promise<readonly string[]> {
     const halted: string[] = [];
     const nowMs = options.clock().getTime();
+    const recoverAfterMs = config.assignment.recoverAfterMinutes * 60_000;
     for (const row of repository.list({ status: 'open' })) {
       if (row.phase === 'halted' || row.phase === 'awaiting_user') continue;
       const rows = turns.list(row.id);
@@ -1234,17 +1339,64 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
         nowMs,
         includeStale: true,
       });
-      if (trip?.breaker !== 'stale') continue;
-      await withLock(row.id, async () => {
-        // Re-read under the lock: an advance that landed between the scan and
-        // the halt has already moved the assignment on.
-        const fresh = repository.get(row.id);
-        if (fresh === undefined || fresh.status !== 'open' || fresh.phase === 'halted') return;
-        await halt(fresh, 'stale');
-        halted.push(fresh.id);
-      });
+      if (trip?.breaker === 'stale') {
+        await withLock(row.id, async () => {
+          // Re-read under the lock: an advance that landed between the scan and
+          // the halt has already moved the assignment on.
+          const fresh = repository.get(row.id);
+          if (fresh === undefined || fresh.status !== 'open' || fresh.phase === 'halted') return;
+          await halt(fresh, 'stale');
+          halted.push(fresh.id);
+        });
+        continue;
+      }
+      await recover(row, rows, nowMs, recoverAfterMs);
     }
     return halted;
+  }
+
+  /**
+   * §3.1's recovery pass: re-advance an assignment that stopped without saying so.
+   *
+   * Three dead-ends produce it — a launch failure whose delayed retry also
+   * failed, an `awaiting_answer` wait that no `question.answered` will ever
+   * arrive for, and a `session.ended` dropped by a live process. All three look
+   * identical from the outside: `phase: running`, no turn in flight, nothing
+   * scheduled. So the cure is the same for all three and needs no diagnosis —
+   * call `advance()` and let the loop decide, exactly as any other trigger would.
+   *
+   * Safe to repeat because the breakers bound it: a launch that keeps failing
+   * trips `turn_failures` on the second one, a seat that keeps producing nothing
+   * trips `no_report`, and an assignment that neither recovers nor halts is
+   * still caught by `maxAgeHours` above.
+   */
+  async function recover(
+    row: AssignmentRow,
+    rows: readonly TurnRow[],
+    nowMs: number,
+    recoverAfterMs: number,
+  ): Promise<void> {
+    if (row.phase !== 'running') return;
+    // A pattern with no driver has nothing to advance *to*: a user's solo is
+    // steered by the user (§2.3), and re-advancing it every sweep would log a
+    // recovery for every idle solo on the box.
+    if (driverFor(row) === undefined) return;
+    const idleMs = staleSinceMs(row, rows, nowMs);
+    if (idleMs < recoverAfterMs) return;
+
+    const outcome = await advance(row.id).catch((error: unknown) => {
+      log('warn', 'the recovery pass could not advance a wedged assignment', {
+        assignmentId: row.id,
+        error: String(error),
+      });
+      return { kind: 'idle', reason: 'error' };
+    });
+    log('info', 'the recovery pass re-advanced an assignment nothing was driving', {
+      assignmentId: row.id,
+      idleSeconds: Math.floor(idleMs / 1000),
+      outcome: outcome.kind,
+      ...(outcome.kind === 'idle' ? { reason: outcome.reason } : {}),
+    });
   }
 
   // -------------------------------------------------------------------------

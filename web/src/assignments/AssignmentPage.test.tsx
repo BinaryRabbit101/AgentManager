@@ -242,6 +242,53 @@ describe('halted and converged (§10.2)', () => {
   });
 });
 
+describe('a turn that failed to launch is visible, with its reason (orchestrator WO1)', () => {
+  it('renders the failed row and says the session could never be started', async () => {
+    const conversation = aConversation({
+      phase: 'running',
+      status: 'open',
+      closeReason: null,
+      rounds: [
+        {
+          round: 1,
+          entries: [
+            {
+              type: 'turn',
+              turnId: 't1a',
+              seat: 'drafter',
+              agentId: 'ada',
+              role: 'architect',
+              // The whole point of the case: there is no session to click
+              // through to, so the turn row is the only place this can be read.
+              sessionId: null,
+              status: 'failed',
+              report: null,
+              excerpt: null,
+              startedAt: '2026-08-17T09:05:00.000Z',
+              endedAt: '2026-08-17T09:05:01.000Z',
+              exitReason: 'launch_failed',
+              retryOfTurnId: null,
+            },
+          ],
+        },
+      ],
+    });
+    mountAssignment(
+      serving({
+        assignment: anAssignment({ status: 'open', phase: 'running', closeReason: null }),
+        conversation,
+      }),
+    );
+    await heading();
+
+    const failed = document.querySelector('[data-status="failed"]');
+    expect(failed).not.toBeNull();
+    expect(failed?.textContent).toContain('Ada · architect');
+    expect(failed?.textContent).toContain('failed — the session could not be started');
+    expect(failed?.textContent).toContain('This turn never reached a session.');
+  });
+});
+
 describe('members and pattern are not editable anywhere (§10.2, §18-5)', () => {
   it('offers exactly three editable fields, and PATCHes only those three', async () => {
     const calls: Recorded[] = [];

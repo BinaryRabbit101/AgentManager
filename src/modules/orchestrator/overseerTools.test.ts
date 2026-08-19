@@ -108,7 +108,14 @@ describe('list_roster (§4.3)', () => {
 
   it('filters by role, specialty and tag, and hides the loaded by default', async () => {
     const h = open({
-      config: { assignment: { maxAgeHours: 24, maxConcurrentPerAgent: 1, maxNestingDepth: 1 } },
+      config: {
+        assignment: {
+          maxAgeHours: 24,
+          recoverAfterMinutes: 2,
+          maxConcurrentPerAgent: 1,
+          maxNestingDepth: 1,
+        },
+      },
     });
     const assignmentId = await overseerAssignment(h);
     const overseer = h.toolset({ assignmentId, agentId: 'iris', isOverseer: true });

@@ -385,6 +385,51 @@ The iPhone client lives outside this repo, in the Scriptables project
 
 ---
 
+## M12 — The loop that never stalls silently (**complete**)
+
+Work order `docs/workorders/2026-08-19-streamline-multiagent/WO1-engine-self-healing.md`, raised
+from a real pair run (`01M0B8BH8WQ016VGRZV7M741E6`) that sat at `phase: running` for hours doing
+nothing. The engine advanced on four bus events and no fifth thing; three dead-ends left an open,
+running assignment with no turn in flight, no card and no future trigger (DESIGN §3.1's new
+"must never stall silently" section, §8.1's note beside `stale`, §11.1/§11.2).
+
+1. **A recovery pass in the periodic sweep** (`engine.ts` `sweepStale`). Same walk, same shortlist as
+   the `stale` breaker — open, not waiting on a human, no turn in `planned`/`running` — because that
+   shortlist *is* "nothing is driving this". `assignment.recoverAfterMinutes` (new, default 2) calls
+   `advance()`; `assignment.maxAgeHours` still halts, and is evaluated **first** so an assignment
+   idle for a day gets its card rather than a quiet re-advance. Assignments with no driver (a user's
+   `solo`) are skipped rather than logged at every tick.
+2. **A one-shot relaunch, 30 s after a failed launch** (`engine.ts` `scheduleRelaunch`, on the same
+   injectable `timers` the notifier uses). `launch()`'s catch already marked the turn `failed`; the
+   advance that called it was already spent, so the pattern's own retry rule was correct and
+   unreachable. Exactly one timer per failure — the second failure trips `turn_failures`.
+3. **An escape from the `awaiting_answer` dead-end** (`patterns.ts` `answeredOrWait`).
+   `AssignmentState` gains `hasOpenQuestion`, resolved by the engine against the inbox so `plan()`
+   stays a pure function of persisted state. A stale answer (or none at all) with nothing open
+   re-plans the same seat and round with `retryOf` recorded. Bounded to once per seat-and-round,
+   because `blocked` is the one terminal status no §8.1 counter watches; `undefined` keeps the wait,
+   so a build that cannot read the inbox never concludes that nothing is in it.
+4. **`exit_reason` on `assignment_turns`** (`migrations/orchestrator/0003_turn_exit_reason.sql`),
+   carried onto §11.2's turn entry and rendered by `web/src/assignments/conversation.ts`. Runner's
+   §2.3 vocabulary, copied not re-declared. `launch_failed` is the case it exists for: that turn has
+   no session to click through to, so the row is the only place its cause can be read.
+5. Sweep cadence moved from a quarter of `maxAgeHours` (six hours) to half of
+   `recoverAfterMinutes`, floored at 30 s — a two-minute knob behind a six-hour timer means nothing.
+
+**Acceptance**
+- A `startSession` that rejects fails the turn `launch_failed`, and the scheduled retry launches the
+  same seat and round successfully; two consecutive rejections halt `turn_failures` with exactly one
+  card, and the third advance never reaches the runner at all.
+- An open, running assignment with no live turn is left alone inside `recoverAfterMinutes` and
+  advanced past it; the same assignment left for `maxAgeHours` halts `stale` instead, with nothing
+  re-planned on the way past; a driverless `solo` is never touched.
+- A blocked turn with a stale answer and no open card re-plans with `retryOf`; with an open card it
+  still waits; a second blocked turn in the same round waits rather than retrying again.
+- A `failed` turn renders in the web timeline with its exit reason as a sentence, and the
+  launch-failed case also says it never reached a session.
+
+---
+
 ## Not in v1
 
 The `review` pattern, parallel turns within one assignment, per-child review the moment a child

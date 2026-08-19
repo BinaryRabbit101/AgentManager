@@ -291,7 +291,7 @@ describe('migrations (M0-3)', () => {
   it('applies migrations/orchestrator/ after foundation and records it under "orchestrator"', async () => {
     const booted = await bootCore();
 
-    expect(booted.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(2);
+    expect(booted.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(3);
     const ledger = booted.storage.db
       .prepare<[], { module: string; version: number }>(
         'SELECT module, version FROM schema_migrations',
@@ -313,7 +313,7 @@ describe('migrations (M0-3)', () => {
     service = undefined;
 
     const second = await bootCore();
-    expect(second.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(2);
+    expect(second.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(3);
     const health = await second.health();
     expect(health.status).toBe('ok');
   });
@@ -325,7 +325,12 @@ describe('configuration (M0-2)', () => {
     expect(booted.config.orchestrator).toMatchObject({
       patterns: { pair: { roundCap: 3, maxRoundCap: 6 } },
       budgets: { defaultPairTokens: 400_000, turnEstimateTokens: 25_000 },
-      assignment: { maxAgeHours: 24, maxConcurrentPerAgent: 2, maxNestingDepth: 1 },
+      assignment: {
+        maxAgeHours: 24,
+        recoverAfterMinutes: 2,
+        maxConcurrentPerAgent: 2,
+        maxNestingDepth: 1,
+      },
       questions: { joinWindowMs: 120_000 },
       mailbox: { inlineMax: 10, inlineMaxBytes: 8192 },
       prompt: { maxBytes: 16_384 },

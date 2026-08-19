@@ -89,6 +89,7 @@ function turn(overrides: Partial<TurnRow> & { seat: string; status: TurnStatus }
     artifactHash: null,
     startedAt: '2026-08-16T10:00:00.000Z',
     endedAt: '2026-08-16T10:05:00.000Z',
+    exitReason: null,
     retryOfTurnId: null,
     ...overrides,
   };
@@ -485,6 +486,58 @@ describe('a blocked seat waits for the user, then resumes (§3.3, §4.4)', () =>
         },
       }),
     ).toEqual({ wait: true, reason: 'awaiting_answer' });
+  });
+
+  // WO1: the wait is only correct while an answer is still possible. When the
+  // only answer there is landed *before* the seat blocked and nothing is open,
+  // no `question.answered` will ever arrive — the assignment is wedged.
+  const staleAnswer = {
+    id: 'q0',
+    seat: DRAFTER_SEAT,
+    prompt: 'An older question',
+    answerText: 'yes',
+    answeredAt: '2026-08-16T09:00:00.000Z',
+  };
+
+  it('re-plans the seat when the answer is stale and no card is open', () => {
+    const first = blocked();
+    expect(
+      plan([first], { openQuestion: staleAnswer, hasOpenQuestion: false }),
+    ).toMatchObject({
+      seat: DRAFTER_SEAT,
+      round: 1,
+      prompt: { intent: 'retry', retryOfTurnId: first.id },
+    });
+  });
+
+  it('re-plans a seat that blocked without ever raising a card', () => {
+    const first = blocked();
+    expect(plan([first], { hasOpenQuestion: false })).toMatchObject({
+      seat: DRAFTER_SEAT,
+      round: 1,
+      prompt: { intent: 'retry', retryOfTurnId: first.id },
+    });
+  });
+
+  it('still waits while a card is open, however stale the last answer is', () => {
+    expect(
+      plan([blocked()], { openQuestion: staleAnswer, hasOpenQuestion: true }),
+    ).toEqual({ wait: true, reason: 'awaiting_answer' });
+  });
+
+  it('retries a blocked seat once per round, then waits rather than spinning', () => {
+    expect(
+      plan([blocked(), blocked()], { openQuestion: staleAnswer, hasOpenQuestion: false }),
+    ).toEqual({ wait: true, reason: 'awaiting_answer' });
+  });
+
+  it('keeps waiting when the build cannot see the inbox at all', () => {
+    // `hasOpenQuestion: undefined` is "this build could not tell". A state that
+    // cannot read the inbox must not conclude that nothing is in it.
+    expect(plan([blocked()], { openQuestion: staleAnswer })).toEqual({
+      wait: true,
+      reason: 'awaiting_answer',
+    });
   });
 });
 

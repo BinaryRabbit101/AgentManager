@@ -86,6 +86,7 @@ function aRound(round: number, decision: 'accept' | 'revise'): ConversationRound
         excerpt: 'I moved the write path behind a queue.',
         startedAt: '2026-08-17T09:05:00.000Z',
         endedAt: '2026-08-17T09:10:00.000Z',
+        exitReason: null,
         retryOfTurnId: null,
       },
       {
@@ -113,6 +114,7 @@ function aRound(round: number, decision: 'accept' | 'revise'): ConversationRound
         excerpt: null,
         startedAt: '2026-08-17T09:15:00.000Z',
         endedAt: '2026-08-17T09:20:00.000Z',
+        exitReason: null,
         retryOfTurnId: null,
       },
     ],

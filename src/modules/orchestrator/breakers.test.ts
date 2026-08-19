@@ -53,6 +53,7 @@ function turn(overrides: Partial<TurnRow> & { status: TurnStatus }): TurnRow {
     startedAt: '2026-08-16T10:00:00.000Z',
     endedAt: '2026-08-16T10:01:00.000Z',
     permissionDenials: 0,
+    exitReason: null,
     retryOfTurnId: null,
     ...overrides,
   };

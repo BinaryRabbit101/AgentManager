@@ -161,8 +161,9 @@ describe('the element migration, through boot', () => {
       // topological order (§1.3) — `roster` sits before `projects`, which sits
       // before `runner`, which sits before `orchestrator`. One entry per
       // *migration*, so `projects` and `orchestrator` each appear twice (their
-      // 0001 plus 0002_lease_scope / 0002_breakers) and `runner` three times
-      // (0001 plus 0002_usage and M11's 0003_usage_windows).
+      // 0001 plus 0002_lease_scope) and `runner` and `orchestrator` three times
+      // (0001 plus 0002_usage and M11's 0003_usage_windows for runner; 0001 plus
+      // 0002_breakers and 0003_turn_exit_reason for orchestrator).
       'foundation',
       'roster',
       'projects',
@@ -170,6 +171,7 @@ describe('the element migration, through boot', () => {
       'runner',
       'runner',
       'runner',
+      'orchestrator',
       'orchestrator',
       'orchestrator',
     ]);
@@ -182,6 +184,7 @@ describe('the element migration, through boot', () => {
     expect(rows).toEqual([
       { module: 'orchestrator', version: 1 },
       { module: 'orchestrator', version: 2 },
+      { module: 'orchestrator', version: 3 },
       { module: 'projects', version: 1 },
       { module: 'projects', version: 2 },
       { module: 'roster', version: 1 },
