@@ -19,7 +19,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { queryKeys } from '../api/queries';
+import { queryKeys, usePermissionCatalogue } from '../api/queries';
 import type { ApiFailure } from '../api/result';
 import { MODEL_TIERS, type AgentView, type DraftResponse } from '../api/types';
 import { useServices } from '../app/AppContext';
@@ -36,6 +36,10 @@ export function AgentWizard(): ReactElement {
   const { client } = useServices();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  // Fetched at step 1 so step 3's rule picker is already populated — the whole
+  // wizard is measured against "under a minute", and a spinner inside a fieldset
+  // spends some of it (§7.1, WO2).
+  const catalogue = usePermissionCatalogue(client);
 
   const [step, setStep] = useState<Step>('describe');
   const [description, setDescription] = useState('');
@@ -189,6 +193,7 @@ export function AgentWizard(): ReactElement {
         rationale={response.rationale}
         suggestedSkills={response.suggestedSkills}
         suggestedIntegrations={response.suggestedIntegrations}
+        catalogue={catalogue.data}
         idPrefix="wizard"
       >
         {response.degraded ? (

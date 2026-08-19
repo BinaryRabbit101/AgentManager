@@ -169,6 +169,8 @@ describe('module registration', () => {
       'GET /api/roster/agents/:id/integrations',
       'GET /api/roster/connectors',
       'GET /api/roster/connectors/:id',
+      // Static, and the same list the drafting prompt is built from (§6.3, WO2).
+      'GET /api/roster/permission-catalogue',
       'GET /api/roster/templates',
       'GET /api/roster/templates/:id',
       'PATCH /api/roster/agents/:id',

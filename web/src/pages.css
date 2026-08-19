@@ -244,6 +244,123 @@
   border-radius: var(--radius-xs);
 }
 
+/* Permissions as chips and a picker (§7.1, WO2). The rules are monospace
+   everywhere they appear — on the chip, in the catalogue row, on the Add button
+   — because a permission rule is a string with significant punctuation and a
+   proportional font is where `Bash(* > *)` stops being readable. */
+.editor__bucket {
+  display: block;
+  font-weight: var(--weight-semibold);
+  margin-block-end: var(--space-1);
+}
+
+.editor__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  min-width: 0;
+}
+
+.editor__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  font-size: var(--font-size-meta);
+}
+
+.editor__chip code {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+
+.editor__chip button {
+  min-inline-size: 1.5rem;
+  min-block-size: 1.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.editor__chip button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.editor__picker {
+  margin-block-start: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.editor__picker-group h4 {
+  margin: var(--space-2) 0 var(--space-1);
+  font-size: var(--font-size-meta);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.editor__picker-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.editor__picker-group button {
+  display: block;
+  inline-size: 100%;
+  text-align: start;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: var(--font-size-meta);
+}
+
+.editor__picker-group button:hover {
+  background: var(--surface-hover);
+}
+
+.editor__picker-group code {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+
+/* The soft "usually deny" note beside a catalogue entry — a hint and never a
+   refusal, so it is quiet rather than coloured like a warning. */
+.editor__hint {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.editor__compose {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--space-2);
+  margin-block-start: var(--space-3);
+  min-width: 0;
+}
+
+.editor__compose .field {
+  flex: 1 1 10rem;
+  margin: 0;
+  min-width: 0;
+}
+
 .editor textarea {
   inline-size: 100%;
   min-block-size: 6rem;

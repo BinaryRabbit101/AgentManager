@@ -49,6 +49,7 @@ import { z } from 'zod';
 
 import type { Diagnostic } from './contracts.js';
 import { ORCHESTRATION_TOOL_PREFIX } from './overseer.js';
+import { CATALOGUE_RULES, PERMISSION_RULE_CATALOGUE } from './permissionCatalogue.js';
 import { ASK_USER_QUESTION_TOOL } from './sdkRules.js';
 import {
   AGENT_SCHEMA_VERSION,
@@ -157,47 +158,17 @@ const TIER_MODELS: Readonly<Record<ModelTier, string>> = {
 
 /**
  * The fixed catalogue of tool rules the prompt supplies and the draft is held
- * to (§12.2).
+ * to (§12.2) — **defined in `permissionCatalogue.ts` and re-exported here.**
  *
- * Three deliberate absences. `AskUserQuestion` is not here because a bare allow
- * on it auto-approves the question before `canUseTool` sees it and silently
- * disables the question bridge (runner SDK-NOTES C2, applied in `sdkRules.ts`).
- * The subagent tool is not here because D4 forbids it outright (§11). And
- * `mcp__agentmanager__*` is not here because that namespace is compiled from
- * `capabilities`, never declared (§11, `overseer.ts`).
+ * WO2 moved it so the editor could show the same twenty sentences to a human
+ * (§6.3). Re-exported rather than left behind an import so every existing
+ * caller — and every test that asserts the prompt carries the catalogue — keeps
+ * reading it from the module that uses it, while there is still exactly one
+ * list. The prompt and the picker cannot describe a rule differently because
+ * there is only one description to read.
  */
-export interface CatalogueRule {
-  readonly rule: string;
-  readonly description: string;
-}
-
-export const PERMISSION_RULE_CATALOGUE: readonly CatalogueRule[] = [
-  { rule: 'Read', description: 'read any file in the workspace' },
-  { rule: 'Glob', description: 'find files by name pattern' },
-  { rule: 'Grep', description: 'search file contents' },
-  { rule: 'Edit', description: 'edit an existing file (the only rule that scopes file writes)' },
-  { rule: 'Write', description: 'create a file' },
-  { rule: 'NotebookEdit', description: 'edit a Jupyter notebook' },
-  { rule: 'TodoWrite', description: 'keep its own task list' },
-  { rule: 'WebSearch', description: 'search the web' },
-  { rule: 'WebFetch', description: 'fetch a named URL' },
-  { rule: 'Bash(git status)', description: 'see what changed' },
-  { rule: 'Bash(git diff*)', description: 'read the diff' },
-  { rule: 'Bash(git add*)', description: 'stage changes' },
-  { rule: 'Bash(git commit*)', description: 'commit — deny for a reviewer or a researcher' },
-  { rule: 'Bash(git push*)', description: 'push — deny unless the agent genuinely ships' },
-  { rule: 'Bash(npm run test:*)', description: 'run the test suite' },
-  { rule: 'Bash(npm run lint)', description: 'run the linter' },
-  { rule: 'Bash(npm run build)', description: 'build the project' },
-  { rule: 'Bash(npm install*)', description: 'install dependencies — usually deny' },
-  { rule: 'Bash(rm *)', description: 'delete files — deny unless there is a reason' },
-  { rule: 'Bash(* > *)', description: 'shell redirection, which is a write — usually deny' },
-];
-
-/** The rule strings only, for the sanitiser and the prompt. */
-export const CATALOGUE_RULES: readonly string[] = PERMISSION_RULE_CATALOGUE.map(
-  (entry) => entry.rule,
-);
+export type { CatalogueRule } from './permissionCatalogue.js';
+export { CATALOGUE_RULES, PERMISSION_RULE_CATALOGUE } from './permissionCatalogue.js';
 
 // ---------------------------------------------------------------------------
 // Request and response (§12.1, §12.3)

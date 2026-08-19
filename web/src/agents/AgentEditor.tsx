@@ -20,12 +20,12 @@ import { useState, type ReactElement, type ReactNode } from 'react';
 import {
   EFFORT_LEVELS,
   MODEL_ALIASES,
-  PERMISSION_MODES,
   PERSONA_MODES,
   ROLES,
   SPECIALTIES,
   type Diagnostic,
   type IntegrationCredentialStatus,
+  type PermissionCatalogue,
   type Role,
   type SuggestedIntegration,
   type SuggestedSkill,
@@ -33,6 +33,7 @@ import {
 
 import { REPLACE_PERSONA_WARNING, type EditorModel } from './editorModel';
 import { IntegrationsPanel } from './IntegrationsPanel';
+import { PermissionsPanel } from './PermissionsPanel';
 
 export interface AgentEditorProps {
   readonly model: EditorModel;
@@ -45,6 +46,15 @@ export interface AgentEditorProps {
   readonly credentials?: readonly IntegrationCredentialStatus[];
   /** roster's diagnostics; the panel picks out the `integrations.*` ones. */
   readonly diagnostics?: readonly Diagnostic[];
+  /**
+   * `GET /api/roster/permission-catalogue` (roster §6.3, WO2).
+   *
+   * A prop rather than a fetch of this component's own, like every other piece
+   * of server data here: the editor is mountable without a network, which is
+   * what lets three entrances share it. Absent — the query is loading, or the
+   * core predates the route — degrades the picker to Compose + Raw.
+   */
+  readonly catalogue?: PermissionCatalogue | undefined;
   /** An id prefix, so two editors side by side (redraft) keep distinct labels. */
   readonly idPrefix?: string;
   /** Rendered above the form — the "cloned from" line, the degraded banner. */
@@ -182,6 +192,7 @@ export function AgentEditor({
   suggestedIntegrations = [],
   credentials = [],
   diagnostics = [],
+  catalogue,
   idPrefix = 'agent',
   children,
 }: AgentEditorProps): ReactElement {
@@ -355,43 +366,19 @@ export function AgentEditor({
         </div>
       </fieldset>
 
-      <fieldset>
-        <legend>Permissions</legend>
-        <Rationale text={rationale['permissions']} />
-        {/* §7.1: "a plain-language note that deny wins and allow is only
-            auto-approval". Said here because it is the single most common
-            misreading of a permission list. */}
-        <p className="editor__note">
-          Deny always wins. Allow is auto-approval, not a restriction — anything not allowed still
-          runs, it just asks first.
-        </p>
-        <div className="field">
-          <label htmlFor={at('permission-mode')}>Permission mode</label>
-          <select
-            id={at('permission-mode')}
-            value={model.permissionMode}
-            onChange={(event) => onChange({ permissionMode: event.target.value })}
-          >
-            <option value="">roster’s default</option>
-            {PERMISSION_MODES.map((mode) => (
-              <option key={mode} value={mode}>
-                {mode}
-              </option>
-            ))}
-          </select>
-        </div>
-        {(['allow', 'deny', 'ask'] as const).map((bucket) => (
-          <div className="field" key={bucket}>
-            <label htmlFor={at(bucket)}>{bucket}</label>
-            <textarea
-              id={at(bucket)}
-              rows={4}
-              value={model[bucket]}
-              onChange={(event) => onChange({ [bucket]: event.target.value })}
-            />
-          </div>
-        ))}
-      </fieldset>
+      {/*
+        Chips and a picker rather than three textareas (§7.1, WO2). The fieldset
+        moved out whole because it is the one group with a control of its own
+        rather than a field per fact — and because the catalogue it reads is the
+        only thing in this form that comes from a route of its own.
+      */}
+      <PermissionsPanel
+        model={model}
+        onChange={onChange}
+        rationale={<Rationale text={rationale['permissions']} />}
+        catalogue={catalogue}
+        idPrefix={idPrefix}
+      />
 
       <fieldset>
         <legend>Roles</legend>

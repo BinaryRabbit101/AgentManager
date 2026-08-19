@@ -252,6 +252,29 @@ export interface RosterListView {
 }
 
 // ---------------------------------------------------------------------------
+// The permission rule catalogue (roster §6.3, WO2)
+// ---------------------------------------------------------------------------
+
+/** The picker's sections. Presentation only — a definition holds rule strings. */
+export const CATALOGUE_GROUPS = ['read', 'edit', 'shell', 'git', 'web', 'other'] as const;
+export type CatalogueGroup = (typeof CATALOGUE_GROUPS)[number];
+
+/** One curated rule, as `GET /api/roster/permission-catalogue` returns it. */
+export interface PermissionCatalogueRule {
+  readonly rule: string;
+  readonly description: string;
+  readonly group: CatalogueGroup;
+  /** The bucket this entry's own description argues for — a hint, never a gate. */
+  readonly suggest: 'allow' | 'deny' | 'ask';
+}
+
+export interface PermissionCatalogue {
+  readonly rules: readonly PermissionCatalogueRule[];
+  /** roster's named tools, in the order it renders them — `Bash` first (§6.3). */
+  readonly tools: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
 // Task templates (roster §2.4, WO5)
 // ---------------------------------------------------------------------------
 

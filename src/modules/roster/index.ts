@@ -272,6 +272,13 @@ export {
 } from './roleAddenda.js';
 export type { RoleAddenda } from './roleAddenda.js';
 
+// The curated rules the drafting prompt is built from (§12.2) and the editor's
+// picker renders (§6.3, WO2). The two value exports come through the M8 block
+// below, which is where every existing caller already reads them; only the
+// grouping vocabulary the picker added is new here.
+export { CATALOGUE_GROUPS, CATALOGUE_SUGGESTIONS } from './permissionCatalogue.js';
+export type { CatalogueGroup, CatalogueSuggestion } from './permissionCatalogue.js';
+
 // M8 — draft-from-description (DESIGN §12).
 export {
   CATALOGUE_RULES,
@@ -292,6 +299,7 @@ export {
 } from './draft.js';
 export type {
   AgentDraft,
+  CatalogueRule,
   DraftDeps,
   DraftMessage,
   DraftQueryFn,

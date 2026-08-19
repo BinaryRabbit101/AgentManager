@@ -18,6 +18,7 @@ import type {
   ConversationView,
   EffectiveConfig,
   PatternListView,
+  PermissionCatalogue,
   RemoteAgentListView,
   RemoteStatus,
   RemoteTokenListView,
@@ -49,6 +50,9 @@ export const queryKeys = {
   /** Under the same `roster` prefix as the board, so §3.4's one `roster.*` rule
    *  refetches both halves of the library from one event (roster §2.4, WO5). */
   taskTemplates: ['roster', 'templates'] as const,
+  /** Static server-side (roster §6.3) — under the `roster` prefix for tidiness
+   *  rather than because anything invalidates it. */
+  permissionCatalogue: ['roster', 'permission-catalogue'] as const,
   projects: (includeArchived: boolean) => ['projects', { includeArchived }] as const,
   project: (id: string) => ['projects', 'one', id] as const,
   browse: (path: string | null) => ['fs', 'browse', path] as const,
@@ -109,6 +113,25 @@ export function useTaskTemplates(client: ApiClient): UseQueryResult<TaskTemplate
     queryKey: queryKeys.taskTemplates,
     queryFn: async () => unwrap(await client.request<TaskTemplateListView>('/roster/templates')),
     staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/**
+ * `GET /api/roster/permission-catalogue` — the editor's rule picker (§7.1, WO2).
+ *
+ * The answer never changes for the life of a core, so `staleTime` is `Infinity`:
+ * one request per app load, and no refetch on a remount of the editor.
+ *
+ * `retry: false` is inherited from the client, so a core that predates the route
+ * costs one 404 and the picker degrades to Compose + Raw — which is why the
+ * fieldset takes the catalogue as an optional prop rather than waiting on it.
+ */
+export function usePermissionCatalogue(client: ApiClient): UseQueryResult<PermissionCatalogue> {
+  return useQuery({
+    queryKey: queryKeys.permissionCatalogue,
+    queryFn: async () =>
+      unwrap(await client.request<PermissionCatalogue>('/roster/permission-catalogue')),
+    staleTime: Infinity,
   });
 }
 

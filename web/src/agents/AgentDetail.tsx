@@ -29,7 +29,13 @@ import { useEffect, useState, type ReactElement } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { ConfirmDialog } from '../a11y/ConfirmDialog';
-import { queryKeys, useAgent, useAgentSessions, useProjects } from '../api/queries';
+import {
+  queryKeys,
+  useAgent,
+  useAgentSessions,
+  usePermissionCatalogue,
+  useProjects,
+} from '../api/queries';
 import { failureOf, type ApiFailure } from '../api/result';
 import type { AgentView, RemoveAgentResult } from '../api/types';
 import { useServices } from '../app/AppContext';
@@ -46,6 +52,9 @@ export function AgentDetail(): ReactElement {
   const queryClient = useQueryClient();
   const agent = useAgent(client, id);
   const sessions = useAgentSessions(client, id);
+  // The editor's rule picker (§7.1, WO2). Never awaited and never gating: the
+  // form renders while this is in flight and stays usable if it never lands.
+  const catalogue = usePermissionCatalogue(client);
 
   const [model, setModel] = useState<EditorModel | undefined>();
   /** Which agent the form currently holds — Duplicate navigates between two. */
@@ -154,6 +163,7 @@ export function AgentDetail(): ReactElement {
         onChange={(patch) => setModel({ ...model, ...patch })}
         credentials={view.credentials ?? []}
         diagnostics={view.diagnostics}
+        catalogue={catalogue.data}
         idPrefix="agent"
       >
         {view.definition.meta.duplicatedFrom === undefined ||

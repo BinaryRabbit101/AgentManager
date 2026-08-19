@@ -507,6 +507,23 @@ list rather than an inventory, so nothing in the system enumerates the tools a s
 and fetch tools — and deliberately omits MCP tools, whose names differ per agent and per integration
 and would turn a glance into a list. An MCP gate that fires mid-run stays a question card.
 
+**The rule catalogue is served, not only prompted** *(added 2026-08-19, WO2)*. §12.2's twenty
+`{ rule, description }` pairs were the only plain-language explanation of permission rules in the
+system, and they were shown to Claude during drafting and to nobody else — the owner's report was
+that "knowing what to write for allow, deny, ask is nearly impossible". They now live in
+`permissionCatalogue.ts` (`draft.ts` re-exports them, so there is still one list and one set of
+words) and are served by `GET /api/roster/permission-catalogue` alongside `preflight.ts`'s tool
+names. Two fields were added for the editor and are ignored by the prompt: a `group`
+(`read | edit | shell | git | web | other`) for sectioning the picker, and a `suggest`
+(`allow | deny | ask`) read off each entry's own description — "usually deny" is `deny`, a
+description stating no posture is `allow`, and the two whose prose makes the answer depend on which
+agent this is are `ask`.
+
+The catalogue is a **suggestion surface, never a validator**: roster's `permissionRuleSchema` remains
+the only authority on what a rule may be, and the editor's picker composes `mcp__<server>__*` rules
+the catalogue could not contain. No `rule` string changed in the move, because `sanitisePermissions`
+holds a draft to exactly these strings (§12.2).
+
 ---
 
 ## 7. Skills packaging
@@ -605,6 +622,7 @@ with no roster-specific work.
 | `POST` | `/agents/:id/duplicate` | see below |
 | `GET` | `/agents/:id/export` | `.agentpack` (zip) download |
 | `GET` | `/agents/:id/integrations` | §10.2's preflight: `ready` / `needs-auth` / `missing-secret` / `missing-connector` per declared connector, plus `not-attached` for each name in `?required=a,b` the agent does not declare. Never a value |
+| `GET` | `/permission-catalogue` | §6.3's curated rules as `{ rules, tools }` — each rule with its plain-language description, its `group` and its suggested bucket, plus `preflight.ts`'s tool names for composing one. Static: no params, no per-agent data, no secrets |
 | `GET` | `/connectors` | §10.3's library: per entry `id`, `label`, `description`, `transport`, `toolPrefix`, `auth`, credential status as `{ secretRef, resolved }` — names only — and `usedBy`, the agent ids that reference it |
 | `POST` | `/connectors` | create; id derived from `label` if absent, collision-suffixed exactly as an agent's is |
 | `GET` | `/connectors/:id` | one connector, same shape. 404 for an unknown id **and** for a folder whose `connector.json` will not parse |

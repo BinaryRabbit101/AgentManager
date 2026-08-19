@@ -27,10 +27,12 @@ import { integrationsBody, integrationsOf, type IntegrationForm } from './integr
 /**
  * Everything the form holds, as strings where the form holds strings.
  *
- * Rule lists are edited as text — one rule per line — because v1 "edits rule
- * strings as text with validation from the server" (§20's deferred rule
- * builder), and because a textarea is the only control that round-trips an
- * arbitrary rule without inventing a grammar for it.
+ * Rule lists are **held** as text, one rule per line, and since WO2 they are
+ * *edited* as chips over a picker (`PermissionsPanel.tsx`). The storage did not
+ * change with the control, deliberately: newline-joined text round-trips an
+ * arbitrary rule without inventing a grammar for it, so the raw escape hatch and
+ * the catalogue write into the same field and {@link toCreateBody} never learned
+ * that anything happened.
  */
 export interface EditorModel {
   readonly name: string;

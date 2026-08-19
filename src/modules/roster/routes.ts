@@ -21,6 +21,7 @@
  * POST   /api/roster/import[?commit=true]   preview, then write (§9.4, M9)
  * GET    /api/roster/templates              task templates (§2.4, WO5)
  * GET    /api/roster/templates/:id          one task template
+ * GET    /api/roster/permission-catalogue   the curated rules + tool names (§6.3, WO2)
  * GET    /api/roster/connectors             the connector library (§10.3, WO3)
  * POST   /api/roster/connectors             create; id from the label when absent
  * GET    /api/roster/connectors/:id         one connector
@@ -29,6 +30,13 @@
  * ```
  *
  * That is §9.1's table, plus three routes §9.1 does not list.
+ *
+ * `/permission-catalogue` is **static** — no params, no per-agent data, no
+ * service call — and is a route rather than a bundled constant because the
+ * catalogue is the same list drafting is held to (§12.2) and a copy in the
+ * frontend would be a second one. A core that predates it 404s and the editor
+ * degrades to composing and raw entry, which is why nothing about the form
+ * depends on the answer arriving.
  *
  * `/connectors` is the one library folder with a **write** surface, which is the
  * opposite of `/templates` below and deliberate: the owner's complaint was that
@@ -82,6 +90,8 @@ import type { RouteDefinition } from '../types.js';
 import { firstFilePart, multipartBoundary, readAvatarUpload } from './avatar.js';
 import { RosterValidationError } from './errors.js';
 import { PACK_CONTENT_TYPE } from './pack.js';
+import { PERMISSION_RULE_CATALOGUE } from './permissionCatalogue.js';
+import { PREFLIGHT_TOOL_CATALOGUE } from './preflight.js';
 import type { RosterService } from './service.js';
 import { RosterServiceError } from './serviceErrors.js';
 
@@ -397,6 +407,19 @@ export function createRosterRoutes(deps: RosterRoutesDeps): RouteDefinition[] {
       description: 'One task template. 404 for an unknown id and for one that will not parse.',
       handler: (req, res) =>
         answering(logger, req, res, () => res.json(service.getTemplate(id(req)))),
+    },
+
+    {
+      method: 'GET',
+      path: `${ROSTER_API_PREFIX}/permission-catalogue`,
+      description:
+        'The curated permission rules with their plain-language descriptions, and the tool names a rule may scope.',
+      // Two constants and nothing else — the same objects `draft.ts` puts in the
+      // drafting prompt, so the picker and the prompt cannot drift.
+      handler: (req, res) =>
+        answering(logger, req, res, () =>
+          res.json({ rules: PERMISSION_RULE_CATALOGUE, tools: PREFLIGHT_TOOL_CATALOGUE }),
+        ),
     },
 
     {
