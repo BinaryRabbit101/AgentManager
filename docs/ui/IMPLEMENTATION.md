@@ -302,8 +302,10 @@ Thin wrapper, seven responsibilities, nothing else.
 - A completed 3-round pair renders as an ordered, readable dialogue: who spoke, in which seat, in which
   round, with the report headline, the verdict chip, blocking issues, and the artifact link; every turn
   links to its full session transcript.
-- Message entries show `inlined`, `read` and **`undelivered`** distinctly; the undelivered case is
-  labelled as never seen by the recipient.
+- Message entries show `inlined`, `read` and **`undelivered`** distinctly, and `undelivered` reads off
+  the assignment's status (§10.2): on an open assignment it is labelled as waiting on the named
+  recipient's next turn, and only on a closed one — or as `undeliverable` — is it labelled as never
+  seen by the recipient.
 - Phase, rounds used/cap and tokens used/budget are visible without scrolling on desktop and above the
   fold on phone.
 - The budget is shown in **tokens**; no currency figure appears in this view.

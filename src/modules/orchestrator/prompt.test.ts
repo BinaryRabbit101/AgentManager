@@ -14,6 +14,7 @@ import type { PromptSpec } from './patterns.js';
 import {
   byteLength,
   composePrompt,
+  MAILBOX_TEMPO,
   REPORT_STATUS_TOOL,
   type ComposePromptInput,
 } from './prompt.js';
@@ -265,18 +266,77 @@ describe('the byte cap (§3.2)', () => {
 });
 
 describe('a solo prompt is the same machinery with a different seat sentence', () => {
+  const solo = (): ComposePromptInput =>
+    input({
+      patternId: 'solo',
+      spec: { intent: 'draft', seat: 'solo', round: 1 },
+      role: 'implementer',
+      roundCap: null,
+      tokenBudget: null,
+    });
+
   it('names the role rather than a pair seat, and omits the pair convergence rule', () => {
-    const composed = composePrompt(
-      input({
-        patternId: 'solo',
-        spec: { intent: 'draft', seat: 'solo', round: 1 },
-        role: 'implementer',
-        roundCap: null,
-        tokenBudget: null,
-      }),
-    );
+    const composed = composePrompt(solo());
     expect(composed.text).toContain('You are the implementer on this assignment.');
     expect(composed.text).toContain('this assignment has no round cap');
     expect(composed.text).not.toContain('Convergence:');
+  });
+
+  it('says nothing about the mailbox tempo — a lone seat has nobody to message', () => {
+    expect(composePrompt(solo()).text).not.toContain(MAILBOX_TEMPO);
+  });
+});
+
+/**
+ * §5.1's delivery table, said to the agent that has to live by it.
+ *
+ * The sequential driver cannot answer a message inside the turn that sent it,
+ * and a seat that does not know this spends the turn waiting. One constant, so
+ * the two multi-seat patterns cannot drift into telling agents different things.
+ */
+describe('the mailbox tempo (§3.2 section 2, §5.1)', () => {
+  const occurrences = (text: string): number => text.split(MAILBOX_TEMPO).length - 1;
+
+  it('tells a pair seat the mail it sends lands at the recipient’s next turn', () => {
+    const composed = composePrompt(input());
+    expect(composed.text).toContain(MAILBOX_TEMPO);
+    expect(occurrences(composed.text)).toBe(1);
+    expect(composed.text).toContain('never mid-turn');
+  });
+
+  it('tells an overseer lead the same thing, in the same words', () => {
+    const composed = composePrompt(
+      input({ patternId: 'overseer', spec: { intent: 'decompose', seat: 'lead', round: 1 } }),
+    );
+    expect(occurrences(composed.text)).toBe(1);
+  });
+
+  it('says it once whether or not there is mail to read', () => {
+    // Section 4 only exists when mail is waiting; the rule the sender needs
+    // cannot be conditional on the sender's own inbox being full.
+    expect(occurrences(composePrompt(input({ mail: mail(2) })).text)).toBe(1);
+    expect(occurrences(composePrompt(input({ mail: NO_MAIL })).text)).toBe(1);
+  });
+
+  it('survives the byte cap, because it is part of the seat and not context', () => {
+    const composed = composePrompt(
+      input({
+        budgets: { maxBytes: 2400, excerptBytes: 40_000 },
+        spec: {
+          intent: 'revise',
+          seat: 'drafter',
+          round: 2,
+          handoff: {
+            seat: 'critic',
+            agentId: 'sam',
+            headline: 'issues',
+            excerpt: 'z'.repeat(40_000),
+          },
+        },
+        mail: mail(3, 'y'.repeat(2000)),
+      }),
+    );
+    expect(composed.truncated).toBe(true);
+    expect(composed.text).toContain(MAILBOX_TEMPO);
   });
 });

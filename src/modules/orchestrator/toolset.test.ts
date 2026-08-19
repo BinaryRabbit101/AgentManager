@@ -12,6 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { MAILBOX_TEMPO } from './prompt.js';
 import {
   TOOLSET_SERVER_KEY,
   WORKER_TOOL_NAMES,
@@ -195,6 +196,10 @@ describe('send_to_agent and read_mailbox (§4.3, §5.1)', () => {
       delivery: 'mailbox',
       recipientWillSeeIt: 'at its next turn in this assignment',
     });
+    // The tool's answer and the prompt's tempo sentence are the same claim, so
+    // they have to agree: an agent told two different things about when its mail
+    // arrives will believe the one that suits it and wait for a mid-turn reply.
+    expect(MAILBOX_TEMPO).toContain('next turn');
 
     const read = await toolsetFor('sam').call('read_mailbox', {});
     const payload = payloadOf(read) as {

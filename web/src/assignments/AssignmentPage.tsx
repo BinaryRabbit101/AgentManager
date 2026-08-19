@@ -51,6 +51,7 @@ import {
   bannerFor,
   deliveryWord,
   entryKey,
+  type DeliveryContext,
   hasTurnInFlight,
   isSolo,
   isUnseen,
@@ -234,7 +235,17 @@ export function AssignmentPage(): ReactElement {
         <ol className="assignment__rounds-list">
           {conversation.data.rounds.map((round) => (
             <li key={round.round}>
-              <RoundSection round={round} agents={namesById} solo={solo} />
+              {/*
+                The open/closed fact travels with the rounds because a message's
+                delivery label depends on it: while the assignment is open an
+                undelivered message is still going to arrive (§10.2).
+              */}
+              <RoundSection
+                round={round}
+                agents={namesById}
+                solo={solo}
+                assignmentOpen={view.status === 'open'}
+              />
             </li>
           ))}
         </ol>
@@ -247,10 +258,12 @@ function RoundSection({
   round,
   agents,
   solo,
+  assignmentOpen,
 }: {
   readonly round: ConversationRound;
   readonly agents: ReadonlyMap<string, AgentView>;
   readonly solo: boolean;
+  readonly assignmentOpen: boolean;
 }): ReactElement {
   return (
     <section className="assignment__round" aria-label={`Round ${String(round.round)}`}>
@@ -258,7 +271,12 @@ function RoundSection({
       <ol className="assignment__entries">
         {round.entries.map((entry) => (
           <li key={entryKey(entry)} data-entry={entry.type}>
-            <Entry entry={entry} round={round.round} agents={agents} />
+            <Entry
+              entry={entry}
+              round={round.round}
+              agents={agents}
+              assignmentOpen={assignmentOpen}
+            />
           </li>
         ))}
       </ol>
@@ -270,16 +288,18 @@ function Entry({
   entry,
   round,
   agents,
+  assignmentOpen,
 }: {
   readonly entry: ConversationEntry;
   readonly round: number;
   readonly agents: ReadonlyMap<string, AgentView>;
+  readonly assignmentOpen: boolean;
 }): ReactElement {
   switch (entry.type) {
     case 'turn':
       return <TurnEntry turn={entry} round={round} agents={agents} />;
     case 'message':
-      return <MessageEntry message={entry} agents={agents} />;
+      return <MessageEntry message={entry} agents={agents} assignmentOpen={assignmentOpen} />;
     case 'question':
       return <QuestionEntry question={entry} agents={agents} />;
   }
@@ -394,10 +414,18 @@ function TurnEntry({
 function MessageEntry({
   message,
   agents,
+  assignmentOpen,
 }: {
   readonly message: ConversationMessageEntry;
   readonly agents: ReadonlyMap<string, AgentView>;
+  readonly assignmentOpen: boolean;
 }): ReactElement {
+  // The recipient's name is already on the row above; the waiting label reuses
+  // it rather than inventing a second way to say who this is for.
+  const delivery: DeliveryContext = {
+    assignmentOpen,
+    recipientName: message.to === null ? null : nameOf(agents, message.to),
+  };
   return (
     <article className="message" data-delivery={message.delivery} data-kind={message.kind}>
       <p className="message__who">
@@ -410,10 +438,14 @@ function MessageEntry({
       {/*
         §16.5: "I sent it and they ignored me" and "I sent it and they never saw
         it" are different failures, so the unseen states are marked rather than
-        merely coloured.
+        merely coloured. A message still waiting on the recipient's next turn is
+        neither of those, and is not marked.
       */}
-      <p className="message__delivery" data-unseen={isUnseen(message.delivery) ? 'true' : 'false'}>
-        {deliveryWord(message.delivery)}
+      <p
+        className="message__delivery"
+        data-unseen={isUnseen(message.delivery, delivery) ? 'true' : 'false'}
+      >
+        {deliveryWord(message.delivery, delivery)}
       </p>
     </article>
   );
