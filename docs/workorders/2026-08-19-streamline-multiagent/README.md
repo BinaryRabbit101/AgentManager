@@ -44,6 +44,7 @@ failure is reproducible from the code alone:
 | WO4 | `WO4-frictionless-start.md` | ui, orchestrator, roster, runner | WO2 (artifact default) |
 | WO5 | `WO5-task-templates.md` | roster, orchestrator, ui | WO4 (start flow) |
 | WO6 | `WO6-oauth-connectors.md` | roster, foundation, runner, orchestrator, ui | WO4 (preflight surface) |
+| WO7 | `WO7-token-economy.md` | orchestrator, roster, ui | — |
 
 WO1–WO3 are independent and can run in parallel worktrees. WO4 builds on WO2's artifact
 defaulting; WO5 builds on WO4's start flow.
