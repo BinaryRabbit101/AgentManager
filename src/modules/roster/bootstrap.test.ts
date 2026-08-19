@@ -57,7 +57,9 @@ describe('first run against an empty, existing directory (§4.4)', () => {
     expect(existsSync(join(library, 'roster.json'))).toBe(true);
     expect(existsSync(join(library, '.gitignore'))).toBe(true);
     expect(statSync(join(library, 'agents')).isDirectory()).toBe(true);
-    expect(result.created).toHaveLength(3);
+    // §2.4's `templates/` is created alongside `agents/` (WO5).
+    expect(statSync(join(library, 'templates')).isDirectory()).toBe(true);
+    expect(result.created).toHaveLength(4);
     expect(result.gitInitialised).toBe(true);
     expect(result.diagnostics).toEqual([]);
 
@@ -78,6 +80,8 @@ describe('first run against an empty, existing directory (§4.4)', () => {
       // Seeding is M10's; a bootstrap that claimed otherwise would make the
       // seeding milestone a no-op on an already-bootstrapped library.
       seededAt: null,
+      // WO5's second stamp, unset for the same reason and on its own schedule.
+      templatesSeededAt: null,
     });
   });
 

@@ -144,6 +144,7 @@ describe('the request bodies (§16.7, §10.4)', () => {
         write: false,
         workItemIds: [],
         preGrants: [],
+        templateId: null,
         confirmRemoteAccess: false,
       }),
     ).toEqual({ projectId: 'lpm', agentId: 'ada', prompt: 'go' });
@@ -157,6 +158,7 @@ describe('the request bodies (§16.7, §10.4)', () => {
         write: true,
         workItemIds: ['wi_1'],
         preGrants: [],
+        templateId: null,
         confirmRemoteAccess: true,
       }),
     ).toEqual({
@@ -181,6 +183,7 @@ describe('the request bodies (§16.7, §10.4)', () => {
       roundCap: '3',
       tokenBudget: '900000',
       preGrants: [],
+      templateId: null,
       confirmRemoteAccess: false,
     });
     expect(body.autoStart).toBe(false);
@@ -199,6 +202,7 @@ describe('the request bodies (§16.7, §10.4)', () => {
       roundCap: '',
       tokenBudget: '',
       preGrants: [],
+      templateId: null,
       confirmRemoteAccess: false,
     });
     expect(empty).not.toHaveProperty('roundCap');

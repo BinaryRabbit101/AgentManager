@@ -1,0 +1,27 @@
+-- 0006_template_id.sql — which task template an assignment was started from
+-- (orchestrator DESIGN §2.1, §2.3; roster §2.4; WO5).
+--
+-- Provenance, and only provenance. A template is a *prefill* of the creation
+-- call: by the time a row exists, everything the template contributed — the
+-- goal, the artifact path, the pre-grants, the pattern — is already stored in
+-- the columns that own those things, and nothing at runtime reads this one to
+-- decide anything. What it answers is the question the columns cannot: "was
+-- this one of the recurring jobs, and which?" — so a person can see that six
+-- assignments came from "Reply to todo tickets" rather than six people
+-- independently typing the same brief.
+--
+-- Deliberately **not** a foreign key, and not validated against the library at
+-- creation. Templates are files in a git repository the owner may rename,
+-- delete or `git checkout` past (roster §2.1); an assignment that lost its
+-- template must keep its history rather than fail to load, and a create call
+-- must not start refusing because somebody pruned a folder. An id that no
+-- longer resolves reads as exactly what it is: this came from a template that
+-- is not here any more.
+--
+-- Nullable with no default, because "no template" is the honest reading of an
+-- assignment created before templates existed and of every hand-filled one
+-- after.
+--
+-- Applied inside the migration runner's transaction: no BEGIN/COMMIT and no
+-- `IF NOT EXISTS`, per foundation §1.3 and the conventions of 0001-0005.
+ALTER TABLE assignments ADD COLUMN template_id TEXT;

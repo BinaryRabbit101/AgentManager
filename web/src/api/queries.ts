@@ -33,6 +33,7 @@ import type {
   QuestionStatus,
   RosterListView,
   SessionDetailView,
+  TaskTemplateListView,
   SessionListView,
   SessionStatus,
   WorkItemListView,
@@ -44,6 +45,9 @@ export const queryKeys = {
   config: ['config', 'effective'] as const,
   health: ['health'] as const,
   roster: ['roster', 'agents'] as const,
+  /** Under the same `roster` prefix as the board, so §3.4's one `roster.*` rule
+   *  refetches both halves of the library from one event (roster §2.4, WO5). */
+  taskTemplates: ['roster', 'templates'] as const,
   projects: (includeArchived: boolean) => ['projects', { includeArchived }] as const,
   project: (id: string) => ['projects', 'one', id] as const,
   browse: (path: string | null) => ['fs', 'browse', path] as const,
@@ -83,6 +87,22 @@ export function useRoster(client: ApiClient): UseQueryResult<RosterListView> {
   return useQuery({
     queryKey: queryKeys.roster,
     queryFn: async () => unwrap(await client.request<RosterListView>('/roster/agents')),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/**
+ * `GET /api/roster/templates` — the Start-work template strip (roster §2.4, WO5).
+ *
+ * `retry: false` is inherited from the client, so a core that predates the route
+ * costs one 404 per mount and the strip renders as the blank card alone — which
+ * is exactly today's flow, and the reason the blank card is first.
+ */
+export function useTaskTemplates(client: ApiClient): UseQueryResult<TaskTemplateListView> {
+  return useQuery({
+    queryKey: queryKeys.taskTemplates,
+    queryFn: async () =>
+      unwrap(await client.request<TaskTemplateListView>('/roster/templates')),
     staleTime: DEFAULT_STALE_TIME_MS,
   });
 }

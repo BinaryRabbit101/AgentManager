@@ -60,6 +60,22 @@ export class AgentNotFoundError extends RosterServiceError {
 }
 
 /**
+ * No task template with that id (§2.4, WO5).
+ *
+ * A 404 rather than an empty view, and it covers the malformed case too: a
+ * folder whose `template.json` will not parse is *not* a template, it is a
+ * diagnostic on the list, and answering `GET /templates/:id` with something for
+ * it would make a broken file look applied.
+ */
+export class TemplateNotFoundError extends RosterServiceError {
+  override readonly name = 'TemplateNotFoundError';
+
+  constructor(readonly templateId: string) {
+    super('template_not_found', `No task template with id "${templateId}".`, 404, { templateId });
+  }
+}
+
+/**
  * The agent exists but has been archived, and the operation needs a live one.
  *
  * Distinct from {@link AgentNotFoundError} because §9.3 keeps archived

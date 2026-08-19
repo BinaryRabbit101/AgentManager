@@ -104,13 +104,14 @@ describe('migrations/orchestrator/0001_orchestrator.sql', () => {
   it('re-applies cleanly on an existing database (M0 acceptance)', () => {
     storage.close();
     // The second open re-runs the migration *runner*, which must find the set
-    // already at its latest version and change nothing. Five files now: 0001's
+    // already at its latest version and change nothing. Six files now: 0001's
     // columns, 0002's `permission_denials` (§8.1's `tool_denials` input),
     // 0003's `exit_reason` (§11.2's "why did this turn fail"), 0004's
-    // `pre_grants_json` (§2.3's pre-answered gates) and 0005's
-    // `permission_denied_tools` (which calls were refused, not only how many).
+    // `pre_grants_json` (§2.3's pre-answered gates), 0005's
+    // `permission_denied_tools` (which calls were refused, not only how many)
+    // and 0006's `template_id` (which task template this came from, WO5).
     const reopened = openTestStorage(dir.path);
-    expect(reopened.setVersions['orchestrator']).toBe(5);
+    expect(reopened.setVersions['orchestrator']).toBe(6);
     const columns = (
       reopened.db.prepare('PRAGMA table_info(assignments)').all() as { name: string }[]
     ).filter((row) => row.name === 'phase');

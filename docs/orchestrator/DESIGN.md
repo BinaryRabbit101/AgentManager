@@ -88,6 +88,7 @@ ALTER TABLE assignments ADD COLUMN write                INTEGER NOT NULL DEFAULT
 ALTER TABLE assignments ADD COLUMN artifact_path        TEXT;   -- repo-relative; required by `pair`
 ALTER TABLE assignments ADD COLUMN pattern_config_json  TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE assignments ADD COLUMN pre_grants_json      TEXT NOT NULL DEFAULT '[]';  -- 0004, §2.3
+ALTER TABLE assignments ADD COLUMN template_id          TEXT;   -- 0006, §2.3: provenance only
 ALTER TABLE assignments ADD COLUMN phase                TEXT NOT NULL DEFAULT 'planned';
 ALTER TABLE assignments ADD COLUMN halt_reason          TEXT;
 ALTER TABLE assignments ADD COLUMN updated_at           TEXT;
@@ -225,6 +226,27 @@ Four properties are load-bearing, and each is a way this could have become somet
   `preGrantedTools` already filtered to that agent, and returns **none** when the caller named
   nobody. `role` may be resolved by the sole-member shortcut; a permission may not, because guessing
   it would pre-answer a card somebody else's user never saw.
+
+**Task-template provenance** *(added 2026-08-19, WO5)*.
+
+`CreateAssignmentRequest` and `createSolo` both accept an optional `templateId: string` — the
+roster task template (roster §2.4) the Start-work dialog was prefilled from. It is stored on the
+assignment as `template_id` (§2.1, migration 0006) and returned on the view.
+
+**Recorded, never acted on.** A template is a *prefill*: by the time a request reaches this
+function, everything the template contributed is already in `goal`, `scope.artifactPath`,
+`pattern`, `write` and `preGrants`, and nothing in the engine, the driver or the runner contract
+reads this column to decide anything. What it answers is the question those columns cannot — *was
+this one of the recurring jobs, and which?* — so a person can see that six assignments came from
+"Reply to todo tickets" rather than six people independently typing the same brief. **An
+assignment created from a template is byte-for-byte the same row as a hand-filled one, the id
+excepted**, and the element's tests assert exactly that.
+
+**Never validated against the library, and no foreign key.** Templates are files in a git
+repository the owner may rename, delete or `git checkout` past (roster §2.1). An assignment that
+lost its template must keep its history rather than fail to load, and a create call must not start
+refusing because somebody pruned a folder — an id that no longer resolves reads as exactly what it
+is. Orchestrator does not import roster to check it, which is also foundation §6.1's rule.
 
 **Work-item linking, on all three paths.** `workItemIds?: string[]` is accepted by
 `createSolo`, by `CreateAssignmentRequest`, and by `create_assignment` (§4.3). The engine is the

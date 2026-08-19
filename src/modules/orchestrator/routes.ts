@@ -198,6 +198,10 @@ function readCreateRequest(body: unknown): CreateAssignmentRequest {
   const roundCap = optionalNumberOrNull(record, 'roundCap');
   const workItemIds = optionalStringArray(record, 'workItemIds');
   const preGrants = readPreGrants(record);
+  // A body-shape read and nothing more (WO5): the id is recorded, never resolved
+  // against the library, so a template the owner has since deleted still leaves
+  // an honest trace rather than turning into a refusal.
+  const templateId = optionalString(record, 'templateId');
   const autoStart = optionalBoolean(record, 'autoStart');
 
   return {
@@ -211,6 +215,7 @@ function readCreateRequest(body: unknown): CreateAssignmentRequest {
     ...(roundCap === undefined ? {} : { roundCap }),
     ...(workItemIds === undefined ? {} : { workItemIds }),
     ...(preGrants === undefined ? {} : { preGrants }),
+    ...(templateId === undefined ? {} : { templateId }),
     ...(autoStart === undefined ? {} : { autoStart }),
     // `createdBy` and `parentAssignmentId` are deliberately **not** readable
     // from the body: an HTTP caller that could claim `overseer:<id>` would be
@@ -235,6 +240,7 @@ function readSoloRequest(body: unknown): CreateSoloRequest {
   const write = optionalBoolean(record, 'write');
   const workItemIds = optionalStringArray(record, 'workItemIds');
   const preGrants = readPreGrants(record);
+  const templateId = optionalString(record, 'templateId');
   const goal = optionalString(record, 'goal');
 
   return {
@@ -247,6 +253,7 @@ function readSoloRequest(body: unknown): CreateSoloRequest {
     ...(write === undefined ? {} : { write }),
     ...(workItemIds === undefined ? {} : { workItemIds }),
     ...(preGrants === undefined ? {} : { preGrants }),
+    ...(templateId === undefined ? {} : { templateId }),
     ...(goal === undefined ? {} : { goal }),
   };
 }

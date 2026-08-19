@@ -308,6 +308,7 @@ export {
   ROLES_DIRNAME,
   ROSTER_JSON_FILENAME,
   SKILLS_DIRNAME,
+  TEMPLATES_DIRNAME,
   TEMP_PREFIX,
   archiveStamp,
   createRosterStore,
@@ -344,17 +345,29 @@ export {
 // M10 — the starter roster and the library README (DESIGN §2.1).
 export {
   ADA,
+  EMAIL_REPLY_DRAFTS,
   LIBRARY_README,
   LIBRARY_README_FILENAME,
   MIRA,
   PRIYA,
   SAM,
   SEED_AGENTS,
+  SEED_TEMPLATES,
+  TODO_TICKET_REPLIES,
   seedDefinition,
   seedLibrary,
+  seedTemplateDefinition,
+  seedTemplates,
   writeLibraryReadme,
 } from './seed.js';
-export type { SeedAgent, SeedLibraryOptions, SeedResult } from './seed.js';
+export type {
+  SeedAgent,
+  SeedLibraryOptions,
+  SeedResult,
+  SeedTemplate,
+  SeedTemplatesOptions,
+  SeedTemplatesResult,
+} from './seed.js';
 export type {
   BootstrapLibraryOptions,
   BootstrapResult,
@@ -365,6 +378,37 @@ export type {
 
 export { createRosterRegistry } from './registry.js';
 export type { RegistryChange, RosterRegistry } from './registry.js';
+
+// WO5 — task templates (DESIGN §2.4): the library's second kind of file.
+export {
+  TASK_TEMPLATE_SCHEMA_VERSION,
+  TEMPLATE_JSON_FILENAME,
+  TEMPLATE_VARIABLES,
+  createTemplateRegistry,
+  createTemplateStore,
+  missingIntegrations,
+  parseTaskTemplate,
+  parseTaskTemplateJson,
+  renderTemplateText,
+  safeParseTaskTemplate,
+  serialiseTaskTemplate,
+  taskTemplateSchema,
+  templateIdProblem,
+  templateIdSchema,
+  templateVariables,
+} from './templates.js';
+export type {
+  ResolvedTemplate,
+  TaskTemplate,
+  TemplateIntegrationGap,
+  TemplateLoadOutcome,
+  TemplateParseResult,
+  TemplateRegistry,
+  TemplateRegistryChange,
+  TemplateStore,
+  TemplateStoreOptions,
+  TemplateVariable,
+} from './templates.js';
 
 export { DEFAULT_DEBOUNCE_MS, createRosterWatcher, inertWatcher } from './watcher.js';
 export type { RosterWatcher, RosterWatcherOptions } from './watcher.js';
@@ -436,6 +480,8 @@ export type {
   RosterListView,
   RosterService,
   RosterServiceOptions,
+  TaskTemplateListView,
+  TaskTemplateView,
   ValidateResult,
 } from './service.js';
 
@@ -463,5 +509,6 @@ export {
   PackSecretValueError,
   PurgeBlockedError,
   RosterServiceError,
+  TemplateNotFoundError,
   UnknownBoardOrderIdError,
 } from './serviceErrors.js';

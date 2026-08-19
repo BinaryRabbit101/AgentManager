@@ -45,7 +45,7 @@ describe('debouncing (§2.3)', () => {
   it('collapses a burst of events on one folder into a single call', async () => {
     const seen: (readonly string[] | undefined)[] = [];
     const watcher = createRosterWatcher({
-      agentsDir,
+      dir: agentsDir,
       debounceMs: 40,
       onChanged: (folders) => void seen.push(folders),
     });
@@ -69,7 +69,7 @@ describe('debouncing (§2.3)', () => {
   it('reports the folder, not the file inside it', async () => {
     const seen: string[] = [];
     const watcher = createRosterWatcher({
-      agentsDir,
+      dir: agentsDir,
       debounceMs: 30,
       onChanged: (folders) => void seen.push(...(folders ?? ['<whole library>'])),
     });
@@ -87,7 +87,7 @@ describe('debouncing (§2.3)', () => {
   it('stops calling back once closed', async () => {
     let calls = 0;
     const watcher = createRosterWatcher({
-      agentsDir,
+      dir: agentsDir,
       debounceMs: 20,
       onChanged: () => {
         calls += 1;
@@ -102,7 +102,7 @@ describe('debouncing (§2.3)', () => {
 
   it('degrades to an inert watcher when the directory cannot be watched', () => {
     const watcher = createRosterWatcher({
-      agentsDir: join(temp.path, 'no-such-directory'),
+      dir: join(temp.path, 'no-such-directory'),
       onChanged: () => {
         throw new Error('must not fire');
       },
@@ -126,7 +126,7 @@ describe('the registry reflects an external edit (M2 acceptance)', () => {
     expect(registry.get(definition.id)?.persona).toBe('before');
 
     const watcher = createRosterWatcher({
-      agentsDir,
+      dir: agentsDir,
       // The design's own figure. The acceptance allows ~1s; this leaves room
       // for the filesystem to notice as well as for the debounce.
       debounceMs: DEFAULT_DEBOUNCE_MS,
@@ -156,7 +156,7 @@ describe('the registry reflects an external edit (M2 acceptance)', () => {
       registry.reloadAll();
 
       const watcher = createRosterWatcher({
-        agentsDir: join(spaced.path, 'agents'),
+        dir: join(spaced.path, 'agents'),
         debounceMs: 30,
         onChanged: (folders) => {
           if (folders === undefined) registry.reloadAll();

@@ -267,3 +267,65 @@
 .startwork__pattern-options {
   margin-top: var(--space-3);
 }
+
+/*
+  The task-template strip (WO5).
+
+  A horizontally scrolling row of cards, blank first, drawn as radios so the
+  keyboard, the screen reader and the "only one at a time" semantics all arrive
+  for free — a grid of buttons would have needed every one of those written by
+  hand and would still have got arrow-key navigation wrong.
+
+  It scrolls in its own track rather than wrapping, because the strip is a
+  *header* on a dialog that already scrolls: a wrapping strip of eight templates
+  would push the project picker below the fold on a phone, which is the opposite
+  of what a prefill is for.
+*/
+.startwork__template-strip {
+  display: flex;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0 0 var(--space-1);
+  list-style: none;
+  overflow-x: auto;
+}
+
+.startwork__template-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  /* Wide enough for a name and a line of description, narrow enough that a
+     second card is always visible — so the strip reads as a strip. */
+  width: 13rem;
+  height: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2, 0.5rem);
+  cursor: pointer;
+}
+
+.startwork__template-card[data-chosen='true'] {
+  border-color: var(--accent, currentColor);
+}
+
+/*
+  The radio itself is redundant beside a card that already shows its state, but
+  it is what the keyboard drives and what a screen reader announces, so it stays
+  in the layout rather than being hidden out of it.
+*/
+.startwork__template-card input {
+  align-self: flex-start;
+}
+
+.startwork__template-name {
+  font-weight: var(--weight-semibold);
+}
+
+.startwork__template-note {
+  color: var(--text-muted);
+  font-size: var(--font-size-meta);
+}
+
+.startwork__template-source {
+  margin-top: var(--space-2);
+}

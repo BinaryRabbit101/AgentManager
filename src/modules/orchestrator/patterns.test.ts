@@ -66,6 +66,7 @@ function row(overrides: Partial<AssignmentRow> = {}): AssignmentRow {
     artifactPath: 'docs/x/DESIGN.md',
     patternConfigJson: '{}',
     preGrantsJson: '[]',
+    templateId: null,
     phase: 'running',
     haltReason: null,
     updatedAt: null,

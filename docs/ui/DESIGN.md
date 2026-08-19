@@ -502,7 +502,8 @@ questions the gesture did not answer.
 ## 6. The Start-work flow
 
 **Pick a project, pick one or more agents, describe the task, go.** One dialog, reached from every
-screen. A centred dialog on desktop, a bottom sheet on phone.
+screen. A centred dialog on desktop, a bottom sheet on phone. For work you start often, a **task
+template** answers the "describe the task" half in one pick — see *Task templates* below.
 
 This section used to describe a *launch* flow — agent × project × prompt — with a second dialog beside
 it for pairs (§10.4) reached from different buttons on the same screens. Assigning agents to work is
@@ -519,6 +520,12 @@ question now, and the selection asks it:
 ```
 Start work                                                [×]
 ┌──────────────────────────────────────────────────────────┐
+│  Start from                                              │
+│  ┌────────┐ ┌──────────────┐ ┌──────────────┐            │   ← blank card first
+│  │ Blank  │ │ Reply to     │ │ Draft email  │  →         │
+│  │        │ │ todo tickets │ │ replies      │            │
+│  └────────┘ └──────────────┘ └──────────────┘            │
+│                                                          │
 │  Project                                                 │
 │  📁 littlepocketmuseum            [ Change project ]      │   ← skipped when the gesture named one
 │                                                          │
@@ -609,6 +616,46 @@ already has an Options fold and two controls with one accessible name is one nam
   gives no default on purpose: when it is empty the disclosure is forced open, because hiding the
   field would hide the reason Start is off.
 
+### Task templates — the strip above step 1 *(2026-08-19, WO5)*
+
+Recurring, non-code work — answer the open tickets, draft replies to a mailbox — should be one
+pick rather than a paragraph retyped every week. `GET /api/roster/templates` (roster §2.4) drives a
+strip of cards at the top of the dialog, **blank card first**. The blank card is not a null option
+bolted on: it is today's whole flow, and putting it first is what makes picking a template a
+choice rather than a mode. The strip does not render at all when there are no templates — or when
+the core predates the route — so a library with none opens on exactly the dialog it opened on
+yesterday.
+
+**Picking one prefills; it never owns.**
+
+| The card sets | How |
+|---|---|
+| the task | `goalTemplate`, rendered — and re-rendered while the field is untouched, so the source input keeps it in step; the first keystroke in the box ends the derivation for good |
+| the shape | `pattern` ticks the **solo** or **adversarial pair** radio. `overseer` is not a template pattern (roster §2.4) |
+| the artifact path | `artifactPathTemplate` **replaces** the generic `docs/assignments/<slug>-<shortId>/DRAFT.md` default, still derived, so a typed path still wins |
+| the write toggle | `write` |
+| the gate chips | `preGrantTools` arrive **ticked**, with "from the template" beside them, on chips the preflight already raised — a template never creates a chip, it only ticks one, so WO4's rule that a pre-grant can only pre-answer a card the compiled permissions would have raised still holds |
+
+The user still picks the project and the agents, still sees the WO4 gate chips, and can edit every
+field the template touched. The template's id rides the create call as `templateId`, which
+orchestrator §2.3 records as provenance and acts on nowhere.
+
+**One variable renders a control.** `{{source}}` — "which queue?", "which mailbox?" — renders one
+extra input, and only when the chosen template mentions it, because a field whose value goes
+nowhere is a question with no answer. `{{slug}}` is the artifact directory and renders nothing;
+it is deliberately not substituted into the goal, since the slug is *derived from* the goal and a
+goal that contained it would re-render itself forever.
+
+**A missing connector warns; it never gates.** `requiredIntegrations` is answered per live agent by
+the server (roster §2.4), so ticking an agent that lacks the connector renders one notice —
+*"Priya has no gmail connector … Add one — it still starts either way"* — linking to that agent's
+page, where the MCP integrations editor lives (§7.3.1). **Start** stays enabled beside it. This is
+the same rule declared roles obey two steps below: rank and warn, never hide or refuse.
+
+**No editor.** Templates are authored the way agents were before the wizard existed: write
+`templates/<id>/template.json` in the library and it appears within a second. A template editor is
+explicitly out of scope for v1, and the read-only route surface says so.
+
 ### The permission preflight *(2026-08-19, WO4 §1)*
 
 When a project and at least one agent are selected, the dialog calls
@@ -639,9 +686,13 @@ carry — remains a question card, unchanged. This removes the *predictable* int
 
 ### Submit
 
+Every body below additionally carries `templateId?` when a template card was picked (WO5) —
+omitted rather than sent null, so the server can tell "started from nothing" from "this client does
+not know about templates".
+
 | Shape | Request |
 |---|---|
-| solo | `POST /api/assignments/solo { projectId, agentId, prompt, role?, write?, workItemIds?, preGrants? }` → `{ assignmentId, sessionId }`, then `/sessions/:id` (orchestrator §16.7) |
+| solo | `POST /api/assignments/solo { projectId, agentId, prompt, role?, write?, workItemIds?, preGrants?, templateId? }` → `{ assignmentId, sessionId }`, then `/sessions/:id` (orchestrator §16.7) |
 | independent | the same call, once per selected agent, same prompt; then the first session |
 | pair | `POST /api/assignments { pattern: 'pair', members: [drafter, critic], goal, scope, roundCap?, tokenBudget?, preGrants?, autoStart: false }` |
 | team | `POST /api/assignments { pattern: 'overseer', members: [lead], goal, scope, roundCap?, tokenBudget, autoStart: false }` |

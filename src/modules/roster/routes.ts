@@ -19,9 +19,17 @@
  * POST   /api/roster/agents/:id/validate    dry-run compile (§9.1)
  * GET    /api/roster/agents/:id/export      .agentpack download (§9.4, M9)
  * POST   /api/roster/import[?commit=true]   preview, then write (§9.4, M9)
+ * GET    /api/roster/templates              task templates (§2.4, WO5)
+ * GET    /api/roster/templates/:id          one task template
  * ```
  *
- * That is §9.1's table, plus one route §9.1 does not list.
+ * That is §9.1's table, plus three routes §9.1 does not list.
+ *
+ * `/templates` is **read-only on purpose** (WO5's "Scope of v1"). A template is
+ * authored the way an agent was before the editor existed — write the file, save
+ * it, watch it appear — and shipping a list route without a write route is the
+ * honest version of that: there is exactly one way to create a template, and it
+ * is the one the library README describes.
  *
  * `/permissions/allow` is the durable half of the question card's **Always
  * allow** (runner DESIGN §5.1, owner decision 2026-08-18). It is a route rather
@@ -338,6 +346,22 @@ export function createRosterRoutes(deps: RosterRoutesDeps): RouteDefinition[] {
           // that keyed off the status would otherwise think it had committed.
           return res.json(result, result.committed ? { status: 201 } : {});
         }),
+    },
+
+    {
+      method: 'GET',
+      path: `${ROSTER_API_PREFIX}/templates`,
+      description:
+        'Lists the task templates in the library, with their variables and per-agent connector gaps.',
+      handler: (req, res) => answering(logger, req, res, () => res.json(service.listTemplates())),
+    },
+
+    {
+      method: 'GET',
+      path: `${ROSTER_API_PREFIX}/templates/:id`,
+      description: 'One task template. 404 for an unknown id and for one that will not parse.',
+      handler: (req, res) =>
+        answering(logger, req, res, () => res.json(service.getTemplate(id(req)))),
     },
 
     {

@@ -29,8 +29,17 @@ import type { Logger } from 'pino';
 export const DEFAULT_DEBOUNCE_MS = 250;
 
 export interface RosterWatcherOptions {
-  /** `<libraryRoot>/agents` — the only directory worth watching (§2.1). */
-  readonly agentsDir: string;
+  /**
+   * The directory to watch: `<libraryRoot>/agents` (§2.1), or `templates/`
+   * (§2.4, WO5).
+   *
+   * One watcher per directory rather than one recursive watcher over the
+   * library root, because the two have different reload paths and a single
+   * stream of folder names would have to be re-attributed to one of them by
+   * guessing from the name — which is exactly the sort of guess a `git pull`
+   * that touches both would get wrong.
+   */
+  readonly dir: string;
   /**
    * Called once per quiet period with the folder names that changed, or with
    * `undefined` when the platform gave no filename and the whole library has to
@@ -85,7 +94,7 @@ export function createRosterWatcher(options: RosterWatcherOptions): RosterWatche
   }
 
   try {
-    watcher = watch(options.agentsDir, { recursive: true, persistent: false }, (_event, name) => {
+    watcher = watch(options.dir, { recursive: true, persistent: false }, (_event, name) => {
       if (closed) return;
       if (name === null || name === undefined) {
         // Some platforms omit the filename under load. Rechecking everything is
@@ -94,8 +103,8 @@ export function createRosterWatcher(options: RosterWatcherOptions): RosterWatche
       } else {
         // `name` is relative to the watched directory: `priya-bugfix`,
         // `priya-bugfix\persona.md`, `priya-bugfix\skills\x\SKILL.md`. The first
-        // segment is the agent folder, on either separator — a recursive watch
-        // reports the platform's, and tests run on both.
+        // segment is the agent (or template) folder, on either separator — a
+        // recursive watch reports the platform's, and tests run on both.
         const folder = String(name).split(/[\\/]/)[0] ?? '';
         if (folder.length > 0 && !folder.startsWith('.')) pending.add(folder);
         else wholeLibrary = true;
@@ -104,8 +113,8 @@ export function createRosterWatcher(options: RosterWatcherOptions): RosterWatche
     });
   } catch (error) {
     options.logger?.warn(
-      { err: error, dir: options.agentsDir },
-      'the agent library could not be watched; external edits will need a restart to appear',
+      { err: error, dir: options.dir },
+      'a library directory could not be watched; external edits will need a restart to appear',
     );
     return inertWatcher();
   }

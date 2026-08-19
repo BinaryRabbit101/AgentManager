@@ -48,6 +48,7 @@ import {
   useProject,
   useProjects,
   useRoster,
+  useTaskTemplates,
   useWorkItems,
 } from '../api/queries';
 import type { ApiFailure } from '../api/result';
@@ -58,6 +59,7 @@ import type {
   CreateSoloResult,
   GateSpec,
   PatternSummary,
+  TaskTemplateView,
 } from '../api/types';
 import {
   useHasModule,
@@ -76,6 +78,7 @@ import { isRemoteClient } from '../remote/access';
 import { useAppStore, type StartWorkIntent } from '../state/store';
 
 import {
+  connectorWarnings,
   declaredRoles,
   defaultArtifactPath,
   defaultRole,
@@ -89,13 +92,17 @@ import {
   preselectedAgentIds,
   rankForSeats,
   refusedProjects,
+  renderTemplateText,
   scopePathList,
   seatMembers,
   shortAssignmentId,
   soloRequest,
   startBlocker,
   teamworkFor,
+  teamworkForTemplate,
   teamworkOptions,
+  templateSlug,
+  usesSource,
   type Teamwork,
 } from './model';
 
@@ -128,6 +135,8 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
   const roster = useRoster(client);
   const projects = useProjects(client);
   const patterns = usePatterns(client, hasOrchestrator);
+  /** §6's template strip (roster §2.4, WO5). Absent answers as no templates. */
+  const taskTemplates = useTaskTemplates(client);
   // §10.4's "current open-assignment count", counted from the list the app
   // already reads for home and `/assignments` rather than from a new endpoint.
   const openAssignments = useAssignments(client, 'open');
@@ -198,6 +207,35 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
   const [role, setRole] = useState<string | undefined>(undefined);
   const [write, setWrite] = useState(false);
 
+  // --- 0. The template strip (WO5) ---------------------------------------
+  /**
+   * Which template is applied, or `null` for the blank card — which is first,
+   * and which is exactly today's flow.
+   *
+   * Templates prefill; they never own. Every field a template touches stays the
+   * field it was, editable in place, and the id travels to the server purely as
+   * provenance (orchestrator §2.3).
+   */
+  const [templateId, setTemplateId] = useState<string | null>(null);
+  /** The one free input a `{{source}}` template renders (§6). */
+  const [source, setSource] = useState('');
+  const templateCards = useMemo(
+    () => taskTemplates.data?.templates ?? [],
+    [taskTemplates.data],
+  );
+  const template: TaskTemplateView | undefined = useMemo(
+    () => templateCards.find((one) => one.template.id === templateId),
+    [templateCards, templateId],
+  );
+  /**
+   * Which seated agents fall short of the template's `requiredIntegrations`.
+   *
+   * A lookup into the server's own answer rather than a computation, and plain
+   * rather than memoised: it is a `find` over a handful of rows, and a memo keyed
+   * on `selectedIds` — a fresh array every render — would cost more than it saved.
+   */
+  const connectorGaps = connectorWarnings(template, selectedIds);
+
   // --- 4. How they work --------------------------------------------------
   const [teamworkChoice, setTeamworkChoice] = useState<Teamwork | null>(null);
   const teamwork = teamworkFor(count, teamworkChoice);
@@ -237,7 +275,22 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
    * runs of the same goal, which is the thing it exists to prevent.
    */
   const shortIdRef = useRef<string>(shortAssignmentId());
-  const artifactPath = artifactPathRaw ?? defaultArtifactPath(task, shortIdRef.current);
+  /**
+   * The artifact path, with the template's own pattern **replacing** the generic
+   * default (WO5) rather than being applied on top of it.
+   *
+   * Still derived, not stored: the first keystroke in the field takes ownership
+   * exactly as it does without a template, so `artifactPathRaw` wins either way
+   * and switching template does not overwrite a path the user typed.
+   */
+  const artifactPath =
+    artifactPathRaw ??
+    (template?.template.artifactPathTemplate === undefined
+      ? defaultArtifactPath(task, shortIdRef.current)
+      : renderTemplateText(template.template.artifactPathTemplate, {
+          slug: templateSlug(task, shortIdRef.current),
+          source,
+        }));
 
   /** §3's pattern fields, collapsed behind one disclosure with their values on it. */
   const [patternOptionsOpen, setPatternOptionsOpen] = useState(false);
@@ -299,6 +352,37 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
     setTaskSeeded(true);
     setTask(workItemPromptSeed(seed));
   }, [attached, task, taskSeeded]);
+
+  /**
+   * The template's goal, kept in step with `{{source}}` **while untouched** (WO5).
+   *
+   * `autoTaskRef` holds the last sentence this effect wrote, and the box is only
+   * overwritten while it still says exactly that — so picking a template fills
+   * the brief, typing in the source keeps it filled, and the first keystroke in
+   * the task box ends the arrangement for good. That is the same ownership rule
+   * the artifact field has had since WO4, applied to the field that matters most.
+   *
+   * `{{slug}}` is deliberately **not** substituted here. The slug is derived from
+   * the goal, so a goal that contained it would re-render itself on every pass —
+   * it is a path variable, and a template that puts one in its prose sees it
+   * verbatim in the field, which is the visible version of "that is not
+   * supported" rather than the silent one.
+   */
+  const autoTaskRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (template === undefined) {
+      // Back to the blank card: take away what the template put there, and
+      // nothing else. "The blank card keeps today's flow exactly" (WO5).
+      const written = autoTaskRef.current;
+      autoTaskRef.current = null;
+      if (written !== null) setTask((was) => (was === written ? '' : was));
+      return;
+    }
+    const rendered = renderTemplateText(template.template.goalTemplate, { source });
+    const written = autoTaskRef.current;
+    autoTaskRef.current = rendered;
+    setTask((was) => (was === '' || was === written ? rendered : was));
+  }, [template, source]);
 
   /**
    * The pattern's own defaults for the cap and the budget (§10.4).
@@ -366,6 +450,19 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
    * a refreshed preflight cannot leave a tick behind for a tool that no longer
    * gates.
    */
+  /**
+   * The template's `preGrantTools`, as a set (WO5).
+   *
+   * These tick a chip that *exists*; they never create one. A template naming a
+   * tool the compiled permissions would not gate on grants nothing, which is
+   * WO4's own rule about pre-grants ("it can only pre-answer a card the compiled
+   * permissions would have raised") holding one layer further out.
+   */
+  const templateGrants = useMemo(
+    () => new Set(template?.template.preGrantTools ?? []),
+    [template],
+  );
+
   const preflightRows = useMemo(
     () =>
       selectedIds.flatMap((agentId) => {
@@ -376,12 +473,15 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
             agentId,
             chips: result.gateLiable.map((tool) => ({
               ...tool,
-              ticked: preGrantOverrides.get(preGrantKey(agentId, tool.tool)) ?? tool.remembered,
+              fromTemplate: templateGrants.has(tool.tool),
+              ticked:
+                preGrantOverrides.get(preGrantKey(agentId, tool.tool)) ??
+                (tool.remembered || templateGrants.has(tool.tool)),
             })),
           },
         ];
       }),
-    [preflight, preGrantOverrides, selectedIds],
+    [preflight, preGrantOverrides, selectedIds, templateGrants],
   );
 
   const ticked = useMemo(() => {
@@ -448,6 +548,26 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
     requiresTokenBudget: teamwork === 'team',
   });
 
+  /**
+   * Picking a card in the strip (WO5).
+   *
+   * Everything it sets is a **prefill**: the shape, the write posture and the
+   * source are the template's opening answers and every one of them is a control
+   * the user can change afterwards. The goal and the artifact path are not set
+   * here at all — they are derived, so the template's text tracks the source
+   * input and the user's first keystroke ends the derivation.
+   */
+  function applyTemplate(next: TaskTemplateView | undefined): void {
+    setTemplateId(next?.template.id ?? null);
+    setSource('');
+    if (next === undefined) return;
+    setTeamworkChoice(teamworkForTemplate(next.template.pattern));
+    setWrite(next.template.write ?? false);
+    // The work-item seed and the template both want the task box; the template
+    // was asked for by name, so it wins and the seed stands down.
+    setTaskSeeded(true);
+  }
+
   async function openPreview(): Promise<void> {
     if (soloAgentId === undefined || projectId === '' || preview !== undefined) return;
     setPreview(await fetchPermissionPreview(client, soloAgentId, projectId));
@@ -482,6 +602,10 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
           // Only this agent's: a solo is one seat, and the server refuses a
           // pre-grant naming somebody who holds no seat in the assignment.
           preGrants: preGrants.filter((grant) => grant.agentId === agentId),
+          // Provenance only (orchestrator §2.3): every field the template touched
+          // is already in this body, and the id is what lets a person see that
+          // six assignments came from one recurring job.
+          templateId,
           confirmRemoteAccess,
         }),
       });
@@ -553,6 +677,7 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
         preGrants: preGrants.filter((grant) =>
           members.some((member) => member.agentId === grant.agentId),
         ),
+        templateId,
         confirmRemoteAccess,
       }),
     });
@@ -637,6 +762,101 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
 
       {created === undefined ? (
         <>
+          {/*
+            --- 0. Task templates (WO5) ---------------------------------------
+
+            A strip at the top, **blank card first**. The blank card is not a
+            null option bolted on: it is today's whole flow, and putting it first
+            is what makes "picking one prefills everything" a choice rather than
+            a mode. The strip renders only when there is something to pick, so a
+            library with no templates — and a core too old to serve the route —
+            opens on exactly the dialog it opened on yesterday.
+          */}
+          {templateCards.length === 0 ? null : (
+            <fieldset className="startwork__step startwork__templates">
+              <legend>Start from</legend>
+              <ul className="startwork__template-strip">
+                <li>
+                  <label
+                    className="startwork__template-card"
+                    data-template="none"
+                    data-chosen={templateId === null ? 'true' : 'false'}
+                  >
+                    <input
+                      type="radio"
+                      name="startwork-template"
+                      value=""
+                      checked={templateId === null}
+                      onChange={() => applyTemplate(undefined)}
+                    />
+                    <span className="startwork__template-name">Blank</span>
+                    <span className="startwork__template-note">
+                      Describe the task yourself, as always.
+                    </span>
+                  </label>
+                </li>
+                {templateCards.map((one) => (
+                  <li key={one.template.id}>
+                    <label
+                      className="startwork__template-card"
+                      data-template={one.template.id}
+                      data-chosen={templateId === one.template.id ? 'true' : 'false'}
+                    >
+                      <input
+                        type="radio"
+                        name="startwork-template"
+                        value={one.template.id}
+                        checked={templateId === one.template.id}
+                        onChange={() => applyTemplate(one)}
+                      />
+                      <span className="startwork__template-name">{one.template.name}</span>
+                      <span className="startwork__template-note">
+                        {one.template.description ?? `A ${one.template.pattern} assignment.`}
+                      </span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+
+              {/*
+                §6's one extra input, rendered exactly when the chosen template
+                mentions `{{source}}` — and never otherwise, because a field
+                whose value goes nowhere is a question with no answer.
+              */}
+              {usesSource(template) ? (
+                <label className="field startwork__template-source">
+                  <span>What should they work from?</span>
+                  <input
+                    value={source}
+                    data-control="template-source"
+                    placeholder="the open tickets in docs/todo.md"
+                    onChange={(event) => setSource(event.target.value)}
+                  />
+                </label>
+              ) : null}
+
+              {/*
+                roster §2.4: `requiredIntegrations` **warns**, it never filters.
+                The link goes to the agent's own page, where the MCP integrations
+                editor lives — a warning that does not say where to fix it is a
+                warning that gets ignored.
+              */}
+              {connectorGaps.map((gap) => (
+                <p
+                  key={gap.agentId}
+                  className="notice"
+                  data-tone="warn"
+                  data-connector-gap={gap.agentId}
+                  role="note"
+                >
+                  {`${nameFor(agents, gap.agentId)} has no ${gap.missing.join(' or ')} connector, so this template’s work may not be reachable. `}
+                  <Link to={`/agents/${encodeURIComponent(gap.agentId)}`}>Add one</Link>
+                  {' — it still starts either way.'}
+                </p>
+              ))}
+            </fieldset>
+          )}
+
           {/* --- 1. Project ------------------------------------------------ */}
           <div className="startwork__step">
             <h3>Project</h3>
@@ -1047,6 +1267,10 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
                             {chip.tool}
                             {chip.remembered ? (
                               <span className="startwork__chip-note"> already allowed</span>
+                            ) : chip.fromTemplate ? (
+                              // Why it arrived ticked, said out loud: a default
+                              // nobody can account for is a default nobody trusts.
+                              <span className="startwork__chip-note"> from the template</span>
                             ) : null}
                           </label>
                         </li>
