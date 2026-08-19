@@ -291,7 +291,7 @@ describe('migrations (M0-3)', () => {
   it('applies migrations/orchestrator/ after foundation and records it under "orchestrator"', async () => {
     const booted = await bootCore();
 
-    expect(booted.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(6);
+    expect(booted.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(8);
     const ledger = booted.storage.db
       .prepare<[], { module: string; version: number }>(
         'SELECT module, version FROM schema_migrations',
@@ -313,7 +313,7 @@ describe('migrations (M0-3)', () => {
     service = undefined;
 
     const second = await bootCore();
-    expect(second.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(6);
+    expect(second.storage.setVersions[ORCHESTRATOR_MODULE_ID]).toBe(8);
     const health = await second.health();
     expect(health.status).toBe('ok');
   });
@@ -359,13 +359,14 @@ describe('configuration (M0-2)', () => {
 });
 
 describe('routes (M1-7, M2-6, M5-1, M6-6, M11-1)', () => {
-  it('mounts M1’s six assignment routes, M2’s three question routes, M5/M6/M9’s four and §11.5’s one', async () => {
+  it('mounts M1’s six assignment routes, M2’s three question routes, M5/M6/M9’s four, §11.5’s one and §13’s six', async () => {
     const booted = await bootCore();
     const mine = booted.runtime.routes.routes
       .filter((route) => route.moduleId === ORCHESTRATOR_MODULE_ID)
       .map((route) => `${route.method} ${route.path}`)
       .sort();
     expect(mine).toEqual([
+      'DELETE /api/triggers/:id',
       'GET /api/assignments',
       'GET /api/assignments/:id',
       'GET /api/assignments/:id/conversation',
@@ -373,13 +374,18 @@ describe('routes (M1-7, M2-6, M5-1, M6-6, M11-1)', () => {
       'GET /api/patterns',
       'GET /api/questions',
       'GET /api/questions/:id',
+      'GET /api/triggers',
+      'GET /api/triggers/:id',
       'GET /api/widget',
       'PATCH /api/assignments/:id',
+      'PATCH /api/triggers/:id',
       'POST /api/assignments',
       'POST /api/assignments/:id/advance',
       'POST /api/assignments/:id/close',
       'POST /api/assignments/solo',
       'POST /api/questions/:id/answer',
+      'POST /api/triggers',
+      'POST /api/triggers/:id/run',
     ]);
   });
 

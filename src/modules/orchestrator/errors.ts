@@ -51,6 +51,15 @@ export class AssignmentNotFoundError extends OrchestratorError {
   }
 }
 
+/** §2.8's standing schedule, for the four routes that address one by id (WO8). */
+export class TriggerNotFoundError extends OrchestratorError {
+  override readonly name = 'TriggerNotFoundError';
+
+  constructor(readonly triggerId: string) {
+    super('trigger_not_found', `No trigger ${triggerId} exists.`, 404, { triggerId });
+  }
+}
+
 /**
  * §4.2's invariant, reached from every write path: a call against an assignment
  * that closed while it was in flight is refused, not queued.

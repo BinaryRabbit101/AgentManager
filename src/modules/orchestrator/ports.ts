@@ -71,6 +71,50 @@ export interface OverseerRosterEntryPort {
   };
 }
 
+/**
+ * WO4's permission dry-run, as data (roster §9.1's `POST /agents/:id/validate`).
+ *
+ * Only the field §2.8's unattended preflight reads: which tools would stop and
+ * ask a human. `remembered` is roster's Always-allow memory — a gate that is
+ * already answered standing is not a gate.
+ */
+export interface GateLiableToolPort {
+  readonly tool: string;
+  readonly remembered: boolean;
+}
+
+export interface PermissionPreviewPort {
+  readonly gateLiable: readonly GateLiableToolPort[];
+}
+
+/**
+ * WO6's integration-state projection, as data (roster §10).
+ *
+ * The four states are roster's closed set; orchestrator consumes them and never
+ * re-derives one — the whole point of §2.8's preflight is that the *same*
+ * projection the Start-work dialog shows a human is what an unattended launch is
+ * judged against.
+ */
+export interface IntegrationStatePort {
+  readonly integration: string;
+  readonly state: 'ready' | 'needs-auth' | 'missing-secret' | 'not-attached';
+  readonly required: boolean;
+  readonly detail: string;
+}
+
+/** The slice of a WO5 task template §2.8 applies (roster §2.4). */
+export interface TaskTemplatePort {
+  readonly id: string;
+  readonly name: string;
+  readonly pattern: 'solo' | 'pair';
+  readonly goalTemplate: string;
+  readonly artifactPathTemplate?: string | undefined;
+  readonly write?: boolean | undefined;
+  readonly requiredIntegrations?: readonly string[] | undefined;
+  readonly suggestedRoles?: readonly string[] | undefined;
+  readonly preGrantTools?: readonly string[] | undefined;
+}
+
 /** Roster's in-memory registry, as far as `capabilities` goes. */
 export interface RosterPort {
   readonly registry: {
@@ -85,6 +129,32 @@ export interface RosterPort {
    * integrations and must never reach a coordinating agent.
    */
   readonly overseerRoster?: () => readonly OverseerRosterEntryPort[];
+  /**
+   * §2.8's three reads, all probed rather than required.
+   *
+   * A build whose roster predates WO4/WO5/WO6 has none of them, and the
+   * unattended preflight then **blocks** rather than launching blind — "anything
+   * short of green does not launch" reads the absence of the projection as
+   * short of green, which is the safe direction and the only one an unattended
+   * feature may fail in.
+   */
+  readonly getTemplate?: (id: string) => { readonly template: TaskTemplatePort };
+  readonly validate?: (agentId: string, body: unknown) => Promise<PermissionPreviewPort>;
+  readonly integrations?: (
+    agentId: string,
+    options?: { readonly required?: readonly string[] | undefined },
+  ) => Promise<readonly IntegrationStatePort[]>;
+}
+
+/** True when this build's roster ships WO4/WO5/WO6's preflight data (§2.8). */
+export function hasUnattendedPreflight(
+  roster: RosterPort | undefined,
+): roster is RosterPort & Required<Pick<RosterPort, 'getTemplate' | 'validate' | 'integrations'>> {
+  return (
+    typeof roster?.getTemplate === 'function' &&
+    typeof roster.validate === 'function' &&
+    typeof roster.integrations === 'function'
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +216,11 @@ export interface StartSessionRequest {
   readonly projectId: string;
   readonly prompt: string;
   readonly role?: AssignmentRole | undefined;
-  readonly priority?: 'interactive' | 'normal' | undefined;
+  /**
+   * Runner §6.2's bands. `background` joined them for WO8: unattended work is
+   * admitted only when nothing a human is waiting on is queued.
+   */
+  readonly priority?: 'interactive' | 'normal' | 'background' | undefined;
 }
 
 export interface StartSessionResult {

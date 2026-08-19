@@ -291,8 +291,9 @@ ALTER TABLE sessions ADD COLUMN priority       TEXT NOT NULL DEFAULT 'normal';  
 ALTER TABLE sessions ADD COLUMN weight         INTEGER NOT NULL DEFAULT 1;      -- roster concurrencyWeight
 ALTER TABLE sessions ADD COLUMN blocked_reason TEXT;
 ALTER TABLE sessions ADD COLUMN turns          INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN background     INTEGER NOT NULL DEFAULT 0;      -- 0004, §6.2's third band
 
-CREATE INDEX sessions_scheduler ON sessions (status, priority, queued_at);
+CREATE INDEX sessions_scheduler ON sessions (status, priority, background, queued_at);
 
 CREATE TABLE session_inputs (          -- the durable launch request; survives a restart while queued
   session_id       TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
@@ -631,13 +632,30 @@ number. It is one config key; the user sets it.
 - **Capacity**: `runner.queueLimit` (foundation §2.3, default 50). A `startSession` past the limit is
   refused with a typed `queue_full` and **no session row** — a queued row that was never really
   accepted would pollute the timeline.
-- **Order**: two priority bands, FIFO by `queued_at` within each.
+- **Order**: three priority bands, FIFO by `queued_at` within each.
   - `interactive` — a human is waiting: UI/remote-initiated launches, and auto-resumes of a session
     parked on a question (§5.4). The person who just answered should not sit behind a batch.
   - `normal` — everything else, including orchestrator-launched worker sessions.
+  - `background` *(added 2026-08-19, WO8)* — a **timer** started it: every session of an assignment
+    whose `origin` is `trigger` (orchestrator §2.8), first launch and later turns alike.
 
-  Two bands, no aging, no fair-share, no per-assignment quota. Three-plus bands invite tuning
-  arguments that a cap of 2 cannot possibly reward.
+  Still no aging, no fair-share, no per-assignment quota, and still one queue with one comparator —
+  the third band changed what `ordered()` sorts by and nothing about how it reads. It earns its place
+  where the original two could not express the rule: background work is admitted **only when no
+  interactive session is waiting**, which is not what band ordering alone says. A *blocked* entry is
+  skipped by the admission loop, so ordering by itself would let a trigger start while the owner's own
+  launch sat waiting for a workspace — the gate is therefore an explicit "is a human waiting anywhere
+  in this queue" check taken once per pass, not a comparison between two rows. D2: background work
+  must never starve the owner's own usage.
+
+  **Storage note.** The band is one value in the code and a **pair of columns** in the database:
+  `0001_runner.sql` added `priority` with `CHECK (priority IN ('interactive','normal'))`, and SQLite
+  cannot widen a CHECK without the twelve-step rebuild of a STRICT table that three foreign keys point
+  at — one of them `ON DELETE CASCADE`. That price is not worth a third band, so
+  `0004_background_band.sql` adds `background INTEGER NOT NULL DEFAULT 0` beside it and replaces
+  `sessions_scheduler` with `(status, priority, background, queued_at)` so the admission read stays
+  covering. `SessionRepository` joins and splits the pair in exactly one place each; no reader above
+  it knows.
 - **Blocked entries.** A session waiting on a retryable workspace refusal stays `queued` with
   `blocked_reason` set and does **not** consume a slot; it is re-evaluated on `workspace.released`.
 - **Admission** re-checks assignment status and project status, because both can change while queued.
@@ -1225,11 +1243,14 @@ a concurrency slot for an idle conversation, on a machine with a cap of 2. Conti
 is a `resume` into a new session under the same assignment, which the UI renders as one thread.
 Steering *while the agent works* — the case the README actually asks for — is unaffected.
 
-**D13 — Two priority bands, FIFO within each.**
+**D13 — Three priority bands, FIFO within each** *(two until 2026-08-19; WO8 added the third)*.
 `interactive` (a human is waiting: UI/remote launches, and resumes of a question-parked session) ahead
-of `normal` (orchestrator worker sessions). Anything richer is scheduler tuning that a cap of 2
-cannot reward, and the one case that genuinely matters is not making someone who just answered a
-question wait behind a batch.
+of `normal` (orchestrator worker sessions) ahead of `background` (a timer started it — orchestrator
+§2.8's triggers). Anything richer is still scheduler tuning that a cap of 2 cannot reward. The two
+cases that genuinely matter are not making someone who just answered a question wait behind a batch,
+and never letting unattended work take a slot from work the owner asked for (D2) — and the second
+needs a band of its own, because it is the difference between "somebody's assignment" and "nobody is
+watching this".
 
 ---
 

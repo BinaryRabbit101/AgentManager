@@ -118,6 +118,35 @@ const QUEUE = {
   ],
 };
 
+/** One standing schedule, mid-life: it has run, and it is armed to run again. */
+const TRIGGER = {
+  id: 'trg_1',
+  projectId: 'lpm',
+  templateId: 'todo-ticket-replies',
+  agentIds: ['ada'],
+  everyMinutes: 60,
+  activeHours: { from: 8, to: 22 },
+  enabled: true,
+  variables: { source: 'the todo list' },
+  maxRunsPerDay: 24,
+  lastFiredAt: '2026-08-17T09:00:00.000Z',
+  nextFireAt: '2026-08-17T10:00:00.000Z',
+  consecutiveFailures: 0,
+  lastOutcome: 'fired',
+  lastOutcomeReason: null,
+  lastOutcomeAt: '2026-08-17T09:00:00.000Z',
+  lastRun: {
+    assignmentId: 'asg_1',
+    status: 'closed',
+    phase: 'converged',
+    closeReason: 'converged',
+    createdAt: '2026-08-17T09:00:00.000Z',
+  },
+  runsToday: 1,
+  createdAt: '2026-08-16T09:00:00.000Z',
+  updatedAt: '2026-08-17T09:00:00.000Z',
+};
+
 const REMOTE_STATUS = {
   state: 'listening',
   enabled: true,
@@ -222,6 +251,11 @@ export const RESPOND: Responder = (url, init) => {
       return json(aConversation());
     case '/api/patterns':
       return json(PATTERNS);
+    // §13's standing schedules (WO8). One fixture serves both placements: the
+    // project page filters by `?projectId=` and the query string is stripped
+    // above, so settings → Automation sees the same row.
+    case '/api/triggers':
+      return json({ triggers: [TRIGGER] });
     case '/api/runner/queue':
       return json(QUEUE);
     case '/api/runner/usage':

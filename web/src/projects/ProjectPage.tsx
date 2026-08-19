@@ -13,6 +13,9 @@
  *    words "transcript pruned" — never a dead link.
  * 4. **Work items** — the thin ranked list, inline-creatable, ▲▼-reorderable,
  *    and each row a drop target for an agent (§5.3 row 2).
+ * 5. **Triggers** — this project's standing schedules (orchestrator §2.8, WO8):
+ *    template, seats, schedule, enabled toggle, last run, next fire, and the
+ *    reason when a fire was blocked or the trigger switched itself off.
  *
  * Plus the collapsed **Settings**, whose one hard rule is §8.2's: env entries are
  * shown "as `secretRef` names with a set/unset indicator, **never values**". That
@@ -53,6 +56,7 @@ import {
   type WorkspaceListEntry,
 } from '../api/types';
 import { useServices } from '../app/AppContext';
+import { TriggersPanel } from '../automation/TriggersPanel';
 import { BoardDndContext } from '../board/BoardDndContext';
 import { agentTarget, projectTarget, workItemTarget, type DropOutcome } from '../board/dnd';
 import { useAppStore } from '../state/store';
@@ -162,6 +166,7 @@ export function ProjectPage(): ReactElement {
             void queryClient.invalidateQueries({ queryKey: queryKeys.workItems(id) })
           }
         />
+        <Triggers projectId={id} />
         <ProjectSettings project={detail} />
       </div>
     </BoardDndContext>
@@ -601,6 +606,31 @@ function WorkItemRow({ item, position, total, onMove }: WorkItemRowProps): React
         ▼
       </button>
     </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Settings (collapsed)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 5 — Triggers (§8.2, orchestrator §2.8, WO8)
+// ---------------------------------------------------------------------------
+
+/**
+ * This project's standing schedules.
+ *
+ * The same panel settings → Automation renders, scoped to one project. It stays
+ * on the page even with nothing scheduled, because "this project has no
+ * background work" is a fact worth being able to read — unlike **Review
+ * needed**, which is an alarm and is absent when there is nothing to review.
+ */
+function Triggers({ projectId }: { readonly projectId: string }): ReactElement {
+  return (
+    <section aria-labelledby="triggers-heading" className="project-triggers">
+      <h3 id="triggers-heading">Triggers</h3>
+      <TriggersPanel projectId={projectId} headingId="triggers-heading" />
+    </section>
   );
 }
 

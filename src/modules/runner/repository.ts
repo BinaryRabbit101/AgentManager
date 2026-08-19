@@ -33,8 +33,28 @@ import type {
 import { DuplicateSessionInputError, SessionNotFoundError } from './errors.js';
 import { assertTransition, TERMINAL_STATUSES, type ExitReason } from './status.js';
 
-/** §6.2's two bands. Copied onto the row at enqueue, never re-derived. */
-export type SessionPriority = 'interactive' | 'normal';
+/**
+ * §6.2's admission bands. Copied onto the row at enqueue, never re-derived.
+ *
+ * `background` joined the two originals for WO8: work a *timer* started, which
+ * must never take a slot from work the owner asked for (orchestrator §2.8, D2).
+ * It is one value here and a **pair of columns** in the database — 0001's
+ * `CHECK (priority IN ('interactive', 'normal'))` cannot be widened without
+ * rebuilding a STRICT table three foreign keys point at, so 0004 adds a
+ * `background` flag beside it instead. {@link bandColumns} is the only place
+ * the two representations meet.
+ */
+export type SessionPriority = 'interactive' | 'normal' | 'background';
+
+/** One band value → 0004's two columns. The single split point. */
+function bandColumns(priority: SessionPriority): {
+  readonly priority: string;
+  readonly background: 0 | 1;
+} {
+  return priority === 'background'
+    ? { priority: 'normal', background: 1 }
+    : { priority, background: 0 };
+}
 
 /** A session row with §3.5's columns. */
 export interface RunnerSessionRecord extends SessionRecord {
@@ -150,10 +170,12 @@ interface RunnerColumns {
   readonly lease_id: string | null;
   readonly resumed_from: string | null;
   readonly queued_at: string | null;
-  readonly priority: SessionPriority;
+  readonly priority: string;
   readonly weight: number;
   readonly blocked_reason: string | null;
   readonly turns: number;
+  /** 0004's flag; `priority` still reads `normal` on a background row (WO8). */
+  readonly background: number;
 }
 
 interface InputRow {
@@ -164,7 +186,7 @@ interface InputRow {
 }
 
 const RUNNER_COLUMNS =
-  'role, lease_id, resumed_from, queued_at, priority, weight, blocked_reason, turns';
+  'role, lease_id, resumed_from, queued_at, priority, weight, blocked_reason, turns, background';
 
 /** Patch field → column, and the allow-list: nothing outside it is updatable. */
 const RUNNER_PATCH_COLUMNS: Readonly<Record<keyof RunnerSessionPatch, string>> = {
@@ -221,7 +243,10 @@ export function createSessionRepository(options: SessionRepositoryOptions): Sess
       leaseId: extra?.lease_id ?? null,
       resumedFrom: extra?.resumed_from ?? null,
       queuedAt: extra?.queued_at ?? null,
-      priority: extra?.priority ?? 'normal',
+      // Re-joined from 0004's pair, so every reader above this line sees one
+      // band value and none of them has to remember the storage shape.
+      priority:
+        extra?.background === 1 ? 'background' : ((extra?.priority ?? 'normal') as SessionPriority),
       weight: extra?.weight ?? 1,
       blockedReason: extra?.blocked_reason ?? null,
       turns: extra?.turns ?? 0,
@@ -245,6 +270,16 @@ export function createSessionRepository(options: SessionRepositoryOptions): Sess
     for (const [field, column] of Object.entries(RUNNER_PATCH_COLUMNS)) {
       const value = patch[field as keyof RunnerSessionPatch];
       if (value === undefined) continue;
+      if (field === 'priority') {
+        // 0004: one band value, two columns. Split here and nowhere else, so
+        // `background` can never disagree with `priority` about what a row is.
+        // An unrecognised band still reaches 0001's CHECK and is refused there,
+        // which is exactly the behaviour that shipped.
+        const band = bandColumns(value as SessionPriority);
+        sets.push('priority = ?', 'background = ?');
+        values.push(band.priority, band.background);
+        continue;
+      }
       sets.push(`${column} = ?`);
       values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value);
     }

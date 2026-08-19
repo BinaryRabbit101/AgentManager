@@ -161,9 +161,11 @@ describe('the element migration, through boot', () => {
       // topological order (§1.3) — `roster` sits before `projects`, which sits
       // before `runner`, which sits before `orchestrator`. One entry per
       // *migration*: `projects` twice (0001 plus 0002_lease_scope), `runner`
-      // three times (0001 plus 0002_usage and M11's 0003_usage_windows) and
-      // `orchestrator` six (0001, 0002_breakers, 0003_turn_exit_reason, WO4's
-      // 0004_pre_grants and 0005_turn_denied_tools, and WO5's 0006_template_id).
+      // four times (0001, 0002_usage, M11's 0003_usage_windows and WO8's
+      // 0004_background_band) and `orchestrator` eight (0001, 0002_breakers,
+      // 0003_turn_exit_reason, WO4's 0004_pre_grants and 0005_turn_denied_tools,
+      // WO5's 0006_template_id, and WO8's 0007_triggers and
+      // 0008_assignment_origin).
       'foundation',
       'roster',
       'projects',
@@ -171,6 +173,9 @@ describe('the element migration, through boot', () => {
       'runner',
       'runner',
       'runner',
+      'runner',
+      'orchestrator',
+      'orchestrator',
       'orchestrator',
       'orchestrator',
       'orchestrator',
@@ -191,12 +196,15 @@ describe('the element migration, through boot', () => {
       { module: 'orchestrator', version: 4 },
       { module: 'orchestrator', version: 5 },
       { module: 'orchestrator', version: 6 },
+      { module: 'orchestrator', version: 7 },
+      { module: 'orchestrator', version: 8 },
       { module: 'projects', version: 1 },
       { module: 'projects', version: 2 },
       { module: 'roster', version: 1 },
       { module: 'runner', version: 1 },
       { module: 'runner', version: 2 },
       { module: 'runner', version: 3 },
+      { module: 'runner', version: 4 },
     ]);
   });
 

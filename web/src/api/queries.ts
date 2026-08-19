@@ -36,6 +36,7 @@ import type {
   TaskTemplateListView,
   SessionListView,
   SessionStatus,
+  TriggerListView,
   WorkItemListView,
   WorkspaceListView,
 } from './types';
@@ -73,6 +74,11 @@ export const queryKeys = {
   assignment: (id: string) => ['assignments', 'one', id] as const,
   conversation: (id: string) => ['assignments', 'one', id, 'conversation'] as const,
   patterns: ['assignments', 'patterns'] as const,
+  /** §2.8's standing schedules — every trigger, for settings → Automation. */
+  triggers: ['triggers'] as const,
+  /** The same rows, scoped to one project page. Under the same prefix, so
+   *  §3.4's one `trigger.*` rule refreshes both surfaces from one event. */
+  projectTriggers: (projectId: string) => ['triggers', { projectId }] as const,
   runnerUsage: ['runner', 'usage'] as const,
   runnerQueue: ['runner', 'queue'] as const,
   remoteStatus: ['remote', 'status'] as const,
@@ -101,8 +107,30 @@ export function useRoster(client: ApiClient): UseQueryResult<RosterListView> {
 export function useTaskTemplates(client: ApiClient): UseQueryResult<TaskTemplateListView> {
   return useQuery({
     queryKey: queryKeys.taskTemplates,
+    queryFn: async () => unwrap(await client.request<TaskTemplateListView>('/roster/templates')),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/**
+ * §2.8's triggers, either every one or one project's (WO8).
+ *
+ * `staleTime` is the usual generous one because the event feed is what
+ * invalidates: `trigger.fired|skipped|blocked|disabled` all land on
+ * `['triggers']`, so a background run appears here without anything polling.
+ */
+export function useTriggers(
+  client: ApiClient,
+  projectId?: string,
+): UseQueryResult<TriggerListView> {
+  return useQuery({
+    queryKey: projectId === undefined ? queryKeys.triggers : queryKeys.projectTriggers(projectId),
     queryFn: async () =>
-      unwrap(await client.request<TaskTemplateListView>('/roster/templates')),
+      unwrap(
+        await client.request<TriggerListView>('/triggers', {
+          ...(projectId === undefined ? {} : { query: { projectId } }),
+        }),
+      ),
     staleTime: DEFAULT_STALE_TIME_MS,
   });
 }

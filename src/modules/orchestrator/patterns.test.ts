@@ -67,6 +67,8 @@ function row(overrides: Partial<AssignmentRow> = {}): AssignmentRow {
     patternConfigJson: '{}',
     preGrantsJson: '[]',
     templateId: null,
+    origin: 'user',
+    triggerId: null,
     phase: 'running',
     haltReason: null,
     updatedAt: null,

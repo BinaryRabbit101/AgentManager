@@ -44,6 +44,9 @@ export const GLOBAL_EVENT_TYPES: readonly string[] = [
   'workspace.*',
   'assignment.*',
   'question.*',
+  // §2.8's background triggers: without this the Triggers section could only
+  // follow an unattended run by polling, which §16 forbids.
+  'trigger.*',
   'runner.*',
   'remote.*',
   'diagnostic.*',

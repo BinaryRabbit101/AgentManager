@@ -71,6 +71,23 @@ export interface Notifier {
   schedule(card: Pick<QuestionCard, 'id' | 'kind'> & { urgency?: string | undefined }): void;
   /** Sends now, skipping the delay — the timer's callback, and the tests' door. */
   notify(questionId: string): Promise<NotifyResult>;
+  /**
+   * §10's channel with no card behind it (WO8).
+   *
+   * A background trigger that was blocked, or that disabled itself after three
+   * failures, has nothing for a human to *answer* — there is no question, and
+   * raising a fake one so the notifier had something to push would put a card in
+   * the inbox that no session is waiting on. What it has is news, and §10 is
+   * already the way news reaches a user who is away.
+   *
+   * It shares the enabled flag, the hourly rate limit and the digest with the
+   * card path, because those are properties of the *channel* and a second
+   * unlimited sender would make `maxPerHour` a number that does not bound
+   * anything. It deliberately does **not** share the per-question
+   * once-and-once-only memory: two blocked fires of the same trigger a day apart
+   * are two pieces of news.
+   */
+  send(title: string, body: string): Promise<NotifyResult>;
   /** Subscribes to `assignment.question.raised`; the result detaches. */
   attach(): Unsubscribe;
   /** M8-3's degraded capability, as `/api/health` reads it. */
@@ -228,21 +245,8 @@ export function createNotifier(options: NotifierOptions): Notifier {
     }
 
     notified.add(questionId);
-    const link = linkTo(questionId);
-    const digest =
-      suppressed === 0
-        ? ''
-        : `\n\n(+${String(suppressed)} other card(s) were not pushed — the inbox has them.)`;
-    const result = await post(
-      titleFor(card),
-      `${card.prompt}${link === undefined ? '' : `\n\n${link}`}${digest}`,
-      link,
-    );
-    if (result.sent) {
-      sent += 1;
-      sentAt.push(nowMs);
-      suppressed = 0;
-    } else {
+    const result = await sendThrough(titleFor(card), card.prompt, linkTo(questionId), nowMs);
+    if (!result.sent) {
       log('warn', 'a notification could not be sent', { questionId, reason: result.reason });
     }
 
@@ -251,6 +255,55 @@ export function createNotifier(options: NotifierOptions): Notifier {
       ids: { assignmentId: card.assignmentId },
       persist: true,
       payload: { questionId, channel: config.notify.channel, ok: result.sent },
+    });
+    return result;
+  }
+
+  /**
+   * The card path's tail, factored out so the plain sender shares the hourly
+   * limit and the digest rather than reimplementing them beside it.
+   */
+  async function sendThrough(
+    title: string,
+    body: string,
+    link: string | undefined,
+    nowMs: number,
+  ): Promise<NotifyResult> {
+    if (!withinRateLimit(nowMs)) {
+      suppressed += 1;
+      log('info', 'a notification was suppressed by the hourly rate limit', {
+        maxPerHour: config.notify.maxPerHour,
+        suppressed,
+      });
+      return { sent: false, reason: 'send_failed' };
+    }
+    const digest =
+      suppressed === 0
+        ? ''
+        : `\n\n(+${String(suppressed)} other card(s) were not pushed — the inbox has them.)`;
+    const result = await post(
+      title,
+      `${body}${link === undefined ? '' : `\n\n${link}`}${digest}`,
+      link,
+    );
+    if (result.sent) {
+      sent += 1;
+      sentAt.push(nowMs);
+      suppressed = 0;
+    }
+    return result;
+  }
+
+  async function send(title: string, body: string): Promise<NotifyResult> {
+    if (!config.notify.enabled) return { sent: false, reason: 'disabled' };
+    const result = await sendThrough(title, body, undefined, options.clock().getTime());
+    if (!result.sent) {
+      log('warn', 'a notification could not be sent', { title, reason: result.reason });
+    }
+    bus.emit({
+      type: 'orchestrator.notify.sent',
+      persist: true,
+      payload: { questionId: null, channel: config.notify.channel, ok: result.sent },
     });
     return result;
   }
@@ -306,6 +359,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
   return {
     schedule,
     notify,
+    send,
     attach,
     health: () => ({
       // A channel that is switched off is not degraded — it is off. Degraded

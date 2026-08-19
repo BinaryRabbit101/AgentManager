@@ -112,9 +112,9 @@ describe('module registration', () => {
   it('applies migrations/runner/ after foundation and records it under "runner"', async () => {
     const booted = await bootCore();
 
-    // Three migrations now: `0001_runner.sql`, M4's `0002_usage.sql` and M11's
-    // `0003_usage_windows.sql`.
-    expect(booted.storage.setVersions[RUNNER_MODULE_ID]).toBe(3);
+    // Four migrations now: `0001_runner.sql`, M4's `0002_usage.sql`, M11's
+    // `0003_usage_windows.sql` and WO8's `0004_background_band.sql`.
+    expect(booted.storage.setVersions[RUNNER_MODULE_ID]).toBe(4);
     const ledger = booted.storage.db
       .prepare<[], { module: string; version: number }>(
         'SELECT module, version FROM schema_migrations',
@@ -123,6 +123,7 @@ describe('module registration', () => {
     expect(ledger).toContainEqual({ module: RUNNER_MODULE_ID, version: 1 });
     expect(ledger).toContainEqual({ module: RUNNER_MODULE_ID, version: 2 });
     expect(ledger).toContainEqual({ module: RUNNER_MODULE_ID, version: 3 });
+    expect(ledger).toContainEqual({ module: RUNNER_MODULE_ID, version: 4 });
 
     // The added columns exist, which is only possible if foundation's
     // `0001_init.sql` created `sessions` first.
@@ -140,6 +141,9 @@ describe('module registration', () => {
         'weight',
         'blocked_reason',
         'turns',
+        // WO8's third admission band, stored beside `priority` because 0001's
+        // CHECK cannot be widened without rebuilding the table.
+        'background',
       ]),
     );
     const usageColumns = booted.storage.db
@@ -157,13 +161,13 @@ describe('module registration', () => {
 
     const second = await bootCore();
     expect(second.storage.applied.some((entry) => entry.setId === RUNNER_MODULE_ID)).toBe(false);
-    expect(second.storage.setVersions[RUNNER_MODULE_ID]).toBe(3);
+    expect(second.storage.setVersions[RUNNER_MODULE_ID]).toBe(4);
     const rows = second.storage.db
       .prepare<[string], { n: number }>(
         'SELECT COUNT(*) AS n FROM schema_migrations WHERE module = ?',
       )
       .get(RUNNER_MODULE_ID);
-    expect(rows?.n).toBe(3);
+    expect(rows?.n).toBe(4);
   });
 
   it('reports healthy with no sessions present, and stops cleanly', async () => {

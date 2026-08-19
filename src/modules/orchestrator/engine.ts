@@ -670,7 +670,12 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
               projectId: row.projectId,
               prompt: prompt.text,
               ...(role === undefined ? {} : { role }),
-              priority: plan.priority,
+              // §2.8: every turn of a trigger-launched assignment takes runner's
+              // `background` band, not just its first session. A pattern whose
+              // round 2 outranked the owner's own work would make the whole
+              // "background never starves the owner" guarantee last one turn
+              // (WO8 §2, D2).
+              priority: row.origin === 'trigger' ? 'background' : plan.priority,
             });
       sessionId = launched.sessionId;
     } catch (error) {

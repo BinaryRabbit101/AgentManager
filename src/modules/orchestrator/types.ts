@@ -78,6 +78,22 @@ export function isCloseReason(value: unknown): value is CloseReason {
 /** Who minted the row. `overseer:<agentId>` is the machine-caller form (§2.1). */
 export type CreatedBy = 'user' | 'system' | `overseer:${string}`;
 
+/**
+ * *How* the row was started, as distinct from who minted it (§2.3, WO8).
+ *
+ * `createdBy` answers "whose authority" — and a trigger run keeps `user`,
+ * because a schedule the owner wrote is the owner's intent expressed once
+ * instead of hourly. This answers the different question: did a person press
+ * Start work, or did a timer. `user` is the honest reading of every row written
+ * before triggers existed.
+ */
+export const ASSIGNMENT_ORIGINS = ['user', 'trigger'] as const;
+export type AssignmentOrigin = (typeof ASSIGNMENT_ORIGINS)[number];
+
+export function isAssignmentOrigin(value: unknown): value is AssignmentOrigin {
+  return typeof value === 'string' && (ASSIGNMENT_ORIGINS as readonly string[]).includes(value);
+}
+
 // ---------------------------------------------------------------------------
 // Scope (§2.5)
 // ---------------------------------------------------------------------------
@@ -209,6 +225,16 @@ export interface CreateAssignmentRequest {
    * pruned a folder would be a template *gating* a launch.
    */
   readonly templateId?: string;
+  /**
+   * How this launch was started (§2.3, WO8). Defaults to `'user'`.
+   *
+   * Not readable from an HTTP body, for the reason `createdBy` is not: a caller
+   * that could claim `trigger` would be claiming the runner admission priority
+   * that goes with it. The trigger scheduler sets it, in-process.
+   */
+  readonly origin?: AssignmentOrigin;
+  /** Which standing schedule fired this, when {@link origin} is `trigger`. */
+  readonly triggerId?: string;
   /** Defaults to `'user'`; the MCP tool passes `overseer:<agentId>` (M4). */
   readonly createdBy?: CreatedBy;
   /** Set by `create_assignment` only; a user-created assignment has no parent. */
@@ -232,6 +258,10 @@ export interface CreateSoloRequest {
   readonly preGrants?: readonly PreGrant[];
   /** The task template this was started from (§2.3, WO5) — provenance only. */
   readonly templateId?: string;
+  /** How the launch was started (§2.3, WO8); in-process callers only. */
+  readonly origin?: AssignmentOrigin;
+  /** Which standing schedule fired this, when {@link origin} is `trigger`. */
+  readonly triggerId?: string;
   readonly createdBy?: CreatedBy;
 }
 
@@ -285,6 +315,10 @@ export interface AssignmentView {
   readonly artifactPath: string | null;
   /** The task template this assignment was started from, or `null` (WO5). */
   readonly templateId: string | null;
+  /** `user` unless a standing schedule started it (§2.3, WO8). */
+  readonly origin: AssignmentOrigin;
+  /** The trigger that fired it, or `null` for everything a person started. */
+  readonly triggerId: string | null;
   readonly tokenBudget: number | null;
   readonly tokensUsed: number;
   readonly roundCap: number | null;

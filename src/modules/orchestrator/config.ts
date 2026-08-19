@@ -132,6 +132,31 @@ export const orchestratorConfigSchema = z.strictObject({
     topicSecretRef: z.string().min(1),
   }),
   /**
+   * §13's background triggers (WO8).
+   *
+   * `enabled` is a **kill switch**, not a feature flag: it is read on every
+   * fire rather than at boot, so flipping it in a config file and restarting
+   * stops every schedule at once without editing a single trigger row — and
+   * without losing what the rows say, which is what disabling them one by one
+   * would cost. A trigger skipped by it is skipped, never disabled.
+   *
+   * `maxConsecutiveFailures` is the self-disable threshold. Three, because a
+   * schedule that fails once has met a transient (a rate-limit cool-down, a
+   * connector that blinked) and a schedule that fails three times in a row has
+   * met a *bug*, and an hourly timer re-entering a bug all night is the exact
+   * failure mode an unattended feature must not have.
+   *
+   * `tickMs` is how often the scheduler looks for due triggers. It bounds the
+   * lateness of a fire, not its frequency: a 60-minute trigger with a
+   * one-minute tick fires within a minute of its due time, and nothing about
+   * the schedule changes if the tick does.
+   */
+  triggers: z.strictObject({
+    enabled: z.boolean(),
+    maxConsecutiveFailures: positiveInt,
+    tickMs: positiveInt,
+  }),
+  /**
    * §11.5's glanceable projection. Both keys cap what `GET /api/widget`
    * *sends*, never what it counts: `waitingTotal` is taken before the slice, so
    * lowering `maxWaiting` shortens the widget and never hides the number.
@@ -184,5 +209,6 @@ export const ORCHESTRATOR_CONFIG_DEFAULTS: OrchestratorConfig = {
     minLevel: 'blocking',
     topicSecretRef: 'notify.ntfy.topicUrl',
   },
+  triggers: { enabled: true, maxConsecutiveFailures: 3, tickMs: 60_000 },
   widget: { maxWaiting: 4, promptChars: 140 },
 };

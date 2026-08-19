@@ -262,6 +262,64 @@ export interface TaskTemplateListView {
 }
 
 // ---------------------------------------------------------------------------
+// Background triggers (orchestrator §2.8, WO8)
+// ---------------------------------------------------------------------------
+
+/** The window a trigger may fire in, in **local** hours; `to` ≤ `from` wraps midnight. */
+export interface ActiveHours {
+  readonly from: number;
+  readonly to: number;
+}
+
+/** What the last fire did — the closed set the row and the bus events agree on. */
+export type TriggerOutcome = 'fired' | 'skipped' | 'blocked' | 'disabled';
+
+/** The assignment a row's "last run" links to. */
+export interface TriggerLastRun {
+  readonly assignmentId: string;
+  readonly status: 'open' | 'closed';
+  readonly phase: string;
+  readonly closeReason: string | null;
+  readonly createdAt: string;
+}
+
+/** One standing schedule, as `GET /api/triggers` returns it. */
+export interface Trigger {
+  readonly id: string;
+  readonly projectId: string;
+  readonly templateId: string;
+  readonly agentIds: readonly string[];
+  readonly everyMinutes: number;
+  readonly activeHours: ActiveHours | null;
+  readonly enabled: boolean;
+  readonly variables: Readonly<Record<string, string>>;
+  readonly maxRunsPerDay: number | null;
+  readonly lastFiredAt: string | null;
+  readonly nextFireAt: string | null;
+  readonly consecutiveFailures: number;
+  readonly lastOutcome: TriggerOutcome | null;
+  readonly lastOutcomeReason: string | null;
+  readonly lastOutcomeAt: string | null;
+  readonly lastRun: TriggerLastRun | null;
+  readonly runsToday: number;
+  readonly createdAt: string;
+  readonly updatedAt: string | null;
+}
+
+export interface TriggerListView {
+  readonly triggers: readonly Trigger[];
+}
+
+/** `POST /api/triggers/:id/run` — the outcome, plus the row it left behind. */
+export interface TriggerRunResult {
+  readonly triggerId: string;
+  readonly outcome: TriggerOutcome;
+  readonly reason: string | null;
+  readonly assignmentId?: string;
+  readonly trigger: Trigger;
+}
+
+// ---------------------------------------------------------------------------
 // Projects (§8.1)
 // ---------------------------------------------------------------------------
 

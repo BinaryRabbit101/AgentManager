@@ -61,7 +61,7 @@ function movableClock(): { now: () => Date; advanceMinutes: (minutes: number) =>
 async function launch(
   harness: LaunchHarness,
   seed: { projectId: string; assignmentId: string; agentId: string },
-  options: { priority?: 'interactive' | 'normal' } = {},
+  options: { priority?: 'interactive' | 'normal' | 'background' } = {},
 ): Promise<string> {
   const started = await harness.service.startSession({
     assignmentId: seed.assignmentId,
@@ -223,6 +223,92 @@ describe('the two priority bands (M5, §6.2)', () => {
       expect(statusOf(harness, newer)).toBe('queued');
 
       await drain(harness, gate, [older, newer]);
+    } finally {
+      harness.close();
+    }
+  });
+});
+
+describe('the background band (§6.2, WO8)', () => {
+  it('admits a trigger-launched session second when an interactive one is waiting', async () => {
+    const gate = gatedQuery();
+    const harness = makeLaunchHarness({
+      dataRoot: dataRoot(),
+      query: gate.query,
+      config: { maxConcurrent: 1 },
+    });
+    try {
+      const seed = harness.seed();
+      const running = await launch(harness, seed);
+      await gate.started(1);
+
+      // The background one is enqueued *first*; the owner's launch arrives
+      // after it and must still go first — unattended work never starves the
+      // owner's own usage (D2).
+      const background = await launch(harness, seed, { priority: 'background' });
+      const interactive = await launch(harness, seed, { priority: 'interactive' });
+
+      gate.sessions[0]?.finish();
+      await harness.service.awaitSettled(running);
+      await gate.started(2);
+
+      expect(statusOf(harness, interactive)).toBe('running');
+      expect(statusOf(harness, background)).toBe('queued');
+
+      await drain(harness, gate, [interactive, background]);
+    } finally {
+      harness.close();
+    }
+  });
+
+  it('holds a background session back while an interactive one is blocked, not merely queued', async () => {
+    const gate = gatedQuery();
+    const harness = makeLaunchHarness({
+      dataRoot: dataRoot(),
+      query: gate.query,
+      config: { maxConcurrent: 1 },
+    });
+    try {
+      const seed = harness.seed();
+      const running = await launch(harness, seed);
+      await gate.started(1);
+
+      const interactive = await launch(harness, seed, { priority: 'interactive' });
+      const background = await launch(harness, seed, { priority: 'background' });
+      // A blocked entry is `continue`d over by the admission loop, so band
+      // ordering alone would let the background session start ahead of a human
+      // waiting for a workspace. This is the gate that does not.
+      harness.sessions.patch(interactive, { blockedReason: 'a write lease is held' });
+
+      gate.sessions[0]?.finish();
+      await harness.service.awaitSettled(running);
+      harness.launch.admitQueued();
+      expect(statusOf(harness, background)).toBe('queued');
+
+      harness.launch.onWorkspaceReleased();
+      await gate.started(2);
+      expect(statusOf(harness, interactive)).toBe('running');
+
+      await drain(harness, gate, [interactive, background]);
+    } finally {
+      harness.close();
+    }
+  });
+
+  it('keeps the band on the row, read back as one value', async () => {
+    const gate = gatedQuery();
+    const harness = makeLaunchHarness({
+      dataRoot: dataRoot(),
+      query: gate.query,
+      config: { maxConcurrent: 1 },
+    });
+    try {
+      const seed = harness.seed();
+      const session = await launch(harness, seed, { priority: 'background' });
+      // 0004 stores the band as `(priority, background)`; every reader above the
+      // repository sees the one value it was enqueued with.
+      expect(harness.sessions.require(session).priority).toBe('background');
+      await drain(harness, gate, [session]);
     } finally {
       harness.close();
     }

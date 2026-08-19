@@ -351,6 +351,7 @@ The `EventStream` maps event types to cache operations. The interesting entries:
 | `runner.queue.changed`, `runner.ratelimited` | patch the queue panel |
 | `assignment.question.raised/answered` | invalidate the inbox, bump/clear the badge, fire the Electron toast |
 | `assignment.turn.*`, `assignment.round.completed`, `assignment.halted`, `assignment.closed` | invalidate the conversation and the assignment header |
+| `trigger.fired/skipped/blocked/disabled` | invalidate the trigger rows and the assignment lists (orchestrator §2.8) |
 | `project.clone.progress/completed/failed` | patch the clone progress row |
 | `workspace.acquired/released/orphaned`, `project.scope.overlap` | invalidate project health |
 | `remote.agent.access.granted/revoked/expired` | patch the card's remote badge live (remote §12.4) |
@@ -941,7 +942,7 @@ project registration is never stranded on the desktop.
 
 ### 8.2 The project page
 
-Four regions, in priority order:
+Five regions, in priority order:
 
 1. **Header** — name, path, branch, vcs, `status`, health chips derived server-side (`missing`,
    `dirty`, `stale-agents`, `orphaned-worktrees`), and a **Start work…** button (the non-drag
@@ -959,6 +960,17 @@ Four regions, in priority order:
 4. **Work items** — a simple ranked list per status, inline-creatable (title only is enough), drag-
    reorderable with the same ▲▼ fallback, and each row a drop target for an agent (§5.3). Deliberately
    thin: no priorities, labels, or assignees, matching projects §7.2.
+5. **Triggers** *(2026-08-19, WO8)* — this project's standing schedules, from `GET /api/triggers?projectId=`
+   (orchestrator §2.8). Each row: the template, the seats, the schedule ("every 1 hour, 08:00–22:00"),
+   an **Enabled** toggle, **Run now**, the next fire, the last run *linked to its assignment*, and
+   `runsToday / maxRunsPerDay`. When the last fire did not launch, the row carries **the reason in the
+   server's words** — `connector-needs-auth:gmail`, `permission-gate:Bash`,
+   `disabled-after-3-failures` — because an unattended feature whose refusals are invisible is an
+   unattended feature nobody trusts, and because the reason *is* the fix. **Run now** posts to
+   `/api/triggers/:id/run`, which answers 200 for a refusal too, so the toast says what happened
+   rather than claiming a start. Unlike region 2, this section stays on the page when it is empty:
+   "nothing runs on its own here" is a fact worth being able to read. Nothing polls — §3.4's
+   `trigger.*` row is what refreshes it.
 
 **Settings** (collapsed): default agents (ordered), permission override, permission elevation with its
 required reason, env entries (secret refs shown as `secretRef` names with a set/unset indicator, never
@@ -1373,6 +1385,7 @@ the reason "a remote client may lower the cap but not raise it" (runner §15.3 #
 | **Remote access** (home edition only) | listener status, device tokens, per-agent grants |
 | **Runner** | concurrency cap, and a read-only view of queue/timeout config with the layer that won |
 | **Notifications** | ntfy topic (a `secretRef` set/unset control, never a value), trigger level, test send |
+| **Automation** *(2026-08-19, WO8)* | every background trigger, across every project — the same panel the project page's §8.2 region 5 renders, with the project named on each row. **Not edition-gated** (D6): triggers are outbound-only and involve no listener, so a work install schedules work exactly as a home one does |
 | **Appearance** | theme: system / light / dark |
 | **Logs** | filtered live tail (§13.3) |
 | **Health & about** | edition, resolved data root, module list, secret provider (with the degraded-keyfile warning), the `ANTHROPIC_API_KEY` startup warning, versions, and a **Download diagnostics** button |

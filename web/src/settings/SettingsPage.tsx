@@ -1,7 +1,8 @@
 /**
  * Settings (DESIGN §13; IMPLEMENTATION §10).
  *
- * Six sections, and three rules that decide what each one renders:
+ * Seven sections (Automation joined them with WO8), and three rules that decide
+ * what each one renders:
  *
  * 1. **Config is immutable per process** (foundation §2.4), so anything not
  *    backed by `settings` is read-only "with its winning layer" from
@@ -21,6 +22,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useState, type ReactElement } from 'react';
 
 import { queryKeys, useRemoteAgents, useRemoteStatus, useRemoteTokens } from '../api/queries';
+import { AutomationSection } from '../automation/AutomationSection';
 import type { MintedToken } from '../api/types';
 import { useEdition, useHasModule, useServices } from '../app/AppContext';
 import { THEME_CHOICES, applyTheme, type ThemeChoice } from '../theme/theme';
@@ -94,6 +96,11 @@ export function SettingsPage(): ReactElement {
           answer from outside the tailnet (§11.4).
         </p>
       </section>
+
+      {/* §13.1's Automation section (WO8). Not edition-gated: triggers are
+          outbound-only and involve no listener, so both editions schedule work
+          identically (D6). */}
+      <AutomationSection />
 
       <section className="settings__section" aria-labelledby="settings-appearance">
         <h3 id="settings-appearance">Appearance</h3>

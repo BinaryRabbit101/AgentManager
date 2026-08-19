@@ -35,16 +35,21 @@ import { createNotifier, type Notifier, type NotifyTimers } from '../notify.js';
 import { createFleetStatusReader, type FleetStatus } from '../status.js';
 import { createWidgetFeedReader, type WidgetFeed } from '../widget.js';
 import type {
+  GateLiableToolPort,
+  IntegrationStatePort,
   ProjectsPort,
   ResolvedAgentPort,
   RosterPort,
   RunnerPort,
   StartSessionRequest,
+  TaskTemplatePort,
 } from '../ports.js';
 import { createQuestionInbox, type QuestionInbox } from '../questions.js';
 import { createAssignmentRepository, type AssignmentRepository } from '../repository.js';
 import { createAssignmentService, type AssignmentServiceOptions } from '../service.js';
 import { createToolsetFactory, type ToolsetFactory } from '../toolset.js';
+import { createTriggerRepository, type TriggerRepository } from '../triggers.js';
+import { createTriggerService, type TriggerService } from '../triggerScheduler.js';
 import { createTurnRepository, type TurnRepository } from '../turns.js';
 import type { AssignmentRole, AssignmentService } from '../types.js';
 
@@ -94,8 +99,37 @@ export interface FakeAgent {
   readonly tags?: readonly string[];
 }
 
+/**
+ * The WO4/WO5/WO6 projections §2.8's preflight reads, as a test can state them.
+ *
+ * Everything defaults to green, because "green" is the case every suite that is
+ * not about preflight wants and stating it in each of them would be noise.
+ */
+export interface FakePreflight {
+  /** The templates `getTemplate` answers with, by id. Absent ids throw, as roster does. */
+  readonly templates?: readonly TaskTemplatePort[];
+  /** WO4's dry-run, per agent id; the default is "no tool would ask". */
+  readonly gateLiable?: Readonly<Record<string, readonly GateLiableToolPort[]>>;
+  /** WO6's projection, per agent id; the default is "nothing declared, nothing missing". */
+  readonly integrations?: Readonly<Record<string, readonly IntegrationStatePort[]>>;
+}
+
+/** A task template, with §2.8's fields defaulted to the shape a solo trigger uses. */
+export function aTemplate(overrides: Partial<TaskTemplatePort> = {}): TaskTemplatePort {
+  return {
+    id: 'todo-ticket-replies',
+    name: 'Reply to todo tickets',
+    pattern: 'solo',
+    goalTemplate: 'If the source has no open items, report done immediately.\n\nWork {{source}}.',
+    ...overrides,
+  };
+}
+
 /** A roster whose registry answers from a table. */
-export function fakeRoster(agents: readonly FakeAgent[]): RosterPort {
+export function fakeRoster(
+  agents: readonly FakeAgent[],
+  preflight: FakePreflight = {},
+): RosterPort {
   const resolve_ = (agent: FakeAgent): ResolvedAgentPort => ({
     definition: {
       id: agent.id,
@@ -128,6 +162,19 @@ export function fakeRoster(agents: readonly FakeAgent[]): RosterPort {
           roles: agent.roles ?? ['implementer'],
         },
       })),
+    // §2.8's three probes. Present always, because a build whose roster has them
+    // is the build every trigger test is about — `hasUnattendedPreflight` is
+    // exercised by omitting them explicitly, not by them being absent here.
+    getTemplate: (id: string) => {
+      const found = (preflight.templates ?? [aTemplate()]).find((one) => one.id === id);
+      // Roster throws a typed 404 rather than answering `undefined`, and §2.8's
+      // `template-missing` block depends on the throw being caught.
+      if (found === undefined) throw new Error(`no template ${id}`);
+      return { template: found };
+    },
+    validate: (agentId: string) =>
+      Promise.resolve({ gateLiable: preflight.gateLiable?.[agentId] ?? [] }),
+    integrations: (agentId: string) => Promise.resolve(preflight.integrations?.[agentId] ?? []),
   };
 }
 
@@ -301,6 +348,10 @@ export interface Harness {
   readonly budgets: BudgetPolicy;
   /** §10's channel (M8), wired to {@link Harness.timers} and a fake `fetch`. */
   readonly notifier: Notifier;
+  /** §2.8's background triggers (WO8), over the same repository and bus. */
+  readonly triggers: TriggerService;
+  /** The trigger rows themselves, for the arrange half of a scheduler test. */
+  readonly triggerRows: TriggerRepository;
   /** Every ntfy POST the notifier attempted, in order. */
   readonly posts: { url: string; body: string; headers: Record<string, string> }[];
   /** Shared by the notifier's delay and the engine's post-launch-failure retry. */
@@ -339,6 +390,10 @@ export interface HarnessOptions {
   readonly notifyFails?: boolean;
   /** Attaches the notifier's bus subscriptions, as `module.ts` does. */
   readonly attachNotifier?: boolean;
+  /** §2.8's preflight data: templates, gate-liable tools, connector states. */
+  readonly preflight?: FakePreflight;
+  /** Drops §2.8's three roster probes, for the "roster too old" refusal. */
+  readonly withoutPreflight?: boolean;
 }
 
 /** The topic URL the harness's fake secret store answers with. */
@@ -432,7 +487,19 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
 
   const config: OrchestratorConfig = { ...ORCHESTRATOR_CONFIG_DEFAULTS, ...options.config };
 
-  const roster = fakeRoster(options.agents ?? [{ id: 'ada', roles: ['implementer'] }]);
+  const fullRoster = fakeRoster(
+    options.agents ?? [{ id: 'ada', roles: ['implementer'] }],
+    options.preflight ?? {},
+  );
+  const roster: RosterPort =
+    options.withoutPreflight === true
+      ? {
+          registry: fullRoster.registry,
+          ...(fullRoster.overseerRoster === undefined
+            ? {}
+            : { overseerRoster: fullRoster.overseerRoster }),
+        }
+      : fullRoster;
   const built: { inbox?: QuestionInbox; toolset?: ToolsetFactory; engine?: PatternEngine } = {};
   const serviceOptions: AssignmentServiceOptions = {
     repository,
@@ -586,6 +653,22 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
   });
   const detachNotifier = options.attachNotifier === false ? () => {} : notifier.attach();
 
+  // §2.8, wired exactly as `module.ts` wires it — same repository, same bus,
+  // same clock, same notifier.
+  const triggerRows = createTriggerRepository({ db: storage.db, clock });
+  const triggers = createTriggerService({
+    triggers: triggerRows,
+    assignments: repository,
+    service: () => service,
+    bus,
+    clock,
+    config,
+    roster: () => roster,
+    projects: () => projects,
+    notifier: () => notifier,
+  });
+  const detachTriggers = triggers.attach();
+
   return {
     storage,
     repository,
@@ -600,6 +683,8 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     widgetFeed,
     budgets,
     notifier,
+    triggers,
+    triggerRows,
     posts,
     timers,
     bus,
@@ -614,6 +699,7 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     cleanup: () => {
       detach();
       detachNotifier();
+      detachTriggers();
       storage.close();
       dir.cleanup();
     },

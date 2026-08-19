@@ -66,6 +66,9 @@ import { createFleetStatusReader } from './status.js';
 import { createWidgetFeedReader } from './widget.js';
 import { createWidgetRoutes } from './widgetRoutes.js';
 import { createToolsetFactory, type ToolsetFactory } from './toolset.js';
+import { createTriggerRepository } from './triggers.js';
+import { createTriggerRoutes } from './triggerRoutes.js';
+import { createTriggerService, type TriggerService } from './triggerScheduler.js';
 import { createTurnRepository, type TurnRepository } from './turns.js';
 import type { ProjectsPort, RosterPort, RunnerPort } from './ports.js';
 import type { AssignmentService } from './types.js';
@@ -94,6 +97,8 @@ export interface OrchestratorInternals {
   readonly budgets: BudgetPolicy;
   /** M8's ntfy channel. */
   readonly notifier: Notifier;
+  /** §2.8's background triggers (WO8), driven by hand in the tests. */
+  readonly triggers: TriggerService;
   /** M7-5's staleness sweep, driven once per tick and once per test. */
   sweepStale(): Promise<readonly string[]>;
 }
@@ -363,6 +368,26 @@ export function createOrchestratorModule(
       });
       const detachNotifier = notifier.attach();
 
+      // §2.8's background triggers (WO8). Built after the notifier because a
+      // blocked fire and a self-disable both push through §10's channel, and
+      // after the service because a fire is a `createAssignment` call and
+      // nothing else.
+      const triggers = createTriggerService({
+        triggers: createTriggerRepository({ db: open.db, clock: ctx.clock }),
+        assignments: repository,
+        service: () => service,
+        bus: ctx.bus,
+        clock: ctx.clock,
+        config: ctx.config.orchestrator,
+        roster: () => ctx.require<RosterPort>('roster'),
+        projects: () => ctx.require<ProjectsPort>('projects'),
+        notifier: () => notifier,
+        log: (level, message, detail) => {
+          ctx.logger[level](detail ?? {}, message);
+        },
+      });
+      const detachTriggers = triggers.attach();
+
       // M7-5's periodic sweep. A self-rescheduling timer rather than an
       // interval, so a slow pass can never overlap itself, and `unref`ed (by
       // `realNotifyTimers`) so it is never the reason the process cannot exit.
@@ -394,6 +419,27 @@ export function createOrchestratorModule(
       };
       scheduleSweep();
 
+      // §2.8's own timer, a sibling of the sweep above and for the same reasons:
+      // self-rescheduling rather than an interval, so a slow tick can never
+      // overlap itself, and `unref`ed so a pending fire is never the reason the
+      // process cannot exit. Its cadence bounds how *late* a fire can be, not
+      // how often one happens — the schedule lives on the row.
+      let cancelTick: (() => void) | undefined;
+      const scheduleTick = (): void => {
+        if (stopped) return;
+        cancelTick = timers.after(ctx.config.orchestrator.triggers.tickMs, async () => {
+          const fired = await triggers.tick().catch((error: unknown) => {
+            ctx.logger.warn({ err: error }, 'the trigger tick failed');
+            return [];
+          });
+          if (fired.length > 0) {
+            ctx.logger.debug({ fired: fired.length }, 'background triggers were evaluated');
+          }
+          scheduleTick();
+        });
+      };
+      scheduleTick();
+
       ctx.provide(ORCHESTRATOR_SERVICE, service);
       ctx.registerRoutes(createAssignmentRoutes({ service, logger: ctx.logger }));
       ctx.registerRoutes(createQuestionRoutes({ inbox, logger: ctx.logger }));
@@ -401,6 +447,7 @@ export function createOrchestratorModule(
         createEngineRoutes({ engine, service, conversation, fleetStatus, logger: ctx.logger }),
       );
       ctx.registerRoutes(createWidgetRoutes({ widgetFeed, logger: ctx.logger }));
+      ctx.registerRoutes(createTriggerRoutes({ triggers, logger: ctx.logger }));
       options.onReady?.({
         repository,
         service,
@@ -411,6 +458,7 @@ export function createOrchestratorModule(
         toolset,
         budgets,
         notifier,
+        triggers,
         sweepStale: () => engine.sweepStale(),
       });
 
@@ -461,6 +509,20 @@ export function createOrchestratorModule(
         }
       }, 'orchestrator:reconcile-turns');
 
+      // §2.8's boot pass. A boot task rather than the first tick, so a trigger
+      // whose window closed while the core was down is re-armed before any
+      // listener can show a `next_fire_at` in the past — and so the catch-up
+      // collapse happens exactly once per boot rather than once per tick.
+      ctx.registerBootTask(() => {
+        const result = triggers.reconcileOnBoot();
+        if (result.rearmed.length > 0) {
+          ctx.logger.info(
+            { rearmed: result.rearmed.length },
+            'background triggers were re-armed after a restart',
+          );
+        }
+      }, 'orchestrator:rearm-triggers');
+
       ctx.logger.info(
         {
           maxConcurrentPerAgent: ctx.config.orchestrator.assignment.maxConcurrentPerAgent,
@@ -476,8 +538,10 @@ export function createOrchestratorModule(
           // drive the same assignment from two engines.
           detach();
           detachNotifier();
+          detachTriggers();
           stopped = true;
           cancelSweep?.();
+          cancelTick?.();
         },
         health: () => {
           const open_ = repository.list({ status: 'open' });

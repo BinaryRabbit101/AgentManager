@@ -36,6 +36,7 @@ import { isoTimestamp } from '../../storage/index.js';
 
 import type {
   AssignmentChildView,
+  AssignmentOrigin,
   AssignmentPhase,
   AssignmentScope,
   CreatedBy,
@@ -68,6 +69,9 @@ export interface AssignmentRow {
   readonly preGrantsJson: string;
   /** 0006's column: the task template this was started from, or `null` (WO5). */
   readonly templateId: string | null;
+  /** 0008's columns: how the launch was started, and by which schedule (WO8). */
+  readonly origin: AssignmentOrigin;
+  readonly triggerId: string | null;
   readonly phase: AssignmentPhase;
   readonly haltReason: string | null;
   readonly updatedAt: string | null;
@@ -95,6 +99,8 @@ export interface CreateAssignmentRow {
   readonly patternConfig?: Readonly<Record<string, unknown>> | undefined;
   readonly preGrants?: readonly PreGrant[] | undefined;
   readonly templateId?: string | undefined;
+  readonly origin?: AssignmentOrigin | undefined;
+  readonly triggerId?: string | undefined;
   readonly tokenBudget: number | null;
   readonly roundCap: number | null;
   readonly members: readonly {
@@ -145,6 +151,21 @@ export interface AssignmentRepository {
   };
   /** A parent's children, newest first — §4.2's `scopeOf` for an overseer. */
   listChildren(parentAssignmentId: string): readonly AssignmentRow[];
+  /**
+   * §2.8's singleflight: how many assignments this trigger produced are still
+   * `open`.
+   *
+   * Asked on every fire, and derived rather than tracked on the trigger row on
+   * purpose — a "currently running" flag and the assignment rows it describes
+   * are two sources of truth that a crash between two writes puts permanently
+   * out of step, and the failure mode of a stuck flag is a schedule that never
+   * fires again.
+   */
+  countOpenForTrigger(triggerId: string): number;
+  /** §2.8's `maxRunsPerDay`: assignments this trigger produced at or after `sinceIso`. */
+  countForTriggerSince(triggerId: string, sinceIso: string): number;
+  /** The newest assignment this trigger produced — the UI row's "last run" link. */
+  latestForTrigger(triggerId: string): AssignmentRow | undefined;
   /** Sets `phase`, and `halt_reason` when one is given. */
   setPhase(id: string, phase: AssignmentPhase, haltReason?: string | null): AssignmentRow;
   /**
@@ -190,6 +211,8 @@ interface RawRow {
   readonly pattern_config_json: string;
   readonly pre_grants_json: string;
   readonly template_id: string | null;
+  readonly origin: string;
+  readonly trigger_id: string | null;
   readonly phase: AssignmentPhase;
   readonly halt_reason: string | null;
   readonly updated_at: string | null;
@@ -283,7 +306,8 @@ export function createAssignmentRepository(
 
   const ownColumns =
     'created_by, parent_assignment_id, lead_agent_id, write, artifact_path, ' +
-    'pattern_config_json, pre_grants_json, template_id, phase, halt_reason, updated_at';
+    'pattern_config_json, pre_grants_json, template_id, origin, trigger_id, ' +
+    'phase, halt_reason, updated_at';
 
   const selectOwn = db.prepare<[string], RawRow>(
     `SELECT ${ownColumns} FROM assignments WHERE id = ?`,
@@ -299,13 +323,15 @@ export function createAssignmentRepository(
       string,
       string | null,
       string,
+      string | null,
+      string,
       string,
       string,
     ]
   >(
     'UPDATE assignments SET created_by = ?, parent_assignment_id = ?, lead_agent_id = ?, ' +
       'write = ?, artifact_path = ?, pattern_config_json = ?, pre_grants_json = ?, ' +
-      'template_id = ?, phase = ?, updated_at = ? WHERE id = ?',
+      'template_id = ?, origin = ?, trigger_id = ?, phase = ?, updated_at = ? WHERE id = ?',
   );
   const setPhaseStatement = db.prepare<[string, string | null, string, string]>(
     'UPDATE assignments SET phase = ?, halt_reason = ?, updated_at = ? WHERE id = ?',
@@ -338,6 +364,16 @@ export function createAssignmentRepository(
       "SUM(CASE WHEN status = 'open' THEN COALESCE(token_budget, 0) ELSE 0 END) AS open_reserved, " +
       "SUM(CASE WHEN status = 'closed' THEN tokens_used ELSE 0 END) AS closed_used " +
       'FROM assignments WHERE parent_assignment_id = ?',
+  );
+  // §2.8's three trigger reads, all served by 0008's `assignments_by_trigger`.
+  const countOpenTrigger = db.prepare<[string], { n: number }>(
+    "SELECT COUNT(*) AS n FROM assignments WHERE trigger_id = ? AND status = 'open'",
+  );
+  const countTriggerSince = db.prepare<[string, string], { n: number }>(
+    'SELECT COUNT(*) AS n FROM assignments WHERE trigger_id = ? AND created_at >= ?',
+  );
+  const latestTrigger = db.prepare<[string], { id: string }>(
+    'SELECT id FROM assignments WHERE trigger_id = ? ORDER BY created_at DESC, id DESC LIMIT 1',
   );
   const childIds = db.prepare<[string], { id: string }>(
     'SELECT id FROM assignments WHERE parent_assignment_id = ? ORDER BY created_at DESC, id DESC',
@@ -379,6 +415,12 @@ export function createAssignmentRepository(
       patternConfigJson: own.pattern_config_json,
       preGrantsJson: own.pre_grants_json,
       templateId: own.template_id,
+      // Read back through the closed set rather than cast: 0008 defaults the
+      // column to `user`, so a value nothing in this build can produce is a row
+      // some future migration wrote, and reading it as `user` is the honest
+      // downgrade — an unknown origin is not a trigger run.
+      origin: own.origin === 'trigger' ? 'trigger' : 'user',
+      triggerId: own.trigger_id,
       phase: own.phase,
       haltReason: own.halt_reason,
       updatedAt: own.updated_at,
@@ -415,6 +457,11 @@ export function createAssignmentRepository(
       // it records where this assignment came from, and provenance that could be
       // edited afterwards is not provenance (WO5).
       input.templateId ?? null,
+      // Provenance, written once with the row and never rewritten, for the same
+      // reason the template id is: an assignment that could change what started
+      // it afterwards is not recording what started it (WO8).
+      input.origin ?? 'user',
+      input.triggerId ?? null,
       input.phase,
       now,
       created.id,
@@ -489,6 +536,16 @@ export function createAssignmentRepository(
 
     listChildren: (parentAssignmentId) =>
       childIds.all(parentAssignmentId).map((row) => hydrate(row.id)),
+
+    countOpenForTrigger: (triggerId) => countOpenTrigger.get(triggerId)?.n ?? 0,
+
+    countForTriggerSince: (triggerId, sinceIso) =>
+      countTriggerSince.get(triggerId, sinceIso)?.n ?? 0,
+
+    latestForTrigger(triggerId) {
+      const row = latestTrigger.get(triggerId);
+      return row === undefined ? undefined : hydrate(row.id);
+    },
 
     setPhase(id, phase, haltReason) {
       setPhaseStatement.run(phase, haltReason ?? null, isoTimestamp(clock()), id);

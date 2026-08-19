@@ -89,10 +89,33 @@ ALTER TABLE assignments ADD COLUMN artifact_path        TEXT;   -- repo-relative
 ALTER TABLE assignments ADD COLUMN pattern_config_json  TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE assignments ADD COLUMN pre_grants_json      TEXT NOT NULL DEFAULT '[]';  -- 0004, §2.3
 ALTER TABLE assignments ADD COLUMN template_id          TEXT;   -- 0006, §2.3: provenance only
+ALTER TABLE assignments ADD COLUMN origin               TEXT NOT NULL DEFAULT 'user';
+      -- 0008, §2.3/§2.8: 'user' | 'trigger' — the *channel*, not the authority
+ALTER TABLE assignments ADD COLUMN trigger_id           TEXT;   -- 0008: which standing schedule
 ALTER TABLE assignments ADD COLUMN phase                TEXT NOT NULL DEFAULT 'planned';
 ALTER TABLE assignments ADD COLUMN halt_reason          TEXT;
 ALTER TABLE assignments ADD COLUMN updated_at           TEXT;
 CREATE INDEX assignments_open ON assignments (project_id, status, updated_at);
+CREATE INDEX assignments_by_trigger ON assignments (trigger_id, status);   -- 0008, §2.8
+
+CREATE TABLE triggers (                     -- 0007, §2.8: when + what, per project
+  id                   TEXT PRIMARY KEY,
+  project_id           TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  template_id          TEXT NOT NULL,       -- no FK: templates are files (roster §2.1)
+  agent_ids_json       TEXT NOT NULL DEFAULT '[]',
+  every_minutes        INTEGER NOT NULL,
+  active_from_hour     INTEGER, active_to_hour INTEGER,   -- LOCAL hours; both null = always
+  enabled              INTEGER NOT NULL DEFAULT 1,
+  variables_json       TEXT NOT NULL DEFAULT '{}',
+  max_runs_per_day     INTEGER,
+  last_fired_at        TEXT, next_fire_at TEXT,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  last_outcome         TEXT,                -- fired|skipped|blocked|disabled
+  last_outcome_reason  TEXT, last_outcome_at TEXT,
+  created_at           TEXT NOT NULL, updated_at TEXT
+);
+CREATE INDEX triggers_due        ON triggers (enabled, next_fire_at);
+CREATE INDEX triggers_by_project ON triggers (project_id);
 
 ALTER TABLE assignment_members ADD COLUMN seat_order INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE assignment_members ADD COLUMN joined_at  TEXT;
@@ -248,6 +271,31 @@ lost its template must keep its history rather than fail to load, and a create c
 refusing because somebody pruned a folder — an id that no longer resolves reads as exactly what it
 is. Orchestrator does not import roster to check it, which is also foundation §6.1's rule.
 
+**A fourth caller, and no fourth semantics: background triggers** *(added 2026-08-19, WO8)*.
+
+§2.8's trigger scheduler is the fourth thing that starts work, and it starts it through **exactly
+these functions** — `createSolo` for a `solo` template, `createAssignment` for a `pair` one, chosen
+the same way the Start-work dialog chooses between them. It adds no validation, no defaults and no
+state machine of its own. What it adds is two provenance fields on the same request:
+
+```ts
+origin?: 'user' | 'trigger';   // how the launch was started; defaults to 'user'
+triggerId?: string;            // which standing schedule, when origin is 'trigger'
+```
+
+Stored as `assignments.origin` / `assignments.trigger_id` (§2.1, migration 0008) and returned on the
+view. Three properties are load-bearing:
+
+- **`createdBy` does not move.** A trigger run stays `createdBy: 'user'`, because a schedule the
+  owner wrote is the owner's intent expressed once instead of hourly. Rewriting it to `system` would
+  move every trigger run out of the §9 rules that apply to a human's launch — a different and worse
+  claim than the one being recorded.
+- **Neither field is readable from an HTTP body**, for the reason `createdBy` is not: a caller that
+  could claim `trigger` would be claiming the runner admission band that goes with it.
+- **`origin` is the one place provenance becomes a scheduling fact.** A trigger-launched session
+  enters runner's `background` band (runner §6.2) whatever the caller asked for, on its first
+  session and on every later turn the engine plans. Nothing else in the engine branches on it.
+
 **Work-item linking, on all three paths.** `workItemIds?: string[]` is accepted by
 `createSolo`, by `CreateAssignmentRequest`, and by `create_assignment` (§4.3). The engine is the
 **sole writer** of `work_item_assignments` (projects §1.5, §17 R4): on create it calls
@@ -344,6 +392,100 @@ actually corrupt each other's diff, where a human sees it first.
 context call returns the seat's role for that session. `write` is an assignment property, not a
 session one — projects leases on write-capability, and a plan/review assignment must not take the
 write hold.
+
+### 2.8 Background triggers — assignments that start themselves *(added 2026-08-19, WO8)*
+
+Everything in §2.3 is human-initiated: somebody presses **Start work**. A **trigger** is the standing
+instruction that fires a §2.4-shaped task template on a schedule, so "work the open todo tickets"
+happens while the owner is away. The always-running core (foundation §4.3: Task Scheduler autostart,
+survives reboot) is already the right host — nothing new runs.
+
+A trigger is **when** + **what**. The *what* is exactly a task-template application, so a trigger
+adds no creation semantics (§2.3's fourth caller).
+
+```jsonc
+// row in SQLite `triggers` (migration 0007). Operational state, machine-local,
+// mutated by a timer several times an hour — a table, NOT a library file:
+// schedules reference local project ids and are not shareable content the way
+// templates are (foundation §1.1).
+{ "id": "01T…", "projectId": "01P…", "templateId": "todo-ticket-replies",
+  "agentIds": ["merritt"],                 // seats, same shape as Start-work
+  "everyMinutes": 60,
+  "activeHours": { "from": 8, "to": 22 },  // LOCAL hours, `from` inclusive / `to` exclusive;
+                                           // `to` ≤ `from` wraps midnight; null = always
+  "enabled": true,
+  "variables": { "source": "…" },          // fills the template's {{source}}
+  "maxRunsPerDay": 24,
+  "lastFiredAt": null, "nextFireAt": "…",  // persisted; recomputed on boot
+  "consecutiveFailures": 0,
+  "lastOutcome": "blocked",                // the last fire's verdict, and why
+  "lastOutcomeReason": "connector-needs-auth:gmail" }
+```
+
+**The scheduler.** An in-process timer in this module — a sibling of §8.1's staleness sweep and
+built the same way: self-rescheduling rather than an interval so a slow tick cannot overlap itself,
+`unref`ed so a pending fire never holds the process open, and taking the same injectable `timers`
+seam, so no test waits. `orchestrator.triggers.tickMs` bounds how *late* a fire can be; it says
+nothing about how often one happens, which lives on the row.
+
+On each fire, in order, **skip-don't-stall**:
+
+1. **The global kill switch.** `orchestrator.triggers.enabled: false` → `trigger.skipped`, reason
+   `triggers-disabled`, and nothing is disabled. Checked *first* rather than third: a scheduler that
+   has been switched off must do no preflight work and send no notifications, and a fire that ran the
+   connector projection before noticing it was off would do both.
+2. **Singleflight.** A previous assignment from this trigger is still `open` → `trigger.skipped`,
+   reason `still-running`. Derived from `assignments.trigger_id`, never from a flag on the trigger
+   row: a "currently running" boolean and the rows it describes are two sources of truth, and a stuck
+   one is a schedule that never fires again.
+3. **Preflight, unattended-strict.** WO4's permission dry-run and WO6's integration-state projection,
+   read **as data, at fire time**, through roster's own accessors — orchestrator consumes the same
+   projections the Start-work dialog shows a human and re-derives neither. Anything short of green
+   → **do not launch**: `trigger.blocked` naming the gate, plus a §10 notification. An unattended
+   launch that would park on a permission card or a dead connector is worse than no launch — it
+   burns a workspace lease and a session slot sitting on a question nobody is at the desk to answer.
+   The named reasons are `template-missing`, `project-<status>`, `agent-unavailable:<id>`,
+   `permission-gate:<tool>`, `connector-<state>:<integration>`, and
+   `roster-preflight-unavailable` when this build's roster cannot answer at all — *absence of the
+   projection reads as short of green*, which is the only direction an unattended feature may fail in.
+   A gate the template's own `preGrantTools` already answers, or that roster's Always-allow memory
+   remembers, is not a gate.
+4. **Caps.** `maxRunsPerDay` reached → `trigger.skipped`, reason `daily-cap`. Counted from the
+   assignments the trigger produced since local midnight, for the reason singleflight is derived.
+5. Otherwise create the assignment through §2.3 and let the engine drive it.
+
+**Failure backoff.** A run whose assignment closes `failed` increments `consecutiveFailures`; at
+`orchestrator.triggers.maxConsecutiveFailures` (3) the trigger **disables itself**, clears its
+`next_fire_at`, emits `trigger.disabled` and notifies. Any other close reason resets the counter —
+including `user_closed`, because a run a human stopped by hand has not failed. Three in a row is not
+a transient, and an hourly timer re-entering a bug all night is the exact failure mode an unattended
+feature must not have. Re-enabling is one toggle, and re-arms the schedule.
+
+**Boot.** `nextFireAt` is recomputed in a boot task, before any listener binds. Fires missed while
+the core was down collapse to **at most one** catch-up — structurally, because the row holds exactly
+one `next_fire_at` however long the outage was; all the boot pass does is bring a stale one forward
+to *now*, pushed into the active window. A fire still in the future is left alone: a restart must
+never bring a schedule forward.
+
+**Unattended economics.**
+
+- **The quiet run is the agent's job, not the core's.** The core never calls the todo or mail
+  connector itself to ask "is there anything to do?" — WO6 established that connectors belong to
+  agents (OAuth, no machine-scavengeable credentials), and the core impersonating an agent's grant
+  is a new security surface for a marginal saving. **Convention for template authors:** a template
+  meant for a trigger opens its `goalTemplate` with *"If the source has no open items, report done
+  immediately and write nothing."* A quiet run is then one short turn.
+- **Background never starves the owner.** A trigger-launched session takes runner's `background`
+  band (runner §6.2) — admitted only when no interactive session is waiting — and obeys rate-limit
+  cool-downs as usual (D2). This holds for every turn of the assignment, not only its first session.
+
+**Editions do not differ (D6).** Triggers are outbound-only and involve no listener; both editions
+ship `orchestrator.triggers.enabled: true` from layer 1 and neither edition file overrides it.
+
+**Deferred, deliberately.** Webhooks and any other inbound trigger (an inbound HTTP surface fights
+the D5 posture: the listener is the remote UI, Tailscale-bound, and the work edition has none);
+cron expressions (interval plus active hours covers the real cases, and a parser can come later);
+and core-side connector condition probes, per the security argument above.
 
 ---
 
@@ -1299,6 +1441,16 @@ enforcement are different jobs and are implemented by different things.
   overall; suppressed ones are counted into a single digest notification.
 - **Edition**: the work edition defaults `orchestrator.notify.enabled: false`. Outbound push from a
   work machine is a policy question, not a preference (§17, R5).
+- **Two cases with no card behind them** *(added 2026-08-19, WO8)*: a background trigger that was
+  **blocked** at preflight, and one that **disabled itself** after repeated failures (§2.8). Neither
+  has anything for a human to *answer* — there is no question, and raising a fake one so the notifier
+  had something to push would put a card in the inbox that no session is waiting on. What they have
+  is news, and §10 is already how news reaches a user who is away. `Notifier.send(title, body)`
+  serves them: it shares the `enabled` flag, the hourly rate limit and the suppressed-digest with the
+  card path — those are properties of the *channel*, and a second unlimited sender would make
+  `maxPerHour` a number that bounds nothing — but deliberately **not** the once-per-question memory,
+  because two blocked fires of the same trigger a day apart are two pieces of news. The payload
+  carries no tailnet link: there is no card to open, and the reason is the whole message.
 
 Deferred, explicitly: SMTP/email (credentials, deliverability, and a spam folder between the user and
 an approval gate), generic webhooks (no v1 consumer), Web Push with VAPID (the right long-term answer
@@ -1329,7 +1481,22 @@ POST   /api/questions/:id/answer           { optionIds?, text? }        local or
 GET    /api/orchestrator/status            §11.3 — the fleet view
 GET    /api/patterns                       pattern definitions, seats, defaults (drives the create dialog)
 GET    /api/widget                         §11.5 — the glanceable projection: one request, no parameters
+GET    /api/triggers                       ?projectId=&enabled=          §2.8's standing schedules
+POST   /api/triggers                       { projectId, templateId, agentIds, everyMinutes, … }
+GET    /api/triggers/:id
+PATCH  /api/triggers/:id                   everything but projectId
+DELETE /api/triggers/:id
+POST   /api/triggers/:id/run               fire now — the same path as the timer, preflight included
 ```
+
+**The trigger routes register with the default `remote: 'allow'`**, and that is the point: "the phone
+can fire one later" (§2.8). A trigger row is a template id, a project id, some agent ids and a
+schedule — no file contents, no secret, no token. `POST /:id/run` answers **200 whatever the
+outcome**: a skip and a block are *answers*, and the caller renders the reason. A 409 there would
+make **Run now** look broken on the one day it correctly refused to launch into a dead connector.
+`projectId` is deliberately absent from `PATCH`: a schedule moved to another project is a different
+schedule, and the assignments carrying its id would then describe work on a project it never ran
+against.
 
 **The `GET /api/questions` list projection is pinned** (ui §19, R5), because the inbox is the one
 screen a phone loads cold and it must cost exactly one request. Each item carries:
@@ -1437,9 +1604,19 @@ the UI shows a red row and the word "failed", which reads as the agent's fault w
 | `assignment.halted` | ✔ | `{ haltReason, questionId }` |
 | `assignment.conflict` | ✔ | `{ otherAssignmentId, paths, bothWrite }` |
 | `assignment.closed` | ✔ | `{ closeReason, rounds, tokens, artifactPath }` — **runner releases the lease on this** |
-| `orchestrator.notify.sent` | ✔ | `{ questionId, channel, ok }` |
+| `orchestrator.notify.sent` | ✔ | `{ questionId, channel, ok }` — `questionId: null` for §10's card-less cases |
+| `trigger.fired` | ✔ | `{ triggerId, templateId, reason: null, assignmentId }` |
+| `trigger.skipped` | ✔ | `{ triggerId, templateId, reason }` — `triggers-disabled` \| `still-running` \| `daily-cap` |
+| `trigger.blocked` | ✔ | `{ triggerId, templateId, reason }` — the preflight gate, by name (§2.8) |
+| `trigger.disabled` | ✔ | `{ triggerId, templateId, reason }` — `disabled-after-<n>-failures` |
 
 `assignment.budget.exceeded` is runner's and is consumed, not re-emitted.
+
+The four `trigger.*` events carry `ids.projectId` and never `ids.assignmentId` — the assignment id
+rides in the payload of a `fired`, because the other three describe a fire that produced no
+assignment at all and an `ids` field that is populated only sometimes is a correlation key nothing
+can join on. They are persisted because "the nightly job has not run since Tuesday" is a question the
+event log should be able to answer.
 
 ### 11.5 The widget feed — what a glance is allowed to cost
 
@@ -1529,7 +1706,15 @@ foundation §2.3 already put it and is not duplicated here. Runner's `question.h
   "breakers":  { "denialsPerSession": 5, "consecutiveFailures": 2, "identicalTurns": 2,
                  "messagesPerTurn": 20, "maxAssignmentsPerSession": 5, "maxDecisionsPerSession": 3 },
   "notify":    { "enabled": true, "channel": "ntfy", "afterMs": 60000, "maxPerHour": 6,
-                 "minLevel": "blocking", "topicSecretRef": "notify.ntfy.topicUrl" }
+                 "minLevel": "blocking", "topicSecretRef": "notify.ntfy.topicUrl" },
+  // §2.8's background triggers. `enabled` is a **kill switch**, not a feature flag: it is read
+  // on every fire, so flipping it stops every schedule at once without editing a single trigger
+  // row — and without losing what the rows say, which disabling them one by one would cost. A
+  // trigger skipped by it is skipped, never disabled. `maxConsecutiveFailures` is the
+  // self-disable threshold: a schedule that fails once has met a transient, one that fails three
+  // times in a row has met a bug. `tickMs` bounds how *late* a fire can be, not how often one
+  // happens. Neither edition file overrides any of this (D6).
+  "triggers":  { "enabled": true, "maxConsecutiveFailures": 3, "tickMs": 60000 }
 }
 ```
 

@@ -45,9 +45,16 @@ export type { RateLimitSource };
 /** The `settings` key §6.1 pins for the runtime override. */
 export const CAPACITY_SETTING_KEY = 'runner.maxConcurrent';
 
-/** §6.2's bands, ranked. `interactive` means a human is waiting. */
+/**
+ * §6.2's bands, ranked. `interactive` means a human is waiting; `background`
+ * means a *timer* started it and nobody is (orchestrator §13, WO8).
+ *
+ * Still one comparator over one queue: the third band changed what `ordered()`
+ * sorts by and nothing about how it reads.
+ */
 export function bandRank(priority: SessionPriority): number {
-  return priority === 'interactive' ? 0 : 1;
+  if (priority === 'interactive') return 0;
+  return priority === 'background' ? 2 : 1;
 }
 
 /** What `GET /api/runner/queue` and `runner.queue.changed` report (§10, §11.2). */
@@ -335,9 +342,20 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         scheduleWake(coolingUntil);
         return;
       }
-      for (const session of ordered()) {
+      const queue = ordered();
+      // §6.2's background rule, WO8: "admit only when no interactive session is
+      // waiting". Band ordering alone does not say that — a *blocked*
+      // interactive entry is `continue`d over below, so without this gate a
+      // trigger's session would start while the owner's own launch sat waiting
+      // for a workspace. The gate is a fact about the whole queue, so it is
+      // taken once per pass rather than per entry.
+      const humanWaiting = queue.some(
+        (session) => session.priority === 'interactive' && !active.has(session.id),
+      );
+      for (const session of queue) {
         if (session.blockedReason !== null) continue;
         if (active.has(session.id)) continue;
+        if (session.priority === 'background' && humanWaiting) continue;
         if (!fits(Math.max(session.weight, 1))) break;
         admit(session);
       }

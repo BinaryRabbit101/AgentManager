@@ -336,6 +336,12 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       // Provenance, straight through: the template already did its work in the
       // browser, and this is the one trace of it the row keeps (WO5).
       templateId: request.templateId,
+      // The same, one level up: *how* the launch was started, and by which
+      // standing schedule (§2.3, WO8). Recorded and never acted on here — the
+      // creation rules of §9 do not branch on it, because a schedule the owner
+      // wrote is the owner's launch made in advance.
+      origin: request.origin,
+      triggerId: request.triggerId,
       tokenBudget: request.tokenBudget ?? defaultBudget(request),
       roundCap: request.roundCap ?? defaultRoundCap(request),
       members: request.members.map((member, index) => ({
@@ -466,6 +472,8 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       // `CreateAssignmentRequest` §2.3 funnels all three paths through.
       ...(request.preGrants === undefined ? {} : { preGrants: request.preGrants }),
       ...(request.templateId === undefined ? {} : { templateId: request.templateId }),
+      ...(request.origin === undefined ? {} : { origin: request.origin }),
+      ...(request.triggerId === undefined ? {} : { triggerId: request.triggerId }),
       ...(request.createdBy === undefined ? {} : { createdBy: request.createdBy }),
     });
 
@@ -480,7 +488,12 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
         // `roles/<role>.md` addendum *if one exists*, and silently appends
         // nothing if it does not (§2.3).
         role,
-        priority: request.priority ?? 'normal',
+        // §13's admission rule, and the one place provenance turns into a
+        // scheduling fact: a trigger-launched session takes runner's
+        // `background` band whatever the caller asked for, so unattended work
+        // can never outrank the owner's own (WO8 §2, D2). Everything else keeps
+        // the two bands runner already had.
+        priority: request.origin === 'trigger' ? 'background' : (request.priority ?? 'normal'),
       });
     } catch (error) {
       // The assignment exists and its session does not. Close it rather than
@@ -698,6 +711,8 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       leadAgentId: row.leadAgentId,
       artifactPath: row.artifactPath,
       templateId: row.templateId,
+      origin: row.origin,
+      triggerId: row.triggerId,
       tokenBudget: row.tokenBudget,
       tokensUsed: row.tokensUsed,
       roundCap: row.roundCap,

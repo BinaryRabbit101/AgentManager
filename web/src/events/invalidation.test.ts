@@ -118,6 +118,19 @@ describe('the invalidation map (§3.4)', () => {
     ]);
   });
 
+  it('trigger events refresh the trigger rows and the assignments they produce (§2.8)', () => {
+    for (const type of [
+      'trigger.fired',
+      'trigger.skipped',
+      'trigger.blocked',
+      'trigger.disabled',
+    ]) {
+      // Both, because a fire changes a trigger's last outcome *and* puts a new
+      // assignment on the project — and because nothing on either surface polls.
+      expect(plan(frame(type)).invalidate, type).toEqual([['triggers'], ['assignments']]);
+    }
+  });
+
   it('runner events reach the queue panel', () => {
     expect(plan(frame('runner.queue.changed')).invalidate).toEqual([['runner']]);
     expect(plan(frame('runner.ratelimited')).invalidate).toEqual([['runner']]);

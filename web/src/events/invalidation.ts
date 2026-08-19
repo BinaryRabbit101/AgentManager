@@ -143,6 +143,14 @@ export function plan(frame: EventFrame): InvalidationPlan {
     };
   }
 
+  if (type.startsWith('trigger.')) {
+    // §2.8's four events — `fired`, `skipped`, `blocked`, `disabled`. Every one
+    // of them changes a trigger row's last outcome, its next fire, or both, and
+    // a `fired` also puts a new assignment on the project. Nothing polls the
+    // Triggers section: this is how it follows an unattended run (§3.4).
+    return { ...EMPTY, invalidate: [['triggers'], ['assignments']] };
+  }
+
   if (type.startsWith('runner.')) {
     return {
       ...EMPTY,

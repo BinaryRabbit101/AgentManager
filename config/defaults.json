@@ -161,6 +161,11 @@
       "minLevel": "blocking",
       "topicSecretRef": "notify.ntfy.topicUrl"
     },
+    "triggers": {
+      "enabled": true,
+      "maxConsecutiveFailures": 3,
+      "tickMs": 60000
+    },
     "widget": {
       "maxWaiting": 4,
       "promptChars": 140
