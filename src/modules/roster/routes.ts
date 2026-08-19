@@ -21,9 +21,21 @@
  * POST   /api/roster/import[?commit=true]   preview, then write (§9.4, M9)
  * GET    /api/roster/templates              task templates (§2.4, WO5)
  * GET    /api/roster/templates/:id          one task template
+ * GET    /api/roster/connectors             the connector library (§10.3, WO3)
+ * POST   /api/roster/connectors             create; id from the label when absent
+ * GET    /api/roster/connectors/:id         one connector
+ * PATCH  /api/roster/connectors/:id         partial update; id immutable
+ * DELETE /api/roster/connectors/:id         refused (409) while an agent references it
  * ```
  *
  * That is §9.1's table, plus three routes §9.1 does not list.
+ *
+ * `/connectors` is the one library folder with a **write** surface, which is the
+ * opposite of `/templates` below and deliberate: the owner's complaint was that
+ * connections are "very manually entered", so a page that creates one is the
+ * whole point (§10.3). It carries no secret **value** in either direction —
+ * every credential is a `{ secretRef, resolved }` name and a boolean, and
+ * storing the value stays with `agentmanager secrets set` (foundation §3.5).
  *
  * `/templates` is **read-only on purpose** (WO5's "Scope of v1"). A template is
  * authored the way an agent was before the editor existed — write the file, save
@@ -385,6 +397,60 @@ export function createRosterRoutes(deps: RosterRoutesDeps): RouteDefinition[] {
       description: 'One task template. 404 for an unknown id and for one that will not parse.',
       handler: (req, res) =>
         answering(logger, req, res, () => res.json(service.getTemplate(id(req)))),
+    },
+
+    {
+      method: 'GET',
+      path: `${ROSTER_API_PREFIX}/connectors`,
+      description:
+        'Lists the connector library: transport, tool prefix, { secretRef, resolved } and the agents using each.',
+      handler: (req, res) =>
+        answeringAsync(logger, req, res, async () => res.json(await service.listConnectors())),
+    },
+
+    {
+      method: 'POST',
+      path: `${ROSTER_API_PREFIX}/connectors`,
+      description: 'Creates a connector; the id is derived from the label when absent.',
+      handler: (req, res) =>
+        answeringAsync(logger, req, res, async () => {
+          const view = await service.createConnector(req.body);
+          return res.json(view, {
+            status: 201,
+            // Followed rather than reassembled from the label, which matters
+            // here for the reason it does on agents: the id may be suffixed.
+            headers: {
+              location: `${ROSTER_API_PREFIX}/connectors/${encodeURIComponent(view.id)}`,
+            },
+          });
+        }),
+    },
+
+    {
+      method: 'GET',
+      path: `${ROSTER_API_PREFIX}/connectors/:id`,
+      description: 'One connector. 404 for an unknown id and for one that will not parse.',
+      handler: (req, res) =>
+        answeringAsync(logger, req, res, async () => res.json(await service.getConnector(id(req)))),
+    },
+
+    {
+      method: 'PATCH',
+      path: `${ROSTER_API_PREFIX}/connectors/:id`,
+      description: 'Partially updates a connector. The id is immutable.',
+      handler: (req, res) =>
+        answeringAsync(logger, req, res, async () =>
+          res.json(await service.patchConnector(id(req), req.body)),
+        ),
+    },
+
+    {
+      method: 'DELETE',
+      path: `${ROSTER_API_PREFIX}/connectors/:id`,
+      description:
+        'Deletes a connector. 409 listing the agent ids while any agent still references it.',
+      handler: (req, res) =>
+        answering(logger, req, res, () => res.json(service.removeConnector(id(req)))),
     },
 
     {

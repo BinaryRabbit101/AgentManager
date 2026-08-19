@@ -338,6 +338,26 @@ describe('the connector chips', () => {
     });
   });
 
+  it('sends a missing library connector to the connectors page, above every other chip', () => {
+    // roster §10.3 (WO3): the agent's reference is fine and the thing it points
+    // at is gone, so the fix is in the library rather than in this agent — and
+    // it outranks even a missing secret, because nothing else about the server
+    // is knowable.
+    const chips = connectorChips([
+      withConnectors('sam', [
+        row('gmail', 'missing-secret'),
+        { ...row('mail', 'ready'), state: 'missing-connector', connector: 'shared-gmail' },
+      ]),
+    ]);
+    expect(chips.map((chip) => chip.state)).toEqual(['missing-connector', 'missing-secret']);
+    expect(chips[0]?.label).toBe('connector missing');
+    expect(chips[0]?.action).toEqual({
+      kind: 'editor',
+      label: 'Open the connectors…',
+      to: '/connectors',
+    });
+  });
+
   it('offers no action for a ready or OAuth connector — there is nothing to press', () => {
     const chips = connectorChips([withConnectors('priya', [row('todo', 'needs-auth')])]);
     // The SDK has no headless authorize call, so a button here would be a lie;

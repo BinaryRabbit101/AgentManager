@@ -204,10 +204,22 @@ export interface IntegrationCredentialStatus {
  * Data, never a value: `credentials` is the same `{ secretRef, resolved }` block
  * scoped to this server, and the API has no route that returns a credential.
  */
-export type IntegrationState = 'ready' | 'needs-auth' | 'missing-secret' | 'not-attached';
+export type IntegrationState =
+  | 'ready'
+  | 'needs-auth'
+  | 'missing-secret'
+  | 'not-attached'
+  /** roster §10.3 (WO3): the agent references a library connector the library
+   *  does not hold. A launch refusal, and nothing else about the server is
+   *  knowable — there is no config to describe. */
+  | 'missing-connector';
 
 export interface IntegrationPreflight {
   readonly integration: string;
+  /** The library connector this row came from (roster §10.3), absent for an
+   *  inline config — and present on a `missing-connector` row, where the id
+   *  that failed to resolve is the only useful thing to say. */
+  readonly connector?: string;
   readonly transport?: 'stdio' | 'sse' | 'http';
   readonly auth: 'oauth' | 'credentials' | 'none';
   readonly toolPrefix: string;

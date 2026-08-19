@@ -66,6 +66,9 @@ database holds only what must not churn git history.
   templates/
     todo-ticket-replies/               # folder name == task template id (see §2.4)
       template.json                    # a reusable Start-work prefill
+  connectors/
+    gmail/                             # folder name == connector id (see §10.3)
+      connector.json                   # one MCP server, defined once and referenced by agents
   .archive/
     <id>-<timestamp>/                  # soft-deleted agents (see §9)
   roster.json                          # roster-level metadata: schemaVersion, seededAt,
@@ -601,7 +604,12 @@ with no roster-specific work.
 | `DELETE` | `/agents/:id` | archive (soft); `?purge=true` only when no sessions reference it |
 | `POST` | `/agents/:id/duplicate` | see below |
 | `GET` | `/agents/:id/export` | `.agentpack` (zip) download |
-| `GET` | `/agents/:id/integrations` | §10.2's preflight: `ready` / `needs-auth` / `missing-secret` per declared connector, plus `not-attached` for each name in `?required=a,b` the agent does not declare. Never a value |
+| `GET` | `/agents/:id/integrations` | §10.2's preflight: `ready` / `needs-auth` / `missing-secret` / `missing-connector` per declared connector, plus `not-attached` for each name in `?required=a,b` the agent does not declare. Never a value |
+| `GET` | `/connectors` | §10.3's library: per entry `id`, `label`, `description`, `transport`, `toolPrefix`, `auth`, credential status as `{ secretRef, resolved }` — names only — and `usedBy`, the agent ids that reference it |
+| `POST` | `/connectors` | create; id derived from `label` if absent, collision-suffixed exactly as an agent's is |
+| `GET` | `/connectors/:id` | one connector, same shape. 404 for an unknown id **and** for a folder whose `connector.json` will not parse |
+| `PATCH` | `/connectors/:id` | partial update; `id` immutable. `label`/`description` take `null` to clear, absent to leave alone |
+| `DELETE` | `/connectors/:id` | **refused (409) while any agent references it**, the body listing the agent ids; otherwise removes the folder |
 | `POST` | `/import` | multipart `.agentpack`; returns a preview or commits with `?commit=true` |
 | `POST` | `/draft` | draft-from-description (§12) |
 | `POST` | `/agents/:id/validate` | dry-run compile against a project id, returns effective permissions |
@@ -736,8 +744,10 @@ integration belongs to the identity, not to the project. Putting it anywhere els
 agent behaves differently depending on where it is pointed, which is exactly the confusion the
 roster exists to prevent.
 
-`integrations` is a `Record<name, IntegrationConfig>` compiled directly into the SDK's `mcpServers`
-option:
+`integrations` is a `Record<name, IntegrationConfig | { connector }>` compiled directly into the SDK's
+`mcpServers` option. The second shape is §10.3's reference into the connector library, resolved to a
+config before anything below applies to it; everything in this section is written about the config,
+and holds identically whether it was written inline or looked up:
 
 | Transport | Compiles to |
 |---|---|
@@ -829,11 +839,19 @@ from a status a session already reported — there is no code path that could ca
 | `needs-auth` | an OAuth grant this build cannot see, or a server the last session reported `needs-auth`/`failed` |
 | `missing-secret` | a `secretRef` the store does not hold — §10's launch refusal, said before the launch |
 | `not-attached` | the task's `requiredIntegrations` names a connector this agent does not declare |
+| `missing-connector` | the agent attaches `{ connector: "<id>" }` and §10.3's library does not hold that id |
 
-`missing-secret` outranks everything else, because §10 makes it a *launch refusal* and a chip reading
-"needs auth" would understate it. The consumer is ui's Start-work step (ui §6), where it is **advice
-and never a gate**: a connector reported `needs-auth` may well be authorised already, and disabling
-**Start** on an unknown would stop work that would have run.
+`missing-connector` outranks everything, `missing-secret` included, and `missing-secret` outranks the
+rest. Both are *launch refusals* (§10, §10.3) so a chip reading "needs auth" would understate either;
+between the two, a dangling reference leaves **nothing else knowable** — with no config there is no
+transport, no credential and no auth mode to report — so any lesser state would be an assertion about
+a server this build cannot see. A row resolved from the library additionally carries
+`connector: "<id>"`, so the UI can say "from the library" and send the fix to the connectors page
+rather than to the agent's own editor. The consumer is ui's Start-work step (ui §6), where all of it
+is **advice and never a gate**: a connector reported `needs-auth` may well be authorised already, and
+disabling **Start** on an unknown would stop work that would have run. Unattended triggers are the
+one strict reader (orchestrator §2.8): anything short of `ready` refuses, and the new state needs no
+change there because it was never `ready`.
 
 **Where an owner edits this.** The agent editor's integrations panel (ui §7.3.1) — add/edit/remove
 plus paste-import from a `.mcp.json`, which is the only sanctioned way to give an agent a connector,
@@ -843,6 +861,73 @@ field rather than as a 400, and its tests validate what the form posts against `
 here so the restatement cannot drift. Everything the UI shows for a credential is a `secretRef`
 *name*; storing the value stays with `agentmanager secrets set <key> --stdin` (foundation §3.5),
 and no HTTP route exists — or should be added — that would accept or return one.
+
+### 10.3 The connector library *(2026-08-19, WO3)*
+
+**Decision: a connector can be defined once in the library and referenced from many agents. The
+attachment still belongs to the identity; only the definition moves.**
+
+The owner's words, after real use: *"New connections should be created on a Connectors page and then
+assigned to agents — this is currently very manually entered and work has a lot of connectors."*
+Today `integrations` is per-agent only, so N agents needing one mailbox hold N hand-typed copies of
+it and only the `secretRef` is shared. §10's decision is untouched — agents still declare which
+connectors they carry, because "an email-responder agent is defined by its mailbox access as much as
+by its persona". What changes is where the *definition* may live.
+
+**Storage.** `<libraryRoot>/connectors/<id>/connector.json`, a sibling of `agents/` and `templates/`
+(§2.1, §2.4), loaded, hashed and watched by exactly the mechanism they are (§2.3) — one folder per
+connector, the folder name being the id, a bad file costing exactly one connector:
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "id": "gmail",                 // the integration-name rules of §10, plus the reserved set:
+                                 // the id is a folder name, a URL segment, and the default
+                                 // server name an agent attaches it under
+  "label": "Gmail (work)",       // optional display line
+  "description": "…",            // optional
+  "config": { /* exactly §10's IntegrationConfig — same transports, same credential rules */ },
+  "meta": { "createdAt": "…", "updatedAt": "…" }
+}
+```
+
+`config` is `integrationConfigSchema` **itself**, not a copy. A connector that could express
+something an inline integration cannot would be a second dialect of the same thing, and the day the
+two disagreed would be the day an agent compiled differently depending on where its server was
+written down. The credential posture comes along wholesale: literals or `{ secretRef }`,
+credential-shaped keys must be refs, no values on disk, no values on any route.
+
+**Attachment.** An `integrations` entry gains a third shape beside the three transports:
+`{ "connector": "<id>" }`, a strict object with nothing else on it — an override beside the
+reference would be a second place the connector is defined, which is the problem the library exists
+to remove. The record **key** stays the agent-local server name, so an agent may mount a library
+entry under a different tool prefix by naming it differently; what it cannot do is disagree with the
+library about what the server *is*. Inline configs remain fully legal, nothing migrates, and nothing
+is deprecated.
+
+**Resolution, and where it happens.**
+
+| Moment | Behaviour |
+|---|---|
+| Compile (§13, `compileIntegrations`) | the reference resolves to the library config **before** any `secretRef` does, so a referenced connector compiles to a byte-identical `mcpServers` entry to the equivalent inline one. A dangling reference throws `SessionCompileError` naming the agent and the connector id — the same launch-refusal posture an unresolved `secretRef` gets, for the same reason: a server that silently failed to mount is a 401 three turns in with less to go on |
+| Preflight (§10.2) | references resolve first and today's logic then runs on the resolved config; a dangling one is `missing-connector` |
+| Export (§9.4) | a pack **inlines** the resolved config (still refs-not-values for secrets), so a pack never depends on the destination's library. Import therefore refuses a `connector` key with a message saying exports are inlined — a bare id would either fail at launch or, worse, resolve to a same-named connector pointing somewhere else. An export refuses while a reference dangles: there is no config to inline |
+| Duplicate (§9.2) | references stay references. Same library, same machine, and a copy that inlined them would quietly fork the definition the library exists to keep single |
+
+The lookup is a **function of the live registry**, passed into the compiler the way §13's orchestration
+toolset is (the compiler stays a pure function of its inputs). That is what makes "edit the connector,
+and the next launch of every agent that references it changes" true with no per-agent cache to
+invalidate.
+
+**Deleting.** Refused with a 409 listing every live agent that references it. The invariant is the one
+the library exists for — a connector is defined once, so removing that one definition breaks every
+agent carrying it, and only the owner can decide that is what they meant. An *inline* config that
+happens to describe the same server is not a reference and does not count.
+
+**Events.** A connector write emits `roster.changed` with `reason: "connectors"`, unpersisted, on the
+same channel a template edit uses (§2.4) and for the same reason: the ui invalidates on the `roster.*`
+prefix, so one edit to a library file means one refetch. It is not a `settle` — no agent moved, and an
+event claiming `agentIds` nobody touched is a lie the UI would act on.
 
 ---
 

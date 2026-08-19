@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 
 import { FIXTURE_NAMES, loadFixture } from './__tests__/fixtures.js';
 import { diagnosticSchema, effectivePermissionsSchema } from './contracts.js';
-import { isSecretRef } from './schema.js';
+import { isConnectorRef, isSecretRef } from './schema.js';
 
 describe('golden fixtures', () => {
   it.each(FIXTURE_NAMES)('%s parses', (name) => {
@@ -35,8 +35,13 @@ describe('golden fixtures', () => {
     expect(marcus.settingSources).toEqual([]);
 
     const gmail = marcus.integrations?.['gmail'];
-    expect(gmail?.transport).toBe('stdio');
-    if (gmail?.transport !== 'stdio') throw new Error('expected the stdio transport');
+    // An attachment is a config or a library reference (§10.3); this fixture
+    // declares its server inline, which is what the rest of this test reads.
+    if (gmail === undefined || isConnectorRef(gmail)) {
+      throw new Error('expected an inline integration');
+    }
+    expect(gmail.transport).toBe('stdio');
+    if (gmail.transport !== 'stdio') throw new Error('expected the stdio transport');
 
     const token = gmail.env?.['GMAIL_TOKEN'];
     expect(token).toBeDefined();

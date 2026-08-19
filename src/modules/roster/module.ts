@@ -237,13 +237,23 @@ export function createRosterModule(
         ROSTER_SERVICE,
         Object.assign(service, {
           compileSession: (input: CompileSessionInput) =>
-            compileSession({ ...input, toolset: input.toolset ?? toolset }),
+            compileSession({
+              ...input,
+              toolset: input.toolset ?? toolset,
+              // §10.3's library, bound for the same reason the toolset is: the
+              // compiler is a pure function and the module is the thing that
+              // holds the service. A caller that passes its own wins, which is
+              // what keeps the compiler testable against a connector declared
+              // inline in a test.
+              connectors: input.connectors ?? service.connectors,
+            }),
         }),
       );
       ctx.registerRoutes(createRosterRoutes({ service, logger: ctx.logger }));
 
       let watcher: RosterWatcher = inertWatcher();
       let templateWatcher: RosterWatcher = inertWatcher();
+      let connectorWatcher: RosterWatcher = inertWatcher();
 
       /**
        * §10's preflight memory (WO6): what a session's `system/init` said about
@@ -317,11 +327,32 @@ export function createRosterModule(
               }
             },
           });
+          // A third watcher over `connectors/` (§10.3, WO3), on the same terms
+          // as the templates one: separate directories, separate reload paths,
+          // and no re-attribution of a folder name to the wrong index.
+          connectorWatcher = createRosterWatcher({
+            dir: store.paths.connectors,
+            logger: ctx.logger,
+            ...debounce,
+            onChanged: (folders) => {
+              const change =
+                folders === undefined
+                  ? service.reloadConnectors()
+                  : service.reloadConnectorFolders(folders);
+              if (change.changed) {
+                ctx.logger.info(
+                  { connectorIds: change.connectorIds },
+                  'the connector library changed on disk and was reloaded',
+                );
+              }
+            },
+          });
         },
 
         stop() {
           watcher.close();
           templateWatcher.close();
+          connectorWatcher.close();
           unsubscribeMcp();
         },
 
@@ -333,6 +364,10 @@ export function createRosterModule(
             // same weight as an `agent.json` that will not: it degrades, it does
             // not fail, and it says which file to open.
             ...service.listTemplates().diagnostics,
+            // And a `connector.json` that will not parse is the same again —
+            // worse, in fact, since every agent referencing it now refuses to
+            // launch (§10.3).
+            ...service.connectorDiagnostics(),
           ];
           const errors = diagnostics.filter((diagnostic) => diagnostic.level === 'error');
           const conditions = diagnostics
@@ -359,6 +394,7 @@ export function createRosterModule(
               libraryRoot,
               watching: watcher.watching,
               watchingTemplates: templateWatcher.watching,
+              watchingConnectors: connectorWatcher.watching,
             },
           };
         },

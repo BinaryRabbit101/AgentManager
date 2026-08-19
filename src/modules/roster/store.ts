@@ -69,6 +69,10 @@ export const AGENTS_DIRNAME = 'agents';
  *  the rest of the layout, and read by `templates.ts`, which owns everything
  *  inside it — this module is still the only place that knows the shape. */
 export const TEMPLATES_DIRNAME = 'templates';
+/** `connectors/` — one folder per library connector (§10.3, WO3). Declared here
+ *  for the same reason `templates/` is: this module is the only place that knows
+ *  the library's shape, and `connectors.ts` owns everything inside the folder. */
+export const CONNECTORS_DIRNAME = 'connectors';
 /** `.archive/` — soft-deleted agents, `<id>-<timestamp>/` (§9.3). */
 export const ARCHIVE_DIRNAME = '.archive';
 /** Roster-level metadata: `schemaVersion`, `seededAt` (§2.1). */
@@ -98,6 +102,8 @@ export interface LibraryPaths {
   readonly agents: string;
   /** `templates/` — the task-template sibling of `agents/` (§2.4, WO5). */
   readonly templates: string;
+  /** `connectors/` — the connector-library sibling of `agents/` (§10.3, WO3). */
+  readonly connectors: string;
   readonly archive: string;
   readonly rosterJson: string;
   readonly gitignore: string;
@@ -111,6 +117,7 @@ export function libraryPaths(root: string): LibraryPaths {
     root: absolute,
     agents: join(absolute, AGENTS_DIRNAME),
     templates: join(absolute, TEMPLATES_DIRNAME),
+    connectors: join(absolute, CONNECTORS_DIRNAME),
     archive: join(absolute, ARCHIVE_DIRNAME),
     rosterJson: join(absolute, ROSTER_JSON_FILENAME),
     gitignore: join(absolute, GITIGNORE_FILENAME),

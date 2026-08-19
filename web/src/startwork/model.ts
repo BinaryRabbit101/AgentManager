@@ -584,12 +584,18 @@ const CHIP_LABELS: Readonly<Record<IntegrationState, string>> = {
   'needs-auth': 'needs authorising',
   'missing-secret': 'missing secret',
   'not-attached': 'not attached',
+  'missing-connector': 'connector missing',
 };
 
 function chipAction(
   agentId: string,
   row: IntegrationPreflight,
 ): ConnectorChip['action'] | undefined {
+  if (row.state === 'missing-connector') {
+    // The fix is in the library, not in this agent: the agent's reference is
+    // fine, the thing it points at is gone (roster §10.3).
+    return { kind: 'editor', label: 'Open the connectors…', to: '/connectors' };
+  }
   if (row.state === 'not-attached') {
     return {
       kind: 'editor',
@@ -608,19 +614,23 @@ function chipAction(
 /**
  * Every seated agent's connectors, flattened into one ordered chip list.
  *
- * Ordered worst-first *within* each agent — `not-attached`, then
- * `missing-secret`, then `needs-auth`, then `ready` — because a row the user
- * must act on should not be below the fold of a row that is fine.
+ * Ordered worst-first *within* each agent — `missing-connector`, then
+ * `not-attached`, then `missing-secret`, then `needs-auth`, then `ready` —
+ * because a row the user must act on should not be below the fold of a row that
+ * is fine.
  */
 export function connectorChips(
   agents: readonly AgentView[],
   required: readonly string[] = [],
 ): readonly ConnectorChip[] {
   const rank: Readonly<Record<IntegrationState, number>> = {
-    'not-attached': 0,
-    'missing-secret': 1,
-    'needs-auth': 2,
-    ready: 3,
+    // First, above `missing-secret`: a connector the library does not hold is a
+    // launch refusal with nothing else knowable about it (roster §10.3).
+    'missing-connector': 0,
+    'not-attached': 1,
+    'missing-secret': 2,
+    'needs-auth': 3,
+    ready: 4,
   };
   const chips: ConnectorChip[] = [];
 

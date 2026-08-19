@@ -43,6 +43,16 @@ import {
   type AvatarUpload,
 } from './avatar.js';
 import { compileSession } from './compileSession.js';
+import {
+  CONNECTOR_SCHEMA_VERSION,
+  connectorLookup,
+  createConnectorRegistry,
+  createConnectorStore,
+  parseConnector,
+  type Connector,
+  type ConnectorRegistryChange,
+  type ConnectorStore,
+} from './connectors.js';
 import type { Diagnostic, EffectivePermissions } from './contracts.js';
 import {
   draftFromDescription,
@@ -53,30 +63,42 @@ import {
 import { projectRosterForOverseer, type OverseerRosterEntry } from './overseer.js';
 import type { PermissionPolicy, RawPermissionSet } from './permissions.js';
 import { gateLiableTools, type GateLiableTool } from './preflight.js';
-import type { ProjectContext, SessionToolsetProvider } from './sessionOptions.js';
+import {
+  SessionCompileError,
+  type CompileSessionInput,
+  type CompiledSession,
+  type ProjectContext,
+  type SessionToolsetProvider,
+} from './sessionOptions.js';
 import { duplicateAgentId, duplicateDefinition } from './duplicate.js';
 import { RosterValidationError, issuesFromZod } from './errors.js';
 import { agentIdProblem } from './ids.js';
 import {
   integrationCredentialStatus,
   integrationPreflight,
+  mcpToolPrefix,
+  type ConnectorLookup,
   type IntegrationCredentialStatus,
   type IntegrationPreflight,
 } from './integrations.js';
 import {
   PACK_EXTENSION,
   buildAgentPack,
+  inlineConnectorRefs,
   packFilename,
   readAgentPack,
   type RequiredSecret,
 } from './pack.js';
-import { parseAgentDefinition } from './parse.js';
+import { parseAgentDefinition, serialiseAgentDefinition } from './parse.js';
 import {
   AGENT_SCHEMA_VERSION,
   ROLES,
+  connectorIdProblem,
   immutableFieldViolations,
+  isConnectorRef,
   permissionRuleSchema,
   type AgentDefinition,
+  type IntegrationConfig,
   type Role,
 } from './schema.js';
 import { normaliseAllowRules } from './sdkRules.js';
@@ -84,8 +106,12 @@ import {
   AgentArchivedError,
   AgentIdTakenError,
   AgentNotFoundError,
+  ConnectorIdTakenError,
+  ConnectorInUseError,
+  ConnectorNotFoundError,
   ImmutableFieldError,
   InvalidRosterRequestError,
+  PackUnresolvedConnectorError,
   PurgeBlockedError,
   RosterServiceError,
   TemplateNotFoundError,
@@ -293,7 +319,10 @@ export type RosterChangeReason =
   | 'external'
   | 'loaded'
   /** A file under `templates/` changed (§2.4, WO5) — no agent did. */
-  | 'templates';
+  | 'templates'
+  /** A file under `connectors/` changed (§10.3, WO3) — no agent did, though
+   *  every agent that references one now compiles differently. */
+  | 'connectors';
 
 // ---------------------------------------------------------------------------
 // Task templates (§2.4, WO5)
@@ -326,6 +355,64 @@ export interface TaskTemplateListView {
   /** Malformed `template.json`s, through the same channel a malformed
    *  `agent.json` reaches the board by (§2.3). */
   readonly diagnostics: readonly Diagnostic[];
+}
+
+// ---------------------------------------------------------------------------
+// The connector library (§10.3, WO3)
+// ---------------------------------------------------------------------------
+
+/**
+ * One credential a connector needs, as the API returns it.
+ *
+ * `{ secretRef, resolved }` and **nothing else** — §10's rule, unchanged by the
+ * connector living in the library rather than in an agent: the name of the key,
+ * whether this machine holds it, and no field a value could ever travel in.
+ */
+export interface ConnectorCredentialStatus {
+  readonly secretRef: string;
+  readonly resolved: boolean;
+}
+
+/**
+ * One connector as `GET /api/roster/connectors` returns it.
+ *
+ * The stored document is deliberately *not* spread in wholesale: what the page
+ * needs is the identity, the shape of the server, and two derived facts it
+ * cannot honestly compute itself —
+ *
+ * - **`credentials`**, which needs the secret store (§10, foundation §3.2);
+ * - **`usedBy`**, the agent ids that reference this connector. It is the same
+ *   answer `DELETE` refuses on, computed in one place: a page that showed "used
+ *   by nobody" beside a delete that then 409s would be a page nobody trusts.
+ */
+export interface ConnectorView {
+  readonly id: string;
+  readonly label?: string | undefined;
+  readonly description?: string | undefined;
+  readonly transport: 'stdio' | 'sse' | 'http';
+  /** `mcp__<id>__` — what a permission rule for an agent that attaches this
+   *  connector under its default name starts with (§10). */
+  readonly toolPrefix: string;
+  /** How it authorises: `oauth`, `credentials` (env/headers), or `none`. */
+  readonly auth: 'oauth' | 'credentials' | 'none';
+  readonly credentials: readonly ConnectorCredentialStatus[];
+  /** Live agent ids carrying `{ connector: "<id>" }`, sorted. */
+  readonly usedBy: readonly string[];
+  readonly config: IntegrationConfig;
+  readonly meta: Connector['meta'];
+}
+
+export interface ConnectorListView {
+  readonly connectors: readonly ConnectorView[];
+  /** Malformed `connector.json`s, through the same channel a malformed
+   *  `agent.json` reaches the board by (§2.3). */
+  readonly diagnostics: readonly Diagnostic[];
+}
+
+/** What `DELETE /connectors/:id` answers with. */
+export interface DeleteConnectorResult {
+  readonly connectorId: string;
+  readonly removed: boolean;
 }
 
 export interface RosterService {
@@ -445,6 +532,50 @@ export interface RosterService {
   /** Rereads named template folders — the templates watcher's normal case. */
   reloadTemplateFolders(folders: readonly string[]): TemplateRegistryChange;
   /**
+   * `GET /api/roster/connectors` (§10.3, WO3) — the library, with each entry's
+   * credential status and the agents that reference it.
+   *
+   * Asynchronous for {@link RosterService.credentials}'s reason and no other:
+   * `{ secretRef, resolved }` is a question for foundation's secret store, and
+   * the probe answers a boolean without revealing anything.
+   */
+  listConnectors(): Promise<ConnectorListView>;
+  /** `GET /api/roster/connectors/:id`. Throws {@link ConnectorNotFoundError}. */
+  getConnector(id: string): Promise<ConnectorView>;
+  /** `POST /api/roster/connectors` — the id is derived from the label when
+   *  absent, and collision-suffixed exactly as an agent's is (§9.1). */
+  createConnector(body: unknown): Promise<ConnectorView>;
+  /** `PATCH /api/roster/connectors/:id`; `id` is immutable — it is the folder
+   *  name and the thing every referencing agent joins on. */
+  patchConnector(id: string, body: unknown): Promise<ConnectorView>;
+  /** `DELETE /api/roster/connectors/:id`. Refused while any agent references
+   *  it ({@link ConnectorInUseError}). */
+  removeConnector(id: string): DeleteConnectorResult;
+  /** Agent ids carrying `{ connector: "<id>" }`, sorted. The one answer behind
+   *  both the view's `usedBy` and the delete refusal. */
+  connectorUsedBy(id: string): readonly string[];
+  /**
+   * Everything wrong under `connectors/`, without the credential probe.
+   *
+   * Separate from {@link RosterService.listConnectors} because the module's
+   * health check is synchronous and has no business asking the secret store
+   * whether an agent could launch — it wants to know whether a file in the
+   * library will not parse.
+   */
+  connectorDiagnostics(): readonly Diagnostic[];
+  /**
+   * The library as the compiler consumes it (§10.3).
+   *
+   * Published so the module can bind `compileSession` to it, the same way it
+   * binds the orchestration toolset — the compiler is a pure function and does
+   * not reach into the service registry.
+   */
+  readonly connectors: ConnectorLookup;
+  /** Rereads `connectors/` — the connectors watcher's filename-less case. */
+  reloadConnectors(): ConnectorRegistryChange;
+  /** Rereads named connector folders — the watcher's normal case. */
+  reloadConnectorFolders(folders: readonly string[]): ConnectorRegistryChange;
+  /**
    * `POST /draft` (§12, M8) — draft-from-description.
    *
    * Stateless: nothing is written, nothing is cached, and no id is minted. The
@@ -476,6 +607,8 @@ export interface RosterServiceOptions {
   /** §2.4's `templates/` store. Defaults to one over the same library root —
    *  injectable only so a test can point the two halves at different trees. */
   readonly templates?: TemplateStore;
+  /** §10.3's `connectors/` store, on the same terms. */
+  readonly connectors?: ConnectorStore;
   readonly uiState: AgentUiStateRepository;
   /** Foundation's rebuildable index — roster pushes, never reads (§2.2). */
   readonly agents: AgentsRepository;
@@ -541,6 +674,31 @@ export interface ProjectDefaultsProvider {
 /** The permissive pair, matching foundation's own config defaults. */
 const OPEN_POLICY: PermissionPolicy = { allowPermissionElevation: true, globalDeny: [] };
 
+/**
+ * `compileSession` for the **preview**, with a launch refusal turned into a
+ * refusal of the request.
+ *
+ * The one refusal a preview can still hit is §10.3's dangling connector
+ * reference: `previewSecrets` already stops a missing credential from failing a
+ * dry run, but a ref with nothing behind it leaves the compiler with no server
+ * to emit and no honest way to guess one. That is a 409 naming the problem —
+ * the same status a purge blocked by history gets — rather than the flat 500 an
+ * escaped `SessionCompileError` would answer with, because the owner can fix it
+ * and the message says how.
+ */
+async function compilePreview(input: CompileSessionInput): Promise<CompiledSession> {
+  try {
+    return await compileSession(input);
+  } catch (error) {
+    if (error instanceof SessionCompileError) {
+      throw new RosterServiceError('session_compile_failed', error.message, 409, {
+        agentId: input.agent.definition.id,
+      });
+    }
+    throw error;
+  }
+}
+
 // ---------------------------------------------------------------------------
 
 export function createRosterService(options: RosterServiceOptions): RosterService {
@@ -553,6 +711,13 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
   // and every diagnostic have to say which kind it meant.
   const templateStore = options.templates ?? createTemplateStore({ root: store.paths.root });
   const templates = createTemplateRegistry(templateStore);
+  // §10.3's third index, built the same way over `connectors/`. A connector is
+  // not an agent and not a template — nothing joins the first two, and what
+  // joins an agent to the third is a reference the compiler resolves, never a
+  // merge of the two indexes.
+  const connectorStore = options.connectors ?? createConnectorStore({ root: store.paths.root });
+  const connectorRegistry = createConnectorRegistry(connectorStore);
+  const lookupConnector = connectorLookup(connectorRegistry);
 
   /**
    * agentId → server name → the status the last session reported (WO6).
@@ -647,6 +812,32 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
     });
   }
 
+  /**
+   * `roster.changed`, for a change under `connectors/` (§10.3, WO3).
+   *
+   * The template announcement's twin, and deliberately the same *type* for the
+   * same reason: the ui's invalidation map keys the `roster.*` prefix onto the
+   * library's queries (ui §3.4), so one edit to a library file means one
+   * refetch — and a connector edit really does change what every referencing
+   * agent would launch with, which is exactly the sort of thing the board
+   * should not be showing a stale copy of.
+   *
+   * Not {@link settle}: no agent moved, so reconciling `agent_ui_state` and
+   * rewriting foundation's `agents` index would be work with no cause, and an
+   * event claiming `agentIds` nobody touched would be a lie the UI acts on.
+   */
+  function announceConnectors(): void {
+    bus.emit({
+      type: 'roster.changed',
+      persist: false,
+      payload: {
+        reason: 'connectors' satisfies RosterChangeReason,
+        agentIds: [],
+        count: registry.list().length,
+      },
+    });
+  }
+
   // -------------------------------------------------------------------------
   // Views
   // -------------------------------------------------------------------------
@@ -677,6 +868,72 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
       }
     }
     return { template, variables: templateVariables(template), integrationGaps: gaps };
+  }
+
+  /**
+   * Live agents carrying `{ connector: "<id>" }`, sorted (§10.3).
+   *
+   * Live only, for `templateViewOf`'s reason: an archived agent cannot be
+   * launched, so counting it would refuse a delete on the strength of a
+   * reference nothing can act on. An *inline* config that happens to describe
+   * the same server is not a reference and does not count — nothing about it
+   * breaks when the library entry goes.
+   */
+  function usedByAgents(connectorId: string): string[] {
+    const out: string[] = [];
+    for (const agent of registry.list()) {
+      const attachments = Object.values(agent.definition.integrations ?? {});
+      if (
+        attachments.some(
+          (attachment) => isConnectorRef(attachment) && attachment.connector === connectorId,
+        )
+      ) {
+        out.push(agent.definition.id);
+      }
+    }
+    return out.sort();
+  }
+
+  /**
+   * One connector, plus the two facts the page cannot derive itself.
+   *
+   * The credential probe goes through `integrationCredentialStatus` — the same
+   * function the agent endpoints use, handed a one-entry record — rather than a
+   * second walker over `env`/`headers`. §10's "never a value" is a property of
+   * that function, and a second implementation of it is a second thing to get
+   * wrong.
+   */
+  async function connectorViewOf(connector: Connector): Promise<ConnectorView> {
+    const credentials = await integrationCredentialStatus(
+      { integrations: { [connector.id]: connector.config } },
+      options.secrets ?? { get: () => Promise.resolve(undefined) },
+    );
+    const oauth = connector.config.transport !== 'stdio' && connector.config.auth === 'oauth';
+    return {
+      id: connector.id,
+      ...(connector.label === undefined ? {} : { label: connector.label }),
+      ...(connector.description === undefined ? {} : { description: connector.description }),
+      transport: connector.config.transport,
+      toolPrefix: mcpToolPrefix(connector.id),
+      auth: oauth ? 'oauth' : credentials.length > 0 ? 'credentials' : 'none',
+      // Names and booleans only: the richer `{ integration, kind, key, path }`
+      // block the agent endpoints carry describes an *attachment*, and a library
+      // entry has none until an agent makes one.
+      credentials: credentials.map((credential) => ({
+        secretRef: credential.secretRef,
+        resolved: credential.resolved,
+      })),
+      usedBy: usedByAgents(connector.id),
+      config: connector.config,
+      meta: connector.meta,
+    };
+  }
+
+  /** The live connector, or the reason there is not one. */
+  function requireConnector(id: string): Connector {
+    const found = connectorRegistry.get(id);
+    if (found === undefined) throw new ConnectorNotFoundError(id);
+    return found.connector;
   }
 
   function viewOf(agent: ResolvedAgent): AgentView {
@@ -808,11 +1065,15 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
         // No store to ask: report every ref as unresolved rather than as
         // resolved-by-default. A badge that is wrong in the reassuring direction
         // is worse than one that is wrong in the alarming direction.
-        return integrationCredentialStatus(agent.definition, {
-          get: () => Promise.resolve(undefined),
-        });
+        return integrationCredentialStatus(
+          agent.definition,
+          { get: () => Promise.resolve(undefined) },
+          lookupConnector,
+        );
       }
-      return integrationCredentialStatus(agent.definition, options.secrets);
+      // §10.3: a referenced connector's credentials are this agent's, because
+      // they are what its launch will resolve.
+      return integrationCredentialStatus(agent.definition, options.secrets, lookupConnector);
     },
 
     async integrations(id, integrationOptions = {}) {
@@ -822,6 +1083,7 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
         // The same "no store means nothing resolves" stance `credentials` takes:
         // a badge that is wrong in the reassuring direction is the worse error.
         secrets: options.secrets ?? { get: () => Promise.resolve(undefined) },
+        connectors: lookupConnector,
         ...(integrationOptions.required === undefined
           ? {}
           : { required: integrationOptions.required }),
@@ -1054,9 +1316,22 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
       // an owner who archived an agent by mistake reaching for its pack is a
       // better outcome than one who cannot get it back at all.
       const agent = requireKnown(id);
+      // §10.3: the pack inlines its connectors, so what ships is the resolved
+      // definition — and the `agent.json` *inside* the pack is rewritten from
+      // it, or the folder's copy would still carry the reference the manifest
+      // says was inlined.
+      const inlined = inlineConnectorRefs(agent.definition, lookupConnector);
+      if (inlined.dangling.length > 0) throw new PackUnresolvedConnectorError(id, inlined.dangling);
+      const files = store
+        .readFolderFiles(agent.dir)
+        .map((file) =>
+          file.name === AGENT_JSON_FILENAME
+            ? { name: file.name, data: Buffer.from(serialiseAgentDefinition(inlined.definition)) }
+            : file,
+        );
       const bytes = buildAgentPack({
-        definition: agent.definition,
-        files: store.readFolderFiles(agent.dir),
+        definition: inlined.definition,
+        files,
         exportedAt: isoTimestamp(clock()),
       });
       return { agentId: id, filename: packFilename(id), bytes };
@@ -1353,7 +1628,7 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
       }
 
       const policy = options.policy ?? OPEN_POLICY;
-      const compiled = await compileSession({
+      const compiled = await compilePreview({
         agent,
         ...(project === undefined ? {} : { project }),
         assignment: {
@@ -1370,6 +1645,11 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
         // Nothing is launched, so nothing inherits this process's environment.
         baseEnv: {},
         secrets: previewSecrets(options.secrets),
+        // The real library, not a preview stand-in: a dangling connector ref is
+        // a launch refusal this preview should show rather than paper over —
+        // unlike a missing secret, it is not something the owner can be
+        // expected to have set up before looking.
+        connectors: lookupConnector,
         ...(options.toolset === undefined ? {} : { toolset: options.toolset }),
       });
 
@@ -1399,11 +1679,15 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
 
     load() {
       const result = registry.reloadAll();
-      // `templates/` is read in the same boot pass and *before* `settle`, so the
-      // one `roster.changed` a boot emits already covers both halves of the
-      // library rather than the templates arriving in a second event nobody
-      // subscribed differently to.
+      // `templates/` and `connectors/` are read in the same boot pass and
+      // *before* `settle`, so the one `roster.changed` a boot emits already
+      // covers every half of the library rather than the other two arriving in
+      // events nobody subscribed differently to. Connectors before agents would
+      // be tidier still, but nothing in the agent load consults the library —
+      // resolution happens at compile and preflight, both of which are after
+      // this returns.
       templates.reloadAll();
+      connectorRegistry.reloadAll();
       settle('loaded', result.agentIds);
       return result;
     },
@@ -1458,7 +1742,158 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
       if (result.changed) announceTemplates();
       return result;
     },
+
+    // --- §10.3's connector library (WO3) -----------------------------------
+
+    connectors: lookupConnector,
+
+    connectorUsedBy: (id) => usedByAgents(id),
+
+    connectorDiagnostics: () => connectorRegistry.diagnostics(),
+
+    async listConnectors() {
+      const views = await Promise.all(
+        connectorRegistry.list().map((entry) => connectorViewOf(entry.connector)),
+      );
+      return { connectors: views, diagnostics: connectorRegistry.diagnostics() };
+    },
+
+    // `async` rather than an arrow returning the promise: `requireConnector`
+    // throws, and a declared `Promise` that sometimes throws synchronously is a
+    // caller-side footgun the routes would be the last to notice.
+    async getConnector(id) {
+      return connectorViewOf(requireConnector(id));
+    },
+
+    async createConnector(body) {
+      const { id: requestedId, label, description, config } = readConnectorBody(body, 'create');
+      const now = isoTimestamp(clock());
+
+      let id: string;
+      if (requestedId !== undefined) {
+        const problem = connectorIdProblem(requestedId);
+        if (problem !== undefined) throw new InvalidRosterRequestError(problem, 'id');
+        if (connectorTaken(requestedId)) throw new ConnectorIdTakenError(requestedId);
+        id = requestedId;
+      } else {
+        if (label === undefined || label === null) {
+          throw new InvalidRosterRequestError(
+            'A "label" is required; the connector id is derived from it.',
+            'label',
+          );
+        }
+        // The agent minter, unchanged: its slug charset is a subset of the
+        // integration-name one, so an id it produces is a valid server name —
+        // and "collision-suffixed like agents" is then true by construction
+        // rather than by a second implementation that agrees today.
+        const minted = mintAgentId(label, connectorTaken);
+        if (minted === undefined) {
+          throw new RosterServiceError(
+            'connector_id_exhausted',
+            `No free connector id could be derived from "${label}"; give the connector a ` +
+              'different label.',
+            409,
+            { label },
+          );
+        }
+        id = minted;
+      }
+
+      if (config === undefined) {
+        throw new InvalidRosterRequestError(
+          'A "config" is required — the MCP server this connector defines (DESIGN §10).',
+          'config',
+        );
+      }
+
+      const connector = parseConnector(
+        {
+          schemaVersion: CONNECTOR_SCHEMA_VERSION,
+          id,
+          ...(label === undefined || label === null ? {} : { label }),
+          ...(description === undefined || description === null ? {} : { description }),
+          config,
+          meta: { createdAt: now, updatedAt: now },
+        },
+        'POST /api/roster/connectors',
+      );
+
+      const written = connectorStore.write(connector);
+      connectorRegistry.reload(id);
+      announceConnectors();
+      return connectorViewOf(written.connector);
+    },
+
+    async patchConnector(id, body) {
+      const existing = requireConnector(id);
+      const patch = readConnectorBody(body, 'patch');
+      if (patch.id !== undefined && patch.id !== id) throw new ImmutableFieldError(['id']);
+
+      // `null` clears an optional field and an absent key leaves it alone —
+      // `patch`'s three-way distinction (§9.1), for the same reason: without it
+      // there is no way to remove a description once it is set.
+      const label = patch.label === undefined ? existing.label : (patch.label ?? undefined);
+      const description =
+        patch.description === undefined ? existing.description : (patch.description ?? undefined);
+
+      const connector = parseConnector(
+        {
+          schemaVersion: CONNECTOR_SCHEMA_VERSION,
+          id,
+          ...(label === undefined ? {} : { label }),
+          ...(description === undefined ? {} : { description }),
+          config: patch.config ?? existing.config,
+          meta: { createdAt: existing.meta.createdAt, updatedAt: isoTimestamp(clock()) },
+        },
+        `PATCH /api/roster/connectors/${id}`,
+      );
+
+      const written = connectorStore.write(connector);
+      connectorRegistry.reload(id);
+      // Every referencing agent now compiles differently — which is the point of
+      // the library, and exactly why this is announced rather than left for the
+      // watcher: the write came from the API, and a UI that had to wait for a
+      // filesystem event would show the old config for a debounce interval.
+      announceConnectors();
+      return connectorViewOf(written.connector);
+    },
+
+    removeConnector(id) {
+      // A folder that will not parse is still a folder to delete: the 404 is for
+      // an id the library does not have at all, not for one it holds badly.
+      if (!connectorStore.hasFolder(id)) throw new ConnectorNotFoundError(id);
+      const usedBy = usedByAgents(id);
+      if (usedBy.length > 0) throw new ConnectorInUseError(id, usedBy);
+      connectorStore.remove(id);
+      connectorRegistry.reload(id);
+      announceConnectors();
+      return { connectorId: id, removed: true };
+    },
+
+    reloadConnectors() {
+      const result = connectorRegistry.reloadAll();
+      if (result.changed) announceConnectors();
+      return result;
+    },
+
+    reloadConnectorFolders(folders) {
+      const touched = new Set<string>();
+      for (const folder of folders) {
+        for (const id of connectorRegistry.reload(folder).connectorIds) touched.add(id);
+      }
+      const result: ConnectorRegistryChange =
+        touched.size === 0
+          ? { changed: false, connectorIds: [] }
+          : { changed: true, connectorIds: [...touched].sort() };
+      if (result.changed) announceConnectors();
+      return result;
+    },
   };
+
+  /** Every id the library has issued — loaded, broken, or merely a folder. */
+  function connectorTaken(candidate: string): boolean {
+    return connectorRegistry.get(candidate) !== undefined || connectorStore.hasFolder(candidate);
+  }
 
   return service;
 }
@@ -1511,6 +1946,66 @@ function splitBody(body: unknown): {
   delete rest['roleAddenda'];
   delete rest['acceptedSkills'];
   return { record: rest, personaText, roleAddenda, acceptedSkills };
+}
+
+/**
+ * `{ id?, label?, description?, config? }` off the wire (§10.3).
+ *
+ * Only shaping, never validation of the config itself: that is
+ * `connectorSchema`'s, applied by `parseConnector` on the assembled document, so
+ * a connector written by the API is judged by exactly the schema a hand-edited
+ * `connector.json` is. What this function does is separate "absent" from "sent
+ * as null" — the create/patch distinction §9.1 draws for every optional field —
+ * and refuse a body that is not an object at all.
+ */
+function readConnectorBody(
+  body: unknown,
+  kind: 'create' | 'patch',
+): {
+  readonly id: string | undefined;
+  /** `null` means "clear it" on a patch; absent means "leave it alone". */
+  readonly label: string | null | undefined;
+  readonly description: string | null | undefined;
+  readonly config: unknown;
+} {
+  const record = asRecord(body);
+  if (record === undefined) {
+    throw new InvalidRosterRequestError(
+      kind === 'create'
+        ? 'Send a JSON object describing the connector: { label, config }.'
+        : 'Send a JSON object with the fields to change.',
+    );
+  }
+
+  const id = record['id'];
+  if (id !== undefined && typeof id !== 'string') {
+    throw new InvalidRosterRequestError('"id" must be a string.', 'id');
+  }
+  const label = record['label'];
+  if (label !== undefined && label !== null && typeof label !== 'string') {
+    throw new InvalidRosterRequestError('"label" must be a string, or null to clear it.', 'label');
+  }
+  const description = record['description'];
+  if (description !== undefined && description !== null && typeof description !== 'string') {
+    throw new InvalidRosterRequestError(
+      '"description" must be a string, or null to clear it.',
+      'description',
+    );
+  }
+
+  const known = new Set(['id', 'label', 'description', 'config']);
+  const unknown = Object.keys(record).filter((key) => !known.has(key));
+  if (unknown.length > 0) {
+    // The schema's stance on unknown keys (§3), applied to the wire form: a
+    // typo'd field that was silently ignored would report success for an edit
+    // that did not happen.
+    throw new InvalidRosterRequestError(
+      `"${unknown[0] ?? ''}" is not a connector field; expected id, label, description or config.`,
+      unknown[0] ?? '',
+    );
+  }
+
+  return { id, label, description, config: record['config'] };
 }
 
 /**

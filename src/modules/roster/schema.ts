@@ -33,7 +33,7 @@ import { isSecretKey } from '../../secrets/keys.js';
 import { isIsoTimestamp } from '../../storage/time.js';
 
 import { credentialShapedKeyMessage, isCredentialShapedKey } from './credentialKeys.js';
-import { agentIdProblem } from './ids.js';
+import { agentIdProblem, RESERVED_AGENT_IDS } from './ids.js';
 
 // ---------------------------------------------------------------------------
 // Schema version
@@ -404,7 +404,7 @@ export type Skills = z.infer<typeof skillsSchema>;
  * make `mcp__gmail__x__y` ambiguous about where the server name ends, and the
  * ambiguity would land in a permission rule.
  */
-function integrationNameProblem(name: string): string | undefined {
+export function integrationNameProblem(name: string): string | undefined {
   if (name.length < 1 || name.length > 64) return 'integration name must be 1–64 characters';
   if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
     return `"${name}" must be lower-case letters, digits, "-" or "_"`;
@@ -412,6 +412,26 @@ function integrationNameProblem(name: string): string | undefined {
   if (name.includes('__')) {
     return `"${name}" must not contain "__" — that is the MCP tool-name separator (mcp__<server>__<tool>)`;
   }
+  return undefined;
+}
+
+/**
+ * Why `value` is not a usable connector id, or `undefined` when it is one
+ * (§10.3, WO3).
+ *
+ * The **integration-name rules verbatim**, because a connector id is what the
+ * editor offers as the default server name for an agent that attaches it — a
+ * library entry whose id could not be a server name would be a connector nobody
+ * could attach under its own name. Two additions, both from the id also being a
+ * folder name under `connectors/` and a segment of `/api/roster/connectors/:id`:
+ * the reserved set (`nul` is not a directory on Windows; `import` collides with
+ * a route), and nothing else — the character set already forbids `.`, `/` and
+ * `\`, so there is no traversal to check for.
+ */
+export function connectorIdProblem(value: string): string | undefined {
+  const problem = integrationNameProblem(value);
+  if (problem !== undefined) return problem;
+  if (RESERVED_AGENT_IDS.has(value)) return `connector id "${value}" is reserved`;
   return undefined;
 }
 
@@ -530,15 +550,86 @@ export const integrationConfigSchema = z.discriminatedUnion('transport', [
 ]);
 export type IntegrationConfig = z.infer<typeof integrationConfigSchema>;
 
+/**
+ * The third shape a `integrations` entry may take: a reference into the
+ * connector library (§10.3, WO3).
+ *
+ * `strictObject` with one key and nothing beside it. A ref that also carried,
+ * say, an `env` would be an override — and an override is a second place the
+ * connector is defined, which is the exact problem the library exists to remove.
+ * The record **key** is still the agent-local server name, so an agent may mount
+ * the same library entry under a different tool prefix by naming it differently;
+ * what it cannot do is disagree with the library about what the server *is*.
+ */
+export const connectorIdSchema = z.string().superRefine((value, ctx) => {
+  const problem = connectorIdProblem(value);
+  if (problem !== undefined) ctx.addIssue({ code: 'custom', message: problem });
+});
+
+export const connectorRefSchema = z.strictObject({ connector: connectorIdSchema });
+export type ConnectorRef = z.infer<typeof connectorRefSchema>;
+
+/** What an agent may attach under one server name: a config, or a reference. */
+export type IntegrationAttachment = IntegrationConfig | ConnectorRef;
+
+/** True when this attachment points at the library rather than declaring a
+ *  server itself. The narrowing every resolver starts from. */
+export function isConnectorRef(value: IntegrationAttachment): value is ConnectorRef {
+  return 'connector' in value;
+}
+
+/** Whether a *raw* entry is shaped like a ref, before anything has validated
+ *  it — which is what decides **which** schema is allowed to judge it. */
+function looksLikeConnectorRef(value: unknown): boolean {
+  return (
+    typeof value === 'object' && value !== null && !Array.isArray(value) && 'connector' in value
+  );
+}
+
+/**
+ * One entry, judged by the schema its shape names.
+ *
+ * Deliberately **not** `z.union([connectorRefSchema, integrationConfigSchema])`.
+ * A Zod union reports a failure as one `invalid_union` issue against the entry
+ * itself, carrying both branches' complaints as nested detail — so a literal in
+ * a credential-shaped `env` key would stop being an issue at
+ * `integrations.gmail.env.GMAIL_TOKEN` and become one at `integrations.gmail`
+ * with prose about connectors underneath it. §2.3's whole claim is that a bad
+ * definition names the field that is wrong, and a UI cannot deep-link at a path
+ * that is no longer reported. Dispatching on the presence of `connector` keeps
+ * every existing message and every existing path exactly where they were, and
+ * gives a mistyped ref the connector schema's complaint rather than three
+ * transports' worth of it.
+ */
+function parseIntegrationAttachment(value: unknown): z.ZodSafeParseResult<IntegrationAttachment> {
+  return looksLikeConnectorRef(value)
+    ? connectorRefSchema.safeParse(value)
+    : integrationConfigSchema.safeParse(value);
+}
+
+export type Integrations = Record<string, IntegrationAttachment>;
+
 export const integrationsSchema = z
-  .record(z.string(), integrationConfigSchema)
-  .superRefine((record, ctx) => {
-    for (const name of Object.keys(record)) {
+  .record(z.string(), z.unknown())
+  .transform((record, ctx): Integrations => {
+    const out: Record<string, IntegrationAttachment> = {};
+    for (const [name, value] of Object.entries(record)) {
       const problem = integrationNameProblem(name);
       if (problem !== undefined) ctx.addIssue({ code: 'custom', path: [name], message: problem });
+      const parsed = parseIntegrationAttachment(value);
+      if (!parsed.success) {
+        // Re-emitted rather than summarised: the code travels too, so
+        // `issuesFromZod` still expands an `unrecognized_keys` into one issue
+        // per offending key (§3).
+        for (const issue of parsed.error.issues) {
+          ctx.addIssue({ ...issue, path: [name, ...issue.path] });
+        }
+        continue;
+      }
+      out[name] = parsed.data;
     }
+    return out;
   });
-export type Integrations = z.infer<typeof integrationsSchema>;
 
 // ---------------------------------------------------------------------------
 // Capabilities (§11)

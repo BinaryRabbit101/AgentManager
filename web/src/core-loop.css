@@ -420,10 +420,11 @@
   color: var(--text-muted);
 }
 
-/* The three states that are not "fine", each said by colour as well as by word. */
+/* The states that are not "fine", each said by colour as well as by word. */
 .launch__chip[data-state='needs-auth'] .launch__chip-state,
 .launch__chip[data-state='missing-secret'] .launch__chip-state,
-.launch__chip[data-state='not-attached'] .launch__chip-state {
+.launch__chip[data-state='not-attached'] .launch__chip-state,
+.launch__chip[data-state='missing-connector'] .launch__chip-state {
   color: var(--warn);
 }
 

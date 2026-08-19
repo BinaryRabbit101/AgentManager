@@ -128,8 +128,9 @@ function withAgentId(diagnostics: readonly Diagnostic[], agentId: string): Diagn
  * Compile a session.
  *
  * @throws {SessionCompileError} when a `secretRef` in the environment does not
- * resolve (§10) — the launch fails loudly rather than starting a session whose
- * tools will silently 401.
+ * resolve (§10), or when an integration references a connector the library does
+ * not hold (§10.3) — the launch fails loudly rather than starting a session
+ * whose tools will silently 401 or silently not be there at all.
  */
 export async function compileSession(input: CompileSessionInput): Promise<CompiledSession> {
   const { agent, project, assignment, policy } = input;
@@ -272,6 +273,10 @@ export async function compileSession(input: CompileSessionInput): Promise<Compil
     integrations: definition.integrations,
     secrets: input.secrets,
     sessionEnv: merged.env,
+    // §10.3: a `{ connector }` is resolved against the library *here*, before
+    // any secret is, so a referenced connector and the identical inline one
+    // compile through one path rather than two.
+    ...(input.connectors === undefined ? {} : { connectors: input.connectors }),
   });
   diagnostics.push(...integrations.diagnostics);
 

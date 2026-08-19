@@ -242,6 +242,13 @@ export function bootstrapLibrary(options: BootstrapLibraryOptions): BootstrapRes
     mkdirSync(paths.templates, { recursive: true });
     created.push(paths.templates);
   }
+  // `connectors/` on the same terms (§10.3, WO3): created on every boot rather
+  // than on first write, so a library that predates the connector library grows
+  // the folder before anything tries to watch or list it.
+  if (!existsSync(paths.connectors)) {
+    mkdirSync(paths.connectors, { recursive: true });
+    created.push(paths.connectors);
+  }
   if (!existsSync(paths.rosterJson)) {
     writeRosterMetadata(paths, DEFAULT_ROSTER_METADATA, hooks);
     created.push(paths.rosterJson);

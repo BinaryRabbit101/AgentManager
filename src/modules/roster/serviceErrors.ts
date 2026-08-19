@@ -76,6 +76,91 @@ export class TemplateNotFoundError extends RosterServiceError {
 }
 
 /**
+ * No connector with that id in the library (§10.3, WO3).
+ *
+ * Covers the malformed case too, for {@link TemplateNotFoundError}'s reason: a
+ * folder whose `connector.json` will not parse is not a connector, it is a
+ * diagnostic on the list, and answering for it would make a broken file look
+ * usable.
+ */
+export class ConnectorNotFoundError extends RosterServiceError {
+  override readonly name = 'ConnectorNotFoundError';
+
+  constructor(readonly connectorId: string) {
+    super('connector_not_found', `No connector with id "${connectorId}".`, 404, { connectorId });
+  }
+}
+
+/** An explicit `id` on a create collides with a connector already in the
+ *  library. A *derived* id never reaches this: it is collision-suffixed. */
+export class ConnectorIdTakenError extends RosterServiceError {
+  override readonly name = 'ConnectorIdTakenError';
+
+  constructor(readonly connectorId: string) {
+    super(
+      'connector_id_taken',
+      `Connector id "${connectorId}" is already in use. Edit that connector, or pick another id.`,
+      409,
+      { connectorId },
+    );
+  }
+}
+
+/**
+ * A delete was asked for while agents still reference the connector (§10.3).
+ *
+ * A 409 naming every referencing agent, rather than a delete that leaves them
+ * dangling. The invariant being protected is the one the library exists for: a
+ * connector is defined once, so removing that one definition breaks every agent
+ * that carries it — and the owner is the only one who can decide that is what
+ * they meant.
+ */
+export class ConnectorInUseError extends RosterServiceError {
+  override readonly name = 'ConnectorInUseError';
+
+  constructor(
+    readonly connectorId: string,
+    readonly agentIds: readonly string[],
+  ) {
+    super(
+      'connector_in_use',
+      `Connector "${connectorId}" is referenced by ${String(agentIds.length)} agent(s): ` +
+        `${agentIds.join(', ')}. Detach it from each of them before deleting it (DESIGN §10.3).`,
+      409,
+      { connectorId, agentIds: [...agentIds] },
+    );
+  }
+}
+
+/**
+ * Export refused because the agent references a connector the library no longer
+ * holds (§10.3).
+ *
+ * A pack **inlines** its connectors, so an export cannot proceed without the
+ * config — and shipping the bare reference is exactly the thing the format
+ * refuses to do. A 409 for {@link PackSecretValueError}'s reason: nothing is
+ * broken in this build, the library is in a state the owner can fix.
+ */
+export class PackUnresolvedConnectorError extends RosterServiceError {
+  override readonly name = 'PackUnresolvedConnectorError';
+
+  constructor(
+    readonly agentId: string,
+    readonly refs: readonly { readonly name: string; readonly connector: string }[],
+  ) {
+    super(
+      'agentpack_unresolved_connector',
+      `Agent "${agentId}" cannot be exported: ` +
+        refs.map((ref) => `"${ref.name}" references the connector "${ref.connector}"`).join('; ') +
+        ', and the library does not hold it. A pack inlines its connectors (DESIGN §9.4, §10.3), ' +
+        'so restore the connector or replace the reference with an inline config first.',
+      409,
+      { agentId, refs: refs.map((ref) => ({ name: ref.name, connector: ref.connector })) },
+    );
+  }
+}
+
+/**
  * The agent exists but has been archived, and the operation needs a live one.
  *
  * Distinct from {@link AgentNotFoundError} because §9.3 keeps archived

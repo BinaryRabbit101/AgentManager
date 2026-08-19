@@ -15,8 +15,8 @@
  */
 import { RosterValidationError, issuesFromZod } from './errors.js';
 import { migrate } from './migrate.js';
-import { agentDefinitionSchema } from './schema.js';
-import type { AgentDefinition, Avatar, IntegrationConfig, SecretValue } from './schema.js';
+import { agentDefinitionSchema, isConnectorRef } from './schema.js';
+import type { AgentDefinition, Avatar, IntegrationAttachment, SecretValue } from './schema.js';
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -128,7 +128,18 @@ function canonicalAvatar(avatar: Avatar): Record<string, unknown> {
     : { kind: avatar.kind, value: avatar.value };
 }
 
-function canonicalIntegration(integration: IntegrationConfig): Record<string, unknown> {
+/**
+ * One `integrations` entry in canonical form.
+ *
+ * Exported because `connector.json` holds the *same* config object (§10.3), and
+ * a library connector whose bytes were ordered differently from the identical
+ * inline integration would produce a diff that says nothing.
+ */
+export function canonicalIntegration(integration: IntegrationAttachment): Record<string, unknown> {
+  // A reference has exactly one key, and no branch below can be reached with
+  // one — resolution happens at compile and preflight, never at serialisation
+  // (§10.3): what an agent authored is what its `agent.json` says.
+  if (isConnectorRef(integration)) return { connector: integration.connector };
   if (integration.transport === 'stdio') {
     return compact({
       transport: integration.transport,

@@ -42,6 +42,7 @@ import {
 import { bootstrapLibrary } from './bootstrap.js';
 import { readAvatarUpload } from './avatar.js';
 import { RosterValidationError } from './errors.js';
+import { isConnectorRef } from './schema.js';
 import type { RosterService } from './service.js';
 import {
   AgentIdTakenError,
@@ -266,12 +267,17 @@ describe('duplicate (§9.2)', () => {
   it('carries every secretRef, and no value (§9.2, §10)', () => {
     const clone = service.duplicate('marcus-inbox', {});
     const gmail = clone.definition.integrations?.['gmail'];
-    expect(gmail?.transport).toBe('stdio');
-    expect(gmail?.transport === 'stdio' && gmail.env?.['GMAIL_TOKEN']).toEqual({
+    // A duplicate copies the attachment as authored (§9.2) — here an inline
+    // config, so it is a config on the clone too, refs and all.
+    if (gmail === undefined || isConnectorRef(gmail)) {
+      throw new Error('expected an inline integration');
+    }
+    expect(gmail.transport).toBe('stdio');
+    expect(gmail.transport === 'stdio' && gmail.env?.['GMAIL_TOKEN']).toEqual({
       secretRef: 'mcp.gmail.token',
     });
     // The literal, non-credential value comes across unchanged.
-    expect(gmail?.transport === 'stdio' && gmail.env?.['GMAIL_PROFILE']).toBe('work');
+    expect(gmail.transport === 'stdio' && gmail.env?.['GMAIL_PROFILE']).toBe('work');
   });
 
   it('leaves the source untouched', () => {

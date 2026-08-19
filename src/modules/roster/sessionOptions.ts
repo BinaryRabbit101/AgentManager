@@ -24,6 +24,7 @@ import type { SecretResolver } from '../../secrets/index.js';
 
 import type { Diagnostic, EffectivePermissions } from './contracts.js';
 import type { EnvEntry } from './envMerge.js';
+import type { ConnectorLookup } from './integrations.js';
 import type { RequestedSessionSurface } from './initMessage.js';
 import type { PersonaComposition } from './persona.js';
 import type { CanUseToolPolicy, PermissionPolicy, RawPermissionSet } from './permissions.js';
@@ -180,6 +181,20 @@ export interface CompileSessionInput {
    * dropped and `mcpServers.agentmanager` is simply not emitted.
    */
   readonly toolset?: SessionToolsetProvider | undefined;
+  /**
+   * §10.3's connector library, as a lookup.
+   *
+   * Supplied by the roster *module* for the same reason `toolset` is: the
+   * compiler is a pure function of its inputs and does not reach into a service
+   * registry. A lookup rather than a snapshot, so an edit to a library
+   * connector is carried by the *next* compile of every agent that references
+   * it — there is no per-agent copy to go stale.
+   *
+   * Absent means this build has no library to ask, and a `{ connector }` in an
+   * agent's `integrations` is then a launch refusal rather than a silently
+   * dropped server.
+   */
+  readonly connectors?: ConnectorLookup | undefined;
 }
 
 // ---------------------------------------------------------------------------

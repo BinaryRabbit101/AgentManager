@@ -32,8 +32,8 @@
 import type { SecretResolver } from '../../secrets/index.js';
 
 import type { Diagnostic } from './contracts.js';
-import type { AgentDefinition, IntegrationConfig, SecretValue } from './schema.js';
-import { isSecretRef } from './schema.js';
+import type { AgentDefinition, IntegrationConfig, Integrations, SecretValue } from './schema.js';
+import { isConnectorRef, isSecretRef } from './schema.js';
 import { SessionCompileError } from './sessionOptions.js';
 
 // ---------------------------------------------------------------------------
@@ -70,6 +70,83 @@ export type CompiledMcpServer = CompiledStdioServer | CompiledSseServer | Compil
 export interface CompiledIntegrations {
   readonly servers: Record<string, CompiledMcpServer>;
   readonly diagnostics: readonly Diagnostic[];
+}
+
+// ---------------------------------------------------------------------------
+// Connector references (§10.3, WO3)
+// ---------------------------------------------------------------------------
+
+/**
+ * "What is behind connector id X", and nothing else.
+ *
+ * The one seam between an agent's `{ connector: "gmail" }` and the library
+ * folder that defines it. Everything that reads an integration goes through
+ * {@link resolveIntegrations} first, so there is no path in the element where a
+ * ref reaches secret resolution, `mcpServers`, or a preflight row unresolved.
+ *
+ * `undefined` from the lookup means the id is not in the library *right now* —
+ * a deleted connector, a `git pull` that dropped one, a typo in a hand-edited
+ * `agent.json`. That is a **dangling ref**, and every consumer treats it as a
+ * refusal rather than as an absent integration: a launch that quietly mounted
+ * one fewer server is a session whose tools are missing for no stated reason.
+ */
+export type ConnectorLookup = (id: string) => IntegrationConfig | undefined;
+
+/** One attachment with its definition in hand, whatever it was written as. */
+export interface ResolvedIntegration {
+  /** The agent-local server name — the record key, and the tool prefix. */
+  readonly name: string;
+  readonly config: IntegrationConfig;
+  /** The library id this came from, absent for an inline config (§10.3). */
+  readonly connector?: string | undefined;
+}
+
+/** A `{ connector }` whose id the library does not hold. */
+export interface DanglingConnectorRef {
+  readonly name: string;
+  readonly connector: string;
+}
+
+export interface ResolvedIntegrations {
+  /** Declaration order preserved, so every consumer's rows stay stable. */
+  readonly integrations: readonly ResolvedIntegration[];
+  readonly dangling: readonly DanglingConnectorRef[];
+}
+
+/**
+ * Every attachment resolved to a config, plus the refs that did not resolve.
+ *
+ * Neither throws nor warns: this function reports, and the caller decides what a
+ * dangling ref costs — a `SessionCompileError` at launch (`compileIntegrations`),
+ * a `missing-connector` chip before one ({@link integrationPreflight}). Both
+ * come from this one answer, so the chip and the refusal can never disagree.
+ *
+ * With no lookup supplied, every ref dangles. That is the honest reading for a
+ * caller that has no library to ask — a build without the connector registry
+ * cannot resolve `{ connector: "gmail" }`, and treating it as inline-nothing
+ * would silently drop the server.
+ */
+export function resolveIntegrations(
+  integrations: Integrations | undefined,
+  connectors?: ConnectorLookup,
+): ResolvedIntegrations {
+  const resolved: ResolvedIntegration[] = [];
+  const dangling: DanglingConnectorRef[] = [];
+
+  for (const [name, attachment] of Object.entries(integrations ?? {})) {
+    if (!isConnectorRef(attachment)) {
+      resolved.push({ name, config: attachment });
+      continue;
+    }
+    const config = connectors?.(attachment.connector);
+    if (config === undefined) {
+      dangling.push({ name, connector: attachment.connector });
+      continue;
+    }
+    resolved.push({ name, config, connector: attachment.connector });
+  }
+
+  return { integrations: resolved, dangling };
 }
 
 // ---------------------------------------------------------------------------
@@ -147,12 +224,22 @@ function credentialMap(
   return config.headers === undefined ? undefined : { kind: 'headers', values: config.headers };
 }
 
-/** Every `secretRef` in the agent's integrations, in a stable order. */
+/**
+ * Every `secretRef` in the agent's integrations, in a stable order.
+ *
+ * Refs are resolved first (§10.3): a library connector's credentials are the
+ * referencing agent's credentials, because they are what its launch will
+ * resolve. A **dangling** ref contributes nothing — there is no config, so
+ * there is nothing to name — and is reported as `missing-connector` by the
+ * preflight, which is the projection that exists to say so.
+ */
 export function integrationSecretRefs(
   definition: Pick<AgentDefinition, 'integrations'>,
+  connectors?: ConnectorLookup,
 ): IntegrationSecretRef[] {
   const out: IntegrationSecretRef[] = [];
-  for (const [integration, config] of Object.entries(definition.integrations ?? {})) {
+  const resolved = resolveIntegrations(definition.integrations, connectors);
+  for (const { name: integration, config } of resolved.integrations) {
     const map = credentialMap(config);
     if (map === undefined) continue;
     for (const [key, value] of Object.entries(map.values)) {
@@ -185,8 +272,9 @@ export interface IntegrationCredentialStatus extends IntegrationSecretRef {
 export async function integrationCredentialStatus(
   definition: Pick<AgentDefinition, 'integrations'>,
   secrets: SecretResolver,
+  connectors?: ConnectorLookup,
 ): Promise<IntegrationCredentialStatus[]> {
-  const refs = integrationSecretRefs(definition);
+  const refs = integrationSecretRefs(definition, connectors);
   const out: IntegrationCredentialStatus[] = [];
   for (const ref of refs) {
     const secret = await secrets.get(ref.secretRef);
@@ -207,7 +295,7 @@ export function isOAuthIntegration(config: IntegrationConfig): boolean {
 }
 
 /**
- * The four states Start-work shows per declared integration.
+ * The five states Start-work shows per declared integration.
  *
  * | state | means |
  * |---|---|
@@ -215,12 +303,14 @@ export function isOAuthIntegration(config: IntegrationConfig): boolean {
  * | `needs-auth` | an OAuth grant this build cannot see, or a server the last session reported as `needs-auth`/`failed` |
  * | `missing-secret` | a `secretRef` the store does not hold — the launch will refuse (§10) |
  * | `not-attached` | the task asked for a connector this agent does not declare |
+ * | `missing-connector` | a `{ connector }` ref the library does not hold (§10.3) — the launch will refuse, and nothing else about this server is knowable |
  */
 export const INTEGRATION_STATES = [
   'ready',
   'needs-auth',
   'missing-secret',
   'not-attached',
+  'missing-connector',
 ] as const;
 export type IntegrationState = (typeof INTEGRATION_STATES)[number];
 
@@ -234,6 +324,14 @@ export type IntegrationState = (typeof INTEGRATION_STATES)[number];
  */
 export interface IntegrationPreflight {
   readonly integration: string;
+  /**
+   * The library entry this row was resolved from (§10.3), absent for an inline
+   * config — which is what lets the UI say "from the library" and offer the
+   * connector page rather than the agent's own editor. Present on a
+   * `missing-connector` row too: the id that did not resolve is the one useful
+   * thing there is to say about it.
+   */
+  readonly connector?: string | undefined;
   /** Absent for `not-attached` — there is no declaration to describe. */
   readonly transport?: 'stdio' | 'sse' | 'http' | undefined;
   /** How it authorises: `oauth`, `credentials` (env/headers), or `none`. */
@@ -272,6 +370,15 @@ export interface IntegrationPreflightInput {
    * connector is authorised is that a session on this machine got it connected.
    */
   readonly lastSeen?: Readonly<Record<string, string>> | undefined;
+  /**
+   * The connector library (§10.3), so a `{ connector }` ref reports the state of
+   * what it points at rather than the state of the reference.
+   *
+   * Absent means no library to ask, and every ref is therefore `missing-connector`
+   * — the same "wrong in the alarming direction" stance the missing secret store
+   * takes two fields up.
+   */
+  readonly connectors?: ConnectorLookup | undefined;
 }
 
 /**
@@ -280,23 +387,65 @@ export interface IntegrationPreflightInput {
  *
  * Ordered as the definition orders them, then the missing required ones — so a
  * chip row is stable across refreshes and the thing that is *wrong* is last,
- * where the eye lands after reading what is right.
+ * where the eye lands after reading what is right. A dangling `{ connector }`
+ * keeps its declared position rather than being sorted to one end: it is the
+ * agent's third integration whatever is wrong with it, and a row that moved when
+ * a library entry was deleted would look like a different connector.
  */
 export async function integrationPreflight(
   input: IntegrationPreflightInput,
 ): Promise<IntegrationPreflight[]> {
   const declared = input.definition.integrations ?? {};
   const required = new Set(input.required ?? []);
-  const credentials = await integrationCredentialStatus(input.definition, input.secrets);
+  // Refs first, then everything today's logic already did — on the resolved
+  // config, so a library connector is judged exactly as the identical inline
+  // one would be (§10.3).
+  const resolved = resolveIntegrations(declared, input.connectors);
+  const credentials = await integrationCredentialStatus(
+    input.definition,
+    input.secrets,
+    input.connectors,
+  );
   const out: IntegrationPreflight[] = [];
+  const byName = new Map(resolved.integrations.map((entry) => [entry.name, entry]));
+  const danglingByName = new Map(resolved.dangling.map((entry) => [entry.name, entry]));
 
-  for (const [name, config] of Object.entries(declared)) {
+  for (const name of Object.keys(declared)) {
+    const dangling = danglingByName.get(name);
+    if (dangling !== undefined) {
+      // Outranks everything, `missing-secret` included: §10.3 makes this a
+      // launch refusal *and* leaves nothing else knowable — with no config
+      // there is no transport, no credential and no auth mode to report, so
+      // any other state would be an assertion about a server this build
+      // cannot see.
+      out.push({
+        integration: name,
+        connector: dangling.connector,
+        auth: 'none',
+        toolPrefix: mcpToolPrefix(name),
+        state: 'missing-connector',
+        credentials: [],
+        missingSecretRefs: [],
+        required: required.has(name),
+        detail:
+          `This agent attaches the library connector "${dangling.connector}", and the library ` +
+          'does not hold it. Restore it on the connectors page, or replace the reference — a ' +
+          'launch that compiles this connector is refused before the session starts.',
+      });
+      continue;
+    }
+
+    const entry = byName.get(name);
+    // Unreachable: every declared name is resolved or dangling.
+    if (entry === undefined) continue;
+    const { config, connector } = entry;
     const mine = credentials.filter((credential) => credential.integration === name);
     const missing = mine.filter((credential) => !credential.resolved).map((one) => one.secretRef);
     const oauth = isOAuthIntegration(config);
     const lastSeen = input.lastSeen?.[name];
     const base = {
       integration: name,
+      ...(connector === undefined ? {} : { connector }),
       transport: config.transport,
       auth: oauth
         ? ('oauth' as const)
@@ -398,6 +547,15 @@ export interface CompileIntegrationsInput {
   readonly integrations: AgentDefinition['integrations'];
   readonly secrets: SecretResolver;
   /**
+   * The connector library (§10.3), consulted **before** the secret store.
+   *
+   * Absent is the same refusal a dangling ref is: a build with no library
+   * cannot compile `{ connector: "gmail" }` into anything, and a launch that
+   * dropped the server would be a session whose mailbox tools are simply not
+   * there.
+   */
+  readonly connectors?: ConnectorLookup | undefined;
+  /**
    * The merged session environment (§13). Spread into a stdio server's `env`
    * when it declares one, so the child keeps `PATH`.
    */
@@ -444,11 +602,19 @@ async function resolveValues(
 }
 
 /**
- * `integrations` → `options.mcpServers`, with every `secretRef` resolved.
+ * `integrations` → `options.mcpServers`, with every connector reference and
+ * every `secretRef` resolved.
  *
- * @throws {SessionCompileError} when any ref does not resolve. No session is
- * started: §10's whole point is that a 401 three turns in is a worse failure
- * than a refusal at launch.
+ * The two resolutions happen in that order (§10.3): a ref becomes a config, and
+ * only then are that config's credentials looked up — which is what makes a
+ * referenced connector compile to *byte-identical* `mcpServers` output to the
+ * equivalent inline one, rather than to a second code path that happens to
+ * agree today.
+ *
+ * @throws {SessionCompileError} when a connector reference or a `secretRef`
+ * does not resolve. No session is started: §10's whole point is that a 401
+ * three turns in is a worse failure than a refusal at launch, and a server that
+ * silently failed to mount is the same failure with less to go on.
  */
 export async function compileIntegrations(
   input: CompileIntegrationsInput,
@@ -456,7 +622,23 @@ export async function compileIntegrations(
   const servers: Record<string, CompiledMcpServer> = {};
   const diagnostics: Diagnostic[] = [];
 
-  for (const [name, config] of Object.entries(input.integrations ?? {})) {
+  const resolved = resolveIntegrations(input.integrations, input.connectors);
+  const dangling = resolved.dangling[0];
+  if (dangling !== undefined) {
+    throw new SessionCompileError(
+      `agent ${input.agentName} attaches the library connector \`${dangling.connector}\` as ` +
+        `"${dangling.name}", and the connector library does not hold it`,
+      resolved.dangling.map((ref) => ({
+        level: 'error' as const,
+        code: 'roster.connector.unresolved',
+        message: `connector \`${ref.connector}\` is not in the library (DESIGN §10.3)`,
+        agentId: input.agentId,
+        path: `integrations.${ref.name}.connector`,
+      })),
+    );
+  }
+
+  for (const { name, config } of resolved.integrations) {
     if (config.transport === 'stdio') {
       const server: CompiledStdioServer = { type: 'stdio', command: config.command };
       if (config.args !== undefined) server.args = [...config.args];

@@ -156,6 +156,10 @@ describe('module registration', () => {
     expect(mine.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
       'DELETE /api/roster/agents/:id',
       'DELETE /api/roster/agents/:id/avatar',
+      // §10.3's library has a full CRUD surface (WO3) — the one library folder
+      // that does, because "connections should be created on a page" is the
+      // whole request behind it.
+      'DELETE /api/roster/connectors/:id',
       'GET /api/roster/agents',
       'GET /api/roster/agents/:id',
       'GET /api/roster/agents/:id/avatar',
@@ -163,14 +167,18 @@ describe('module registration', () => {
       // §10's preflight projection (WO6): ready / needs-auth / missing-secret,
       // plus `not-attached` when the caller names the task's required servers.
       'GET /api/roster/agents/:id/integrations',
+      'GET /api/roster/connectors',
+      'GET /api/roster/connectors/:id',
       'GET /api/roster/templates',
       'GET /api/roster/templates/:id',
       'PATCH /api/roster/agents/:id',
       'PATCH /api/roster/agents/:id/ui-state',
+      'PATCH /api/roster/connectors/:id',
       'POST /api/roster/agents',
       'POST /api/roster/agents/:id/duplicate',
       'POST /api/roster/agents/:id/permissions/allow',
       'POST /api/roster/agents/:id/validate',
+      'POST /api/roster/connectors',
       'POST /api/roster/draft',
       'POST /api/roster/import',
       'PUT /api/roster/agents/:id/avatar',
@@ -178,8 +186,9 @@ describe('module registration', () => {
     ]);
     // The whole of §9.1's table, M9's two pack endpoints included, plus §6.2's
     // `/permissions/allow` — the durable half of the question card's "Always
-    // allow" (runner §5.1, owner decision 2026-08-18) — and §2.4's two read-only
-    // template routes (WO5), which have no write half on purpose.
+    // allow" (runner §5.1, owner decision 2026-08-18) — §2.4's two read-only
+    // template routes (WO5), which have no write half on purpose, and §10.3's
+    // five connector routes (WO3), which have one.
     expect(mine.every((route) => route.remote === 'allow')).toBe(true);
   });
 

@@ -57,9 +57,11 @@ describe('first run against an empty, existing directory (§4.4)', () => {
     expect(existsSync(join(library, 'roster.json'))).toBe(true);
     expect(existsSync(join(library, '.gitignore'))).toBe(true);
     expect(statSync(join(library, 'agents')).isDirectory()).toBe(true);
-    // §2.4's `templates/` is created alongside `agents/` (WO5).
+    // §2.4's `templates/` is created alongside `agents/` (WO5), and §10.3's
+    // `connectors/` beside both (WO3).
     expect(statSync(join(library, 'templates')).isDirectory()).toBe(true);
-    expect(result.created).toHaveLength(4);
+    expect(statSync(join(library, 'connectors')).isDirectory()).toBe(true);
+    expect(result.created).toHaveLength(5);
     expect(result.gitInitialised).toBe(true);
     expect(result.diagnostics).toEqual([]);
 

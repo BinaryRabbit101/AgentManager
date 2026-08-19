@@ -33,6 +33,11 @@
  *    touches the filesystem: it turns bytes into a {@link ReadAgentPack} and back,
  *    and the service decides what to do with it. That is what makes "preview …
  *    writes nothing" (M9) a property of the code rather than a promise.
+ * 5. **A pack is self-contained.** A `{ connector }` reference into the library
+ *    (§10.3) is *inlined* on export ({@link inlineConnectorRefs}) and refused on
+ *    import: a connector id names an entry in the exporting machine's library,
+ *    and a pack that depended on the destination having one would either fail at
+ *    launch or, worse, resolve to a same-named connector pointing somewhere else.
  */
 import { z } from 'zod';
 
@@ -40,9 +45,13 @@ import { createZip, readZip, ZipReadError, type ZipEntry } from '../../http/zip.
 
 import { isCredentialShapedKey } from './credentialKeys.js';
 import { RosterValidationError } from './errors.js';
-import { integrationSecretRefs } from './integrations.js';
+import {
+  integrationSecretRefs,
+  resolveIntegrations,
+  type ConnectorLookup,
+} from './integrations.js';
 import { parseAgentDefinitionJson } from './parse.js';
-import { AGENT_SCHEMA_VERSION, type AgentDefinition } from './schema.js';
+import { AGENT_SCHEMA_VERSION, isConnectorRef, type AgentDefinition } from './schema.js';
 import {
   InvalidAgentPackError,
   PackSchemaVersionError,
@@ -220,6 +229,47 @@ export function requiredSecretsFor(definition: AgentDefinition): RequiredSecret[
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Connector references (§10.3): a pack inlines them
+// ---------------------------------------------------------------------------
+
+/** {@link inlineConnectorRefs}'s answer: the definition to ship, and the refs
+ *  that stopped it from being shippable. */
+export interface InlinedDefinition {
+  readonly definition: AgentDefinition;
+  /** Server names whose `{ connector }` the library does not hold. */
+  readonly dangling: readonly { readonly name: string; readonly connector: string }[];
+}
+
+/**
+ * The definition an export ships: every `{ connector }` replaced by the config
+ * the library holds for it.
+ *
+ * **Inlined, not carried.** A pack is "here's my code-reviewer agent" handed to
+ * another machine (§9.4), and a ref names an entry in *this* machine's library.
+ * Shipping the ref would produce a pack that imports cleanly and then refuses to
+ * launch — or, worse, one that resolves against a same-named connector on the
+ * destination and quietly points the agent at a different server. Inlining makes
+ * a pack self-contained, which is the property the format exists for.
+ *
+ * The credential posture is unchanged by this: what is inlined is the library's
+ * config, which carries `{ secretRef }` names and no values, so §9.4's guard
+ * still finds nothing to refuse.
+ */
+export function inlineConnectorRefs(
+  definition: AgentDefinition,
+  connectors?: ConnectorLookup,
+): InlinedDefinition {
+  if (definition.integrations === undefined) return { definition, dangling: [] };
+  const resolved = resolveIntegrations(definition.integrations, connectors);
+  if (resolved.dangling.length > 0) {
+    return { definition, dangling: resolved.dangling.map((ref) => ({ ...ref })) };
+  }
+  const inlined: NonNullable<AgentDefinition['integrations']> = {};
+  for (const entry of resolved.integrations) inlined[entry.name] = entry.config;
+  return { definition: { ...definition, integrations: inlined }, dangling: [] };
+}
+
 export interface BuildAgentPackInput {
   readonly definition: AgentDefinition;
   /** The agent folder's contents, relative to the folder. */
@@ -379,6 +429,23 @@ export function readAgentPack(bytes: Buffer): ReadAgentPack {
       );
     }
     throw cause;
+  }
+
+  // §10.3: a pack **inlines** connector references, so one that carries a
+  // `{ connector }` was not written by an export — it was hand-assembled, or
+  // built by a build that predates the inlining. Refusing is the honest answer
+  // either way: the id names a library entry on the *exporting* machine, and
+  // resolving it against this one would silently attach a different server.
+  const referencing = Object.entries(definition.integrations ?? {})
+    .filter(([, attachment]) => isConnectorRef(attachment))
+    .map(([name]) => name);
+  if (referencing.length > 0) {
+    throw new InvalidAgentPackError(
+      `The pack's ${AGENT_JSON_FILENAME} references the connector library at ` +
+        `${referencing.map((name) => `integrations.${name}`).join(', ')}. Exports inline their ` +
+        'connectors — a pack never depends on the destination library (DESIGN §10.3), so this ' +
+        'one cannot be imported. Re-export it from a build that inlines.',
+    );
   }
 
   if (definition.id !== manifest.agentId) {

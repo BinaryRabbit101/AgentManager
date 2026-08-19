@@ -111,6 +111,9 @@ database.
     templates/
       todo-ticket-replies/
         template.json   a reusable Start-work prefill (a "task template")
+    connectors/
+      gmail/
+        connector.json  one MCP server, defined once and attached to agents
 
 Edit \`persona.md\` in any editor and AgentManager reloads it within a second,
 no restart. Edit \`agent.json\` and the same happens — with one difference: a
@@ -132,6 +135,17 @@ things you choose every time.
 They load, reload and report their mistakes exactly the way agents do, and there
 is no editor for them yet: write \`templates/<id>/template.json\`, save it, and
 it appears in the dialog.
+
+## Connectors
+
+\`connectors/\` holds an MCP server defined **once**, so several agents can carry
+the same mailbox or ticket queue without each one repeating its config. An agent
+attaches one by writing \`"integrations": { "gmail": { "connector": "gmail" } }\`
+in its \`agent.json\`; the key is the name that agent mounts it under, and the
+value is the library id. An inline config still works exactly as before.
+
+Credentials are the same as everywhere else here: a \`secretRef\` name, never a
+value — the values live in AgentManager's secret store.
 
 ## It is a git repository
 

@@ -45,10 +45,15 @@ export {
   agentMetaSchema,
   avatarSchema,
   capabilitiesSchema,
+  connectorIdProblem,
+  connectorIdSchema,
+  connectorRefSchema,
   effortSchema,
   immutableFieldViolations,
   integrationConfigSchema,
+  integrationNameProblem,
   integrationsSchema,
+  isConnectorRef,
   isSecretRef,
   modelSelectionSchema,
   originSchema,
@@ -73,7 +78,9 @@ export type {
   AgentMeta,
   Avatar,
   Capabilities,
+  ConnectorRef,
   Effort,
+  IntegrationAttachment,
   IntegrationConfig,
   Integrations,
   ModelSelection,
@@ -179,6 +186,7 @@ export {
   integrationSecretRefs,
   isOAuthIntegration,
   mcpToolPrefix,
+  resolveIntegrations,
   validateIntegrationAllowRules,
 } from './integrations.js';
 export type {
@@ -188,11 +196,15 @@ export type {
   CompiledSseServer,
   CompiledStdioServer,
   CompileIntegrationsInput,
+  ConnectorLookup,
+  DanglingConnectorRef,
   IntegrationCredentialStatus,
   IntegrationPreflight,
   IntegrationPreflightInput,
   IntegrationSecretRef,
   IntegrationState,
+  ResolvedIntegration,
+  ResolvedIntegrations,
 } from './integrations.js';
 
 export type {
@@ -417,6 +429,31 @@ export type {
   TemplateVariable,
 } from './templates.js';
 
+// WO3 — the connector library (DESIGN §10.3): the library's third kind of file.
+export {
+  CONNECTORS_DIRNAME,
+  CONNECTOR_JSON_FILENAME,
+  CONNECTOR_SCHEMA_VERSION,
+  connectorLookup,
+  createConnectorRegistry,
+  createConnectorStore,
+  connectorSchema,
+  parseConnector,
+  parseConnectorJson,
+  safeParseConnector,
+  serialiseConnector,
+} from './connectors.js';
+export type {
+  Connector,
+  ConnectorLoadOutcome,
+  ConnectorParseResult,
+  ConnectorRegistry,
+  ConnectorRegistryChange,
+  ConnectorStore,
+  ConnectorStoreOptions,
+  ResolvedConnector,
+} from './connectors.js';
+
 export { DEFAULT_DEBOUNCE_MS, createRosterWatcher, inertWatcher } from './watcher.js';
 export type { RosterWatcher, RosterWatcherOptions } from './watcher.js';
 
@@ -457,6 +494,7 @@ export {
   PACK_VERSION,
   assertNoSecretValues,
   buildAgentPack,
+  inlineConnectorRefs,
   packEntryProblem,
   packFilename,
   packManifestSchema,
@@ -467,6 +505,7 @@ export {
 } from './pack.js';
 export type {
   BuildAgentPackInput,
+  InlinedDefinition,
   PackFile,
   PackManifest,
   ReadAgentPack,
@@ -478,6 +517,10 @@ export { createRosterService } from './service.js';
 export type {
   AgentView,
   AllowRuleResult,
+  ConnectorCredentialStatus,
+  ConnectorListView,
+  ConnectorView,
+  DeleteConnectorResult,
   DeleteResult,
   ExportedPack,
   ImportPreview,
@@ -508,12 +551,16 @@ export {
   AgentNotFoundError,
   AvatarNotAnImageError,
   AvatarTooLargeError,
+  ConnectorIdTakenError,
+  ConnectorInUseError,
+  ConnectorNotFoundError,
   ImmutableFieldError,
   InvalidAgentPackError,
   InvalidRosterRequestError,
   LibraryWriteError,
   PackSchemaVersionError,
   PackSecretValueError,
+  PackUnresolvedConnectorError,
   PurgeBlockedError,
   RosterServiceError,
   TemplateNotFoundError,
