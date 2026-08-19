@@ -201,9 +201,7 @@ describe('the blank card (WO5: today’s flow, exactly)', () => {
     const cards = await within(dialog).findAllByRole('radio', { name: /Blank|Reply|Draft/u });
     // Blank first, and the one that is chosen.
     expect(cards[0]).toBeChecked();
-    expect(
-      within(dialog).getByText('Describe the task yourself, as always.'),
-    ).toBeInTheDocument();
+    expect(within(dialog).getByText('Describe the task yourself, as always.')).toBeInTheDocument();
     expect(taskOf(dialog).value).toBe('');
     // No source input until a template asks for one.
     expect(dialog.querySelector('[data-control="template-source"]')).toBeNull();
@@ -247,7 +245,9 @@ describe('picking a template prefills the flow (WO5)', () => {
 
     // The goal arrives, with the unfilled `{{source}}` collapsed to nothing
     // rather than left as braces.
-    await waitFor(() => expect(taskOf(dialog).value).toBe('Work the open items in : draft a reply for each.'));
+    await waitFor(() =>
+      expect(taskOf(dialog).value).toBe('Work the open items in : draft a reply for each.'),
+    );
 
     const source = within(dialog).getByLabelText('What should they work from?');
     await user.type(source, 'docs/todo.md');
@@ -286,9 +286,7 @@ describe('picking a template prefills the flow (WO5)', () => {
     await user.click(await within(dialog).findByRole('radio', { name: /Draft email replies/u }));
 
     await waitFor(() =>
-      expect(
-        within(dialog).getByRole('radio', { name: /adversarial pair/u }),
-      ).toBeChecked(),
+      expect(within(dialog).getByRole('radio', { name: /adversarial pair/u })).toBeChecked(),
     );
 
     // The template's own path replaces the generic `…/DRAFT.md` default.
@@ -358,7 +356,9 @@ describe('the missing-connector warning (WO5: it warns, it never gates)', () => 
     const dialog = await flow();
 
     await user.click(await within(dialog).findByRole('radio', { name: /Draft email replies/u }));
-    await waitFor(() => expect(within(dialog).getByRole('radio', { name: /Blank/u })).not.toBeChecked());
+    await waitFor(() =>
+      expect(within(dialog).getByRole('radio', { name: /Blank/u })).not.toBeChecked(),
+    );
     expect(dialog.querySelector('[data-connector-gap]')).toBeNull();
   });
 });

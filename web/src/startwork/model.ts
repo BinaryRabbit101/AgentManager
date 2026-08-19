@@ -514,9 +514,7 @@ export function missingConnectors(
   template: TaskTemplateView | undefined,
   agentId: string,
 ): readonly string[] {
-  return (
-    template?.integrationGaps.find((gap) => gap.agentId === agentId)?.missing ?? []
-  );
+  return template?.integrationGaps.find((gap) => gap.agentId === agentId)?.missing ?? [];
 }
 
 /** Every seated agent that falls short, in selection order — the warning list. */

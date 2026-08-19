@@ -142,14 +142,16 @@ describe('the variables (§2.4: two, and no engine)', () => {
       ),
     ).toEqual([]);
     expect(
-      templateVariables(template({ goalTemplate: 'Answer {{source}}.', artifactPathTemplate: 'a.md' })),
+      templateVariables(
+        template({ goalTemplate: 'Answer {{source}}.', artifactPathTemplate: 'a.md' }),
+      ),
     ).toEqual(['source']);
   });
 
   it('substitutes the two it knows and leaves a typo visible', () => {
-    expect(renderTemplateText('in {{source}} at {{ slug }}', { source: 'the inbox', slug: 'x-1' })).toBe(
-      'in the inbox at x-1',
-    );
+    expect(
+      renderTemplateText('in {{source}} at {{ slug }}', { source: 'the inbox', slug: 'x-1' }),
+    ).toBe('in the inbox at x-1');
     // An unsupplied value is an empty string — the field is editable and a
     // half-finished sentence beats one with braces in it.
     expect(renderTemplateText('in {{source}}', {})).toBe('in ');
@@ -197,9 +199,7 @@ describe('the store and the registry (§2.3, applied to templates)', () => {
     expect(templateDiagnostic?.path).toContain(TEMPLATE_JSON_FILENAME);
 
     // And neither took anything else down with it.
-    expect(harness.service.list().agents.map((one) => one.definition.id)).toEqual([
-      'priya-bugfix',
-    ]);
+    expect(harness.service.list().agents.map((one) => one.definition.id)).toEqual(['priya-bugfix']);
     expect(harness.service.listTemplates().templates).toEqual([]);
   });
 

@@ -221,10 +221,7 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
   const [templateId, setTemplateId] = useState<string | null>(null);
   /** The one free input a `{{source}}` template renders (§6). */
   const [source, setSource] = useState('');
-  const templateCards = useMemo(
-    () => taskTemplates.data?.templates ?? [],
-    [taskTemplates.data],
-  );
+  const templateCards = useMemo(() => taskTemplates.data?.templates ?? [], [taskTemplates.data]);
   const template: TaskTemplateView | undefined = useMemo(
     () => templateCards.find((one) => one.template.id === templateId),
     [templateCards, templateId],
@@ -460,10 +457,7 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
    * WO4's own rule about pre-grants ("it can only pre-answer a card the compiled
    * permissions would have raised") holding one layer further out.
    */
-  const templateGrants = useMemo(
-    () => new Set(template?.template.preGrantTools ?? []),
-    [template],
-  );
+  const templateGrants = useMemo(() => new Set(template?.template.preGrantTools ?? []), [template]);
 
   const preflightRows = useMemo(
     () =>
