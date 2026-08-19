@@ -1,7 +1,7 @@
 /**
  * The app root: routes (§2.1), the frame (§2.2) and the boot gate (§3.5).
  *
- * Fourteen routes, every one deep-linkable and every one surviving a reload — the
+ * Fifteen routes, every one deep-linkable and every one surviving a reload — the
  * ntfy notification and the Electron toast both navigate by URL, and
  * foundation §6.4's history fallback is what makes a cold `GET /questions/abc`
  * arrive here rather than at a 404.
@@ -16,6 +16,7 @@ import { AssignmentPage } from './assignments/AssignmentPage';
 import { AssignmentsPage } from './assignments/AssignmentsPage';
 import { Board } from './board/Board';
 import { AppFrame } from './app/AppFrame';
+import { ConnectorsPage } from './connectors/ConnectorsPage';
 import { DebugPanel } from './app/DebugPanel';
 import { SettingsPage } from './settings/SettingsPage';
 import { UsageView } from './usage/UsageView';
@@ -59,6 +60,9 @@ export function App(): ReactElement {
           <Route path="/agents" element={<Board />} />
           <Route path="/agents/new" element={<AgentWizard />} />
           <Route path="/agents/:id" element={<AgentDetail />} />
+          {/* The connector library (§7.4, roster §10.3): define a server once,
+              assign it to the agents that need it. */}
+          <Route path="/connectors" element={<ConnectorsPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:id" element={<ProjectPage />} />
           <Route path="/sessions" element={<SessionsPage />} />

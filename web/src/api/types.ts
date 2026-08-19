@@ -318,6 +318,55 @@ export interface TaskTemplateListView {
 }
 
 // ---------------------------------------------------------------------------
+// The connector library (roster §10.3, WO3 — rendered by WO4's page)
+// ---------------------------------------------------------------------------
+
+/**
+ * One credential a library connector needs, as `GET /api/roster/connectors`
+ * returns it: **a name and a boolean**.
+ *
+ * Deliberately narrower than {@link IntegrationCredentialStatus}, which also
+ * carries the attachment it came from. A library entry has no attachment until
+ * an agent makes one, and roster's own `ConnectorView` says so by omitting the
+ * fields — this mirrors that rather than widening it back out.
+ */
+export interface ConnectorCredentialStatus {
+  readonly secretRef: string;
+  readonly resolved: boolean;
+}
+
+/** `connectors/<id>/connector.json`, as the list and the get route project it. */
+export interface ConnectorView {
+  readonly id: string;
+  readonly label?: string;
+  readonly description?: string;
+  readonly transport: 'stdio' | 'sse' | 'http';
+  /** `mcp__<id>__` — what a permission rule for an agent that attaches this
+   *  connector under its default name starts with (roster §10). */
+  readonly toolPrefix: string;
+  readonly auth: 'oauth' | 'credentials' | 'none';
+  readonly credentials: readonly ConnectorCredentialStatus[];
+  /** Live agent ids carrying `{ connector: "<id>" }`, sorted. The same answer
+   *  `DELETE` refuses on, so the card and the refusal cannot disagree. */
+  readonly usedBy: readonly string[];
+  /** roster's `IntegrationConfig` — the same shape an inline integration holds,
+   *  which is why `integrationsOf` can read it without a second parser. */
+  readonly config: Readonly<Record<string, unknown>>;
+  readonly meta: { readonly createdAt: string; readonly updatedAt: string };
+}
+
+export interface ConnectorListView {
+  readonly connectors: readonly ConnectorView[];
+  readonly diagnostics: readonly Diagnostic[];
+}
+
+/** `DELETE /api/roster/connectors/:id` when nothing referenced it. */
+export interface DeleteConnectorResult {
+  readonly connectorId: string;
+  readonly removed: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Background triggers (orchestrator §2.8, WO8)
 // ---------------------------------------------------------------------------
 

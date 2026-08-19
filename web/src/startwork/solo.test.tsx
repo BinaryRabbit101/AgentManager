@@ -574,16 +574,18 @@ describe('the connector preflight (roster §10, WO6)', () => {
     expect(dialog.textContent).not.toContain('mcp.gmail.token');
   });
 
-  it('links the missing secret to settings and starts anyway (§10.4: advice, not a gate)', async () => {
+  it('links the missing secret to the connectors page and starts anyway (§10.4: advice, not a gate)', async () => {
     const fixture = serving({ agents: [withConnectors] });
     mount(<App />, { respond: fixture.respond });
     openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
     const dialog = await flow();
 
     await waitFor(() =>
+      // WO4: `/connectors`, where `agentmanager secrets set <ref> --stdin` is
+      // actually printed. Settings has no secrets UI to arrive at.
       expect(within(dialog).getByRole('link', { name: 'Set the secret…' })).toHaveAttribute(
         'href',
-        '/settings',
+        '/connectors',
       ),
     );
 

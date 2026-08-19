@@ -19,19 +19,42 @@
  * `agentmanager secrets set … --stdin` line, which carries the key and never
  * the value (foundation §3.5).
  *
+ * **The library, and what the panel does with it (roster §10.3, WO4).** A server
+ * may now be defined once under `connectors/` and *referenced* from many agents.
+ * The panel therefore renders two kinds of row: an editable card, as before, and
+ * a compact **reference** row that shows what the library holds and links to the
+ * Connectors page, where it is managed. The list is fetched here — by the panel,
+ * with the app's ordinary query client — rather than passed down as a prop,
+ * because "what the library holds" is a fact about the machine and not a fact
+ * about the agent being edited. When there is no provider above (the editor's own
+ * control tests mount it bare), the panel renders every field it always did and
+ * simply has no library to offer.
+ *
  * Nothing in this file writes. Every control edits the editor's model, and the
  * definition changes when the owner saves the editor — the same path the
  * persona and the permission lists take (`editorModel.ts`).
  */
 
-import { useState, type ReactElement } from 'react';
+import { useState, type ReactElement, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 
-import type { Diagnostic, IntegrationCredentialStatus } from '../api/types';
+import type { ApiClient } from '../api/client';
+import { useConnectors } from '../api/queries';
+import type {
+  ConnectorCredentialStatus,
+  ConnectorView,
+  Diagnostic,
+  IntegrationCredentialStatus,
+} from '../api/types';
+import { useOptionalServices } from '../app/AppContext';
 
 import {
   EMPTY_INTEGRATION,
   INTEGRATION_TRANSPORTS,
+  connectorRefForm,
+  inlineFormOf,
   integrationProblems,
+  isConnectorRef,
   mcpToolPrefix,
   secretSetCommand,
   suggestedSecretRef,
@@ -47,6 +70,9 @@ export const IDENTITY_BOUNDARY_NOTE =
   'servers. Give each agent its own connectors here. (A project’s own .mcp.json still applies ' +
   'when the agent is pointed at that project.)';
 
+/** Said on every reference row — the ownership rule of §7.3.1, on screen. */
+export const MANAGED_IN_LIBRARY_NOTE = 'Managed on the Connectors page';
+
 export interface IntegrationsPanelProps {
   readonly integrations: readonly IntegrationForm[];
   readonly onChange: (next: readonly IntegrationForm[]) => void;
@@ -57,13 +83,45 @@ export interface IntegrationsPanelProps {
   readonly idPrefix: string;
 }
 
-export function IntegrationsPanel({
+/**
+ * The panel, with the library read when there is a client to read it with.
+ *
+ * The split is one component deep and no deeper: `useConnectors` needs both the
+ * services context and a `QueryClientProvider`, and the two always arrive
+ * together (`web/test/harness.tsx` provides both, `main.tsx` mounts both). So
+ * the presence of the services is the honest test for "can this reach the
+ * network", and the branch is taken once per mount rather than per render.
+ */
+export function IntegrationsPanel(props: IntegrationsPanelProps): ReactElement {
+  const services = useOptionalServices();
+  if (services === undefined) return <IntegrationsPanelBody {...props} connectors={undefined} />;
+  return <IntegrationsPanelWithLibrary {...props} client={services.client} />;
+}
+
+function IntegrationsPanelWithLibrary({
+  client,
+  ...props
+}: IntegrationsPanelProps & { readonly client: ApiClient }): ReactElement {
+  const library = useConnectors(client);
+  // `undefined` and "the library is empty" are different facts and are kept
+  // different: the first must not produce a dangling-connector warning for every
+  // reference the agent holds (see `integrationProblems`).
+  return <IntegrationsPanelBody {...props} connectors={library.data?.connectors} />;
+}
+
+interface IntegrationsPanelBodyProps extends IntegrationsPanelProps {
+  /** The library, or `undefined` when it could not be read at all. */
+  readonly connectors: readonly ConnectorView[] | undefined;
+}
+
+function IntegrationsPanelBody({
   integrations,
   onChange,
   credentials = [],
   diagnostics = [],
   idPrefix,
-}: IntegrationsPanelProps): ReactElement {
+  connectors,
+}: IntegrationsPanelBodyProps): ReactElement {
   const [importing, setImporting] = useState(false);
   const at = (name: string): string => `${idPrefix}-${name}`;
 
@@ -75,7 +133,14 @@ export function IntegrationsPanel({
   // rather than only in the page-level list — `roster.integration.no-allow-rule`
   // is about *this* server and is unactionable three screens away.
   const scoped = diagnostics.filter((diagnostic) => diagnostic.path?.startsWith('integrations.'));
-  const problems = integrationProblems(integrations);
+  const problems = integrationProblems(integrations, {
+    connectorIds: connectors?.map((one) => one.id),
+  });
+  // The library minus what this agent already references — offering a connector
+  // it already carries would append a second row under a name that is taken.
+  const attachable = (connectors ?? []).filter(
+    (one) => !integrations.some((form) => form.connector === one.id),
+  );
 
   return (
     <fieldset className="integrations">
@@ -108,16 +173,40 @@ export function IntegrationsPanel({
         <p className="empty">No connectors. This agent can only use its built-in tools.</p>
       ) : null}
 
-      {integrations.map((integration, index) => (
-        <IntegrationCard
-          key={index}
-          integration={integration}
-          credentials={credentials}
-          idPrefix={at(`integration-${String(index)}`)}
-          onChange={(next) => replace(index, next)}
-          onRemove={() => onChange(integrations.filter((_one, position) => position !== index))}
-        />
-      ))}
+      {integrations.map((integration, index) => {
+        const remove = (): void =>
+          onChange(integrations.filter((_one, position) => position !== index));
+        if (isConnectorRef(integration)) {
+          const held = connectors?.find((one) => one.id === integration.connector);
+          return (
+            <ConnectorRefCard
+              key={index}
+              integration={integration}
+              connector={held}
+              onDetach={remove}
+              // The one path from a reference back to an editable card. It fills
+              // the form from the library's *current* config, so what the owner
+              // then edits is a copy of what would have compiled — not a blank
+              // card they have to retype (roster §10.3).
+              onConvert={
+                held === undefined
+                  ? undefined
+                  : () => replace(index, inlineFormOf(integration.name, held.config))
+              }
+            />
+          );
+        }
+        return (
+          <IntegrationCard
+            key={index}
+            integration={integration}
+            credentials={credentials}
+            idPrefix={at(`integration-${String(index)}`)}
+            onChange={(next) => replace(index, next)}
+            onRemove={remove}
+          />
+        );
+      })}
 
       <div className="integrations__actions">
         <button
@@ -127,6 +216,29 @@ export function IntegrationsPanel({
         >
           Add a connector
         </button>
+        {attachable.length === 0 ? null : (
+          <div className="field" data-control="attach-from-library">
+            <label htmlFor={at('attach')}>Attach from library</label>
+            <select
+              id={at('attach')}
+              value=""
+              onChange={(event) => {
+                const id = event.target.value;
+                if (id === '') return;
+                onChange([...integrations, connectorRefForm(id)]);
+              }}
+            >
+              <option value="">choose a connector…</option>
+              {attachable.map((one) => (
+                <option key={one.id} value={one.id}>
+                  {one.label === undefined || one.label === ''
+                    ? one.id
+                    : `${one.label} (${one.id})`}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <button type="button" className="button" onClick={() => setImporting(!importing)}>
           Import from .mcp.json
         </button>
@@ -150,20 +262,41 @@ export function IntegrationsPanel({
 // One server
 // ---------------------------------------------------------------------------
 
-interface IntegrationCardProps {
+export interface IntegrationCardProps {
   readonly integration: IntegrationForm;
   readonly credentials: readonly IntegrationCredentialStatus[];
   readonly idPrefix: string;
   readonly onChange: (next: IntegrationForm) => void;
-  readonly onRemove: () => void;
+  /** Omitted where the row cannot be removed from inside the card — the
+   *  Connectors page deletes a connector, it does not "remove" one field group. */
+  readonly onRemove?: (() => void) | undefined;
+  /** "Server name" here; "Connector id" on the Connectors page, where the same
+   *  field is the library id and therefore the folder name (roster §10.3). */
+  readonly nameLabel?: string;
+  /** The id is the folder name and is immutable once written (roster §10.3). */
+  readonly nameDisabled?: boolean;
+  /** Overrides the legend, which is otherwise the server name. */
+  readonly legend?: string;
 }
 
-function IntegrationCard({
+/**
+ * One MCP server's fields — the idiom, shared by the two places one is authored.
+ *
+ * Exported because the Connectors page authors exactly the same object: a
+ * library connector's `config` **is** roster's `IntegrationConfig` (§10.3
+ * decision 2), so a second form for it would be a second dialect of the same
+ * shape, and the day the two disagreed would be the day a connector behaved
+ * differently depending on where it was typed.
+ */
+export function IntegrationCard({
   integration,
   credentials,
   idPrefix,
   onChange,
   onRemove,
+  nameLabel = 'Server name',
+  nameDisabled = false,
+  legend,
 }: IntegrationCardProps): ReactElement {
   const at = (name: string): string => `${idPrefix}-${name}`;
   const stdio = integration.transport === 'stdio';
@@ -180,14 +313,15 @@ function IntegrationCard({
 
   return (
     <fieldset className="integration" data-integration={integration.name}>
-      <legend>{integration.name === '' ? 'New connector' : integration.name}</legend>
+      <legend>{legend ?? (integration.name === '' ? 'New connector' : integration.name)}</legend>
 
       <div className="field">
-        <label htmlFor={at('name')}>Server name</label>
+        <label htmlFor={at('name')}>{nameLabel}</label>
         <input
           id={at('name')}
           value={integration.name}
           placeholder="gmail"
+          disabled={nameDisabled}
           onChange={(event) => onChange({ ...integration, name: event.target.value })}
         />
       </div>
@@ -361,9 +495,92 @@ function IntegrationCard({
         >
           Add {label.toLowerCase()}
         </button>
-        <button type="button" className="button" data-variant="danger" onClick={onRemove}>
-          Remove connector
+        {onRemove === undefined ? null : (
+          <button type="button" className="button" data-variant="danger" onClick={onRemove}>
+            Remove connector
+          </button>
+        )}
+      </div>
+    </fieldset>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// One reference to a library connector (roster §10.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * A reference row: what the library holds, and the two things an agent may do
+ * about it.
+ *
+ * Deliberately **not editable here**. The whole point of the library is that the
+ * connector is defined in one place, so a form on this row would be a second
+ * place it was defined — the exact problem §10.3 exists to remove. What the row
+ * offers instead is *Detach* (this agent stops carrying it; the library keeps it)
+ * and *Convert to inline copy* (this agent takes a private copy and stops
+ * following the library), which are the only two honest ways out.
+ *
+ * When the library does not hold the id, the row still renders: a dangling
+ * reference is exactly the thing the owner has to be able to see and fix, and a
+ * row that vanished would leave the launch refusal with no visible cause.
+ */
+function ConnectorRefCard({
+  integration,
+  connector,
+  onDetach,
+  onConvert,
+}: {
+  readonly integration: IntegrationForm;
+  readonly connector: ConnectorView | undefined;
+  readonly onDetach: () => void;
+  /** Absent while the library cannot supply a config to copy. */
+  readonly onConvert?: (() => void) | undefined;
+}): ReactElement {
+  return (
+    <fieldset
+      className="integration integration--ref"
+      data-integration={integration.name}
+      data-connector-ref={integration.connector}
+    >
+      <legend>{integration.name}</legend>
+
+      {connector === undefined ? (
+        <p className="notice" data-tone="danger">
+          The library has no connector called “{integration.connector}”. Recreate it on the
+          Connectors page, or detach this row — a reference the library cannot resolve refuses the
+          launch (roster §10.3).
+        </p>
+      ) : (
+        <>
+          <p className="integration__ref-head">
+            <strong>
+              {connector.label === undefined || connector.label === ''
+                ? connector.id
+                : connector.label}
+            </strong>{' '}
+            <span className="badge">{connector.transport}</span>{' '}
+            {connector.auth === 'oauth' ? <span className="badge">OAuth</span> : null}
+          </p>
+          <p className="integration__prefix">
+            Tools appear as <code>{mcpToolPrefix(integration.name)}*</code> — the name this agent
+            mounts it under, which need not be the library id.
+          </p>
+          {connector.credentials.map((credential) => (
+            <CredentialStatusBadge key={credential.secretRef} status={credential} />
+          ))}
+        </>
+      )}
+
+      <div className="integrations__actions">
+        <Link to="/connectors">{MANAGED_IN_LIBRARY_NOTE}</Link>
+        <button type="button" className="button" onClick={onDetach}>
+          Detach
         </button>
+        {onConvert === undefined ? null : (
+          <button type="button" className="button" onClick={onConvert}>
+            Convert to inline copy
+          </button>
+        )}
       </div>
     </fieldset>
   );
@@ -386,19 +603,40 @@ function CredentialBadge({
   if (!field.secret || field.value.trim() === '') return null;
   const status = credentials.find((one) => one.secretRef === field.value.trim());
   if (status === undefined) return null;
+  return <CredentialStatusBadge status={status} />;
+}
+
+/**
+ * The badge and, when it is missing, the one documented way to fix it.
+ *
+ * Exported and shared by the panel, the reference row and the Connectors page:
+ * `agentmanager secrets set <ref> --stdin` is the *only* sanctioned way a value
+ * reaches the store (foundation §3.5 — "never a command line (visible in Task
+ * Manager), never a temp file"), and three copies of that sentence would be
+ * three chances for one of them to suggest something else.
+ */
+export function CredentialStatusBadge({
+  status,
+}: {
+  readonly status: ConnectorCredentialStatus;
+}): ReactElement {
   if (status.resolved) {
     return (
-      <span className="badge" data-credential="resolved">
+      <span className="badge" data-credential="resolved" data-secret-ref={status.secretRef}>
         credential stored
       </span>
     );
   }
   return (
-    <span className="credential__missing" data-credential="missing">
+    <span
+      className="credential__missing"
+      data-credential="missing"
+      data-secret-ref={status.secretRef}
+    >
       <span className="badge" data-status="halted">
         needs credential
       </span>{' '}
-      Store it with <code>{secretSetCommand(field.value.trim())}</code> — the value is read from
+      Store it with <code>{secretSetCommand(status.secretRef)}</code> — the value is read from
       standard input, so it never lands in a command line or a shell history.
     </span>
   );
@@ -408,18 +646,33 @@ function CredentialBadge({
 // Paste-import
 // ---------------------------------------------------------------------------
 
-interface ImportPanelProps {
+export interface ImportPanelProps {
   readonly idPrefix: string;
   readonly onApply: (drafts: readonly IntegrationForm[]) => void;
   readonly onCancel: () => void;
+  /** What happens on apply, which differs between the two callers: the editor
+   *  appends drafts to a form, the Connectors page creates library entries. */
+  readonly note?: ReactNode;
+  readonly applyLabel?: (count: number) => string;
 }
 
 /**
  * Paste → preview → append. The preview step is the whole point: `mcpImport.ts`
  * rewrites transports and converts `${VAR}` placeholders, and a mapping the
  * owner did not see would be a silent edit to their config.
+ *
+ * Exported so the Connectors page can raise the same panel one level up: the
+ * owner's complaint was that a `.mcp.json` could only be imported *into an
+ * agent*, and a second parser and a second preview table for the library would
+ * be two answers to "what will this paste do".
  */
-function ImportPanel({ idPrefix, onApply, onCancel }: ImportPanelProps): ReactElement {
+export function ImportPanel({
+  idPrefix,
+  onApply,
+  onCancel,
+  note,
+  applyLabel = (count) => `Add ${String(count)} connector${count === 1 ? '' : 's'}`,
+}: ImportPanelProps): ReactElement {
   const [text, setText] = useState('');
   const [rows, setRows] = useState<readonly ImportRow[] | undefined>();
   const [error, setError] = useState<string | undefined>();
@@ -428,8 +681,12 @@ function ImportPanel({ idPrefix, onApply, onCancel }: ImportPanelProps): ReactEl
     <section className="import" aria-labelledby={`${idPrefix}-heading`} data-import="mcp-json">
       <h4 id={`${idPrefix}-heading`}>Import from .mcp.json</h4>
       <p className="editor__note">
-        Paste a <code>.mcp.json</code> or just its <code>mcpServers</code> object. Nothing is
-        written until you save this agent.
+        {note ?? (
+          <>
+            Paste a <code>.mcp.json</code> or just its <code>mcpServers</code> object. Nothing is
+            written until you save this agent.
+          </>
+        )}
       </p>
       <div className="field">
         <label htmlFor={`${idPrefix}-text`}>.mcp.json</label>
@@ -528,7 +785,7 @@ function ImportPanel({ idPrefix, onApply, onCancel }: ImportPanelProps): ReactEl
             data-variant="primary"
             onClick={() => onApply(rows.map((row) => row.draft))}
           >
-            Add {rows.length} connector{rows.length === 1 ? '' : 's'}
+            {applyLabel(rows.length)}
           </button>
         </>
       )}

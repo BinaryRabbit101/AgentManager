@@ -25,13 +25,15 @@ function frame(type: string, extra: Partial<EventFrame> = {}): EventFrame {
 }
 
 describe('the invalidation map (§3.4)', () => {
-  it('roster.changed refetches both halves of the library', () => {
-    // The board *and* the task templates (roster §2.4, WO5): a `template.json`
-    // edited on disk arrives as this same event with `reason: 'templates'`,
-    // which is precisely why one rule covers both keys rather than two.
+  it('roster.changed refetches every half of the library', () => {
+    // The board, the task templates *and* the connectors (roster §2.4 WO5,
+    // §10.3 WO3): a `template.json` or a `connector.json` edited on disk arrives
+    // as this same event with `reason: 'templates'` / `'connectors'`, which is
+    // precisely why one rule covers all three keys rather than three rules.
     expect(plan(frame('roster.changed')).invalidate).toEqual([
       queryKeys.roster,
       queryKeys.taskTemplates,
+      queryKeys.connectors,
     ]);
   });
 

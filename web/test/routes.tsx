@@ -1,5 +1,5 @@
 /**
- * The ten routes of §2.1, mounted with enough fixture data to be real.
+ * The routes of §2.1, mounted with enough fixture data to be real.
  *
  * Shared by the axe audit, the keyboard walk and the cross-delivery suite, for
  * one reason: all three make claims about **every route**, and three separate
@@ -32,6 +32,24 @@ export const SAM = anAgent({
   avatar: { kind: 'initials', value: 'SV', color: '#5a4a9c' },
 });
 export const LPM = aProject({ id: 'lpm', name: 'littlepocketmuseum' });
+
+/** One library connector, with an unresolved credential — the badge case. */
+export const SHARED_GMAIL = {
+  id: 'shared-gmail',
+  label: 'Gmail (work)',
+  transport: 'stdio' as const,
+  toolPrefix: 'mcp__shared-gmail__',
+  auth: 'credentials' as const,
+  credentials: [{ secretRef: 'mcp.shared-gmail.token', resolved: false }],
+  usedBy: ['ada'],
+  config: {
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-gmail'],
+    env: { GMAIL_TOKEN: { secretRef: 'mcp.shared-gmail.token' } },
+  },
+  meta: { createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z' },
+};
 
 const SESSION = {
   session: {
@@ -195,6 +213,10 @@ export const RESPOND: Responder = (url, init) => {
       return json({ agents: [ADA, SAM], diagnostics: [] });
     case '/api/roster/agents/ada':
       return json(ADA);
+    // roster §10.3's library (WO3). Read by `/connectors` and, for the attach
+    // control, by every screen that mounts the agent editor.
+    case '/api/roster/connectors':
+      return json({ connectors: [SHARED_GMAIL], diagnostics: [] });
     case '/api/projects':
       return json({ projects: [LPM] });
     case '/api/projects/lpm':
@@ -338,6 +360,7 @@ export const ROUTES: readonly { readonly path: string; readonly settled: string 
   { path: '/agents', settled: 'Ada' },
   { path: '/agents/new', settled: /New agent|Describe/u },
   { path: '/agents/ada', settled: 'Sessions' },
+  { path: '/connectors', settled: 'Gmail (work)' },
   { path: '/projects', settled: 'littlepocketmuseum' },
   { path: '/projects/lpm', settled: 'littlepocketmuseum' },
   { path: '/sessions', settled: 'Sessions' },

@@ -111,10 +111,11 @@ export function plan(frame: EventFrame): InvalidationPlan {
     const agentId = frame.ids['agentId'];
     return {
       ...EMPTY,
-      // Both halves of the library: `reason: 'templates'` is a `template.json`
-      // that changed on disk, and it arrives on the same event type precisely so
-      // one rule covers it (roster §2.4, WO5).
-      invalidate: [queryKeys.roster, queryKeys.taskTemplates],
+      // All three halves of the library: `reason: 'templates'` is a
+      // `template.json` and `reason: 'connectors'` a `connector.json` that
+      // changed on disk, and both arrive on the same event type precisely so one
+      // rule covers them (roster §2.4 WO5, §10.3 WO3).
+      invalidate: [queryKeys.roster, queryKeys.taskTemplates, queryKeys.connectors],
       avatars: reason === 'avatar' && agentId !== undefined ? [agentId] : [],
     };
   }

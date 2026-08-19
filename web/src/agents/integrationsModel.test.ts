@@ -21,7 +21,9 @@ import { integrationsSchema } from '../../../src/modules/roster/schema.js';
 import {
   EMPTY_INTEGRATION,
   argsOf,
+  connectorRefForm,
   fieldsOf,
+  inlineFormOf,
   integrationProblems,
   integrationSummaries,
   integrationsBody,
@@ -343,5 +345,100 @@ describe('the read-only summary (§7.3)', () => {
         secretRefs: ['mcp.gmail.token'],
       },
     ]);
+  });
+
+  it('names the library entry for a reference, which has no command of its own', () => {
+    expect(integrationSummaries({ mail: { connector: 'shared-gmail' } })).toEqual([
+      {
+        name: 'mail',
+        transport: 'stdio',
+        target: 'library connector “shared-gmail”',
+        // The *agent-local* name is what the prefix is built from, not the
+        // library id: an agent may mount the same connector under its own name.
+        toolPrefix: 'mcp__mail__',
+        secretRefs: [],
+        connector: 'shared-gmail',
+      },
+    ]);
+  });
+});
+
+/**
+ * roster §10.3's third attachment shape (WO3/WO4).
+ *
+ * Held to the same standard as every other shape in this file: what the form
+ * posts is validated against roster's own `integrationsSchema`, because a
+ * reference that *nearly* matched `connectorRefSchema` — one that carried a
+ * `toolPrefixHint`, say — would be a strict-object rejection at save time for
+ * something the panel put there.
+ */
+describe('references to the connector library (§10.3)', () => {
+  const REF: IntegrationForm = { ...EMPTY_INTEGRATION, name: 'mail', connector: 'shared-gmail' };
+
+  it('round-trips a reference without inventing a transport for it', () => {
+    expect(integrationsOf({ mail: { connector: 'shared-gmail' } })).toEqual([REF]);
+    expect(integrationsBody([REF])).toEqual({ mail: { connector: 'shared-gmail' } });
+  });
+
+  it('posts the one key and nothing beside it — no hint, no override', () => {
+    const body = integrationsBody([REF]);
+    expect(Object.keys(body['mail'] ?? {})).toEqual(['connector']);
+    expect(integrationsSchema.safeParse(body).success).toBe(true);
+  });
+
+  it('accepts a reference beside an inline server in the same record', () => {
+    const body = integrationsBody([
+      REF,
+      { ...EMPTY_INTEGRATION, name: 'files', command: 'npx', args: '-y\nserver-files' },
+    ]);
+    expect(integrationsSchema.safeParse(body).success).toBe(true);
+  });
+
+  it('judges nothing about a reference’s config, because it has none', () => {
+    // An inline row with no command is a problem; the same row as a reference is
+    // not — the library holds the command, and this row holds only the name.
+    expect(integrationProblems([REF], { connectorIds: ['shared-gmail'] })).toEqual([]);
+    expect(integrationProblems([{ ...EMPTY_INTEGRATION, name: 'mail' }])).not.toEqual([]);
+  });
+
+  it('flags a dangling connector id against the fetched list, and only then', () => {
+    expect(
+      integrationProblems([REF], { connectorIds: ['other'] }).map((one) => one.message),
+    ).toEqual([expect.stringContaining('“shared-gmail”')]);
+
+    // No list means the library could not be read. Accusing a good definition on
+    // the strength of a failed fetch is the one thing this must not do.
+    expect(integrationProblems([REF])).toEqual([]);
+  });
+
+  it('still checks the record key, which is a server name like any other', () => {
+    expect(
+      integrationProblems([{ ...REF, name: 'Mail__Box' }], {
+        connectorIds: ['shared-gmail'],
+      }).map((one) => one.message),
+    ).toEqual([expect.stringContaining('must be lower-case')]);
+  });
+
+  it('converts a library config into an editable row under the agent’s own name', () => {
+    expect(inlineFormOf('mail', GMAIL)).toEqual({
+      name: 'mail',
+      transport: 'stdio',
+      command: 'npx',
+      args: '-y\n@modelcontextprotocol/server-gmail',
+      url: '',
+      oauth: false,
+      fields: [
+        { key: 'GMAIL_TOKEN', value: 'mcp.gmail.token', secret: true },
+        { key: 'GMAIL_USER', value: 'me@example.com', secret: false },
+      ],
+    });
+  });
+
+  it('attaches under the library id, which is what makes the prefix predictable', () => {
+    expect(connectorRefForm('shared-gmail')).toEqual({
+      ...EMPTY_INTEGRATION,
+      name: 'shared-gmail',
+      connector: 'shared-gmail',
+    });
   });
 });

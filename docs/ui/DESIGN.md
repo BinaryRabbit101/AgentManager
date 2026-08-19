@@ -145,6 +145,7 @@ MSI/Squirrel, global hotkeys, multiple windows, deep OS integration.
 | `/agents` | **Agents** | The roster as a board of agent cards. The drag surface (§5). |
 | `/agents/:id` | Agent detail / editor | Definition, persona, permissions, integrations, skills, diagnostics, session history. |
 | `/agents/new` | Agent wizard | Draft-from-description → edit → save (§6). |
+| `/connectors` | **Connectors** | The connector library: define an MCP server once, assign it to agents (§7.4). |
 | `/projects` | **Projects** | The project list: status, health, and the agent→project drop target (§5.1). |
 | `/projects/:id` | Project page | Activity timeline, work items, workspaces ("review needed"), defaults, health. |
 | `/sessions` | **Sessions** | Every session, newest first, filtered by status — the run history (§9.5). |
@@ -156,7 +157,7 @@ MSI/Squirrel, global hotkeys, multiple windows, deep OS integration.
 | `/usage` | Usage | Plan-window local estimate, queue, per-assignment spend (§12). |
 | `/settings` | Settings | Remote access, capacity, notifications, logs, health, about (§13). |
 
-Fourteen routes. Every one is deep-linkable and survives a reload, because the ntfy notification and
+Fifteen routes. Every one is deep-linkable and survives a reload, because the ntfy notification and
 the Electron toast both navigate by URL.
 
 **Home is not the board.** `/` was the roster, which answers "who do I have" — a question about the
@@ -177,16 +178,22 @@ run ends.
 
 ### 2.2 Navigation
 
-**Desktop (≥ 900px)**: a narrow left rail — Home · Agents · Projects · Sessions · Assignments ·
-Questions (badge) · Usage · Settings — plus a persistent top bar carrying the connection indicator,
-the global search-free "New agent" and "Add project" buttons, and the theme toggle. Detail screens
-open as full pages, not modals, so they can be linked and shared.
+**Desktop (≥ 900px)**: a narrow left rail — Home · Agents · Connectors · Projects · Sessions ·
+Assignments · Questions (badge) · Usage · Settings — plus a persistent top bar carrying the
+connection indicator, the global search-free "New agent" and "Add project" buttons, and the theme
+toggle. Detail screens open as full pages, not modals, so they can be linked and shared.
 
 Home leads the rail because it is where the app opens and where a person returns to between tasks;
 Agents follows it, carrying the board's own icon, because `/agents` **is** the board and one screen
 with two glyphs is a screen the eye stops recognising.
 
-**Phone / narrow (< 640px)**: a bottom tab bar with the same eight destinations (thumb-reachable,
+**Connectors sits beside Agents, not under Settings** *(2026-08-19, WO4)*. A connector is a thing
+agents are *given* — "this agent is defined by its mailbox access as much as by its persona" (roster
+§10) — not a preference about how the app behaves. Placing it in Settings would also have kept the
+owner's original complaint alive in a new form: the only way to reach a connector would still have
+been to remember where it was filed.
+
+**Phone / narrow (< 640px)**: a bottom tab bar with the same nine destinations (thumb-reachable,
 48px targets), the top bar collapsed to a title and a single overflow menu. Detail screens push;
 modals become **bottom sheets**.
 
@@ -345,7 +352,7 @@ The `EventStream` maps event types to cache operations. The interesting entries:
 
 | Event | Effect |
 |---|---|
-| `roster.changed` | refetch the roster list (covers external file edits and `git pull`) |
+| `roster.changed` | refetch every half of the library — the roster list, the task templates and the connectors (covers external file edits and `git pull`; roster §2.4, §10.3) |
 | `session.queued/started/paused/resumed/ended/orphaned` | patch the session record, invalidate the session lists (§2.4, §9.5), the fleet status and the project timeline |
 | `session.delta/message/tool.*/usage` | append to the per-session ring buffer only (never the query cache) |
 | `runner.queue.changed`, `runner.ratelimited` | patch the queue panel |
@@ -728,7 +735,8 @@ is a dry-run compile against agent × project and a solo assignment is whole-pro
 shows is what will apply; a pattern narrows further and the dialog says so through its scope field.
 
 **Connector preflight** (WO6 item 2, roster §10.2). Per selected agent, one chip per declared
-integration — `ready`, `needs authorising`, `missing secret`, `not attached` — read off the roster
+integration — `ready`, `needs authorising`, `missing secret`, `not attached`, `connector missing` —
+read off the roster
 list the dialog already has, so N seated agents cost no extra request and the chips appear the moment
 a name is ticked. The block is quiet when everything is ready and takes the attention ground when it
 is not, on the elevation banner's reasoning: the incident of 2026-08-19 was an agent that met a dead
@@ -744,9 +752,17 @@ accept.
 The actions are the honest ones for what can be done *before* a session exists, which for OAuth is
 nothing: the pinned SDK has no headless authorize call (roster §10.1's table), so the chip explains
 that the session raises the authorisation link rather than offering a button that goes nowhere. The
-two states that **can** be fixed from here get real links — `missing secret` to Settings, where the
-`agentmanager secrets set <ref> --stdin` verb lives (foundation §3.5; there is still no HTTP write
-route for a secret), and `not attached` to that agent's integrations panel (§7.3.1).
+three states that **can** be fixed from here get real links — `missing secret` to the Connectors page
+(§7.4), where the `agentmanager secrets set <ref> --stdin` verb is actually printed beside the ref it
+is missing (foundation §3.5; there is still no HTTP write route for a secret), `not attached` to that
+agent's integrations panel (§7.3.1), and `connector missing` — a reference the library no longer
+holds (roster §10.3) — to the Connectors page too, since the agent's own definition is not what is
+wrong. `connector missing` sorts above every other chip: it is a launch refusal, and nothing else
+about the server is knowable.
+
+*(2026-08-19, WO4: `missing secret` pointed at `/settings` until the Connectors page existed. Settings
+has no secrets UI at all, so the link arrived somewhere that could not help — a link to a screen that
+cannot answer is worse than no link.)*
 
 **Remote access toggle** (home edition only). At the desk it pre-authorises every selected agent by
 calling `PUT /api/remote/agents/:id/access`. From the tailnet it rides the start as
@@ -902,10 +918,34 @@ namespace. **Nothing is written until the editor is saved** — the import appen
 and the form posts through the same whole-agent `POST`/`PATCH` every other field takes. An emptied
 list is sent as `integrations: null`, which is how roster's `patch` spells "clear this field".
 
+**Attach from library** *(2026-08-19, WO4; roster §10.3)*. Beside **Add a connector** the panel
+offers a `<select>` of every library connector this agent does not already reference. Choosing one
+appends a **reference row**: a compact card showing the library's label, transport, `mcp__<name>__`
+prefix and credential badges, the line *"Managed on the Connectors page"* linking there, and two
+buttons — **Detach** and **Convert to inline copy**. It is not otherwise editable.
+
+**The ownership rule, which the row exists to make visible: the library defines, the agent
+references.** A form on a reference row would be a second place the connector was defined, which is
+the exact problem §10.3 exists to remove. So the two buttons are the only two honest ways out of a
+reference, and they say what they do: *Detach* means this agent stops carrying it and the library
+keeps it; *Convert to inline copy* means this agent takes a private copy of the current config and
+stops following the library. **Inline stays for one-offs** — a server exactly one agent will ever use
+belongs in that agent, and nothing migrates. **Export inlines** whatever it finds (roster §9.4), so
+from the UI's point of view a `.agentpack` contains the same thing it always did.
+
+The panel **fetches the library itself**, with the app's ordinary query client under
+`queryKeys.connectors`, rather than receiving it from the editor: what the library holds is a fact
+about the machine and not a fact about the agent being edited. A reference whose id the library does
+not hold still renders — that is roster's `missing-connector`, and a row that vanished would leave
+the launch refusal with no visible cause — carrying the same warning `integrationProblems` raises
+against the **fetched** list. A list that failed to load judges nothing: accusing a good definition
+on the strength of a failed fetch is the one thing that check must not do.
+
 **On the agent page**, a small read-only **Connectors** summary above the editor answers "what can
 this agent reach" without scrolling into a form: server names, transports, tool prefixes, the
 command or URL, and the `secretRef` names with their badges. It reads the saved definition, not the
-form, so it says what *is* rather than what is being typed.
+form, so it says what *is* rather than what is being typed. A reference names its library entry
+there instead of a command, because the saved definition genuinely does not hold one.
 
 **Avatar upload is not in v1 — by choice, not for want of an API.** Roster ships
 `PUT /api/roster/agents/:id/avatar` (roster §9.5, closing §19's R7): multipart, size- and type-capped,
@@ -913,6 +953,52 @@ written into the agent folder as `avatar.png` with `agent.json` flipped to `kind
 operation, and `DELETE` reverting it. The *UI* for it stays deferred (§20) — the wizard produces an
 emoji, the editor offers emoji or initials+colour, and a PNG dropped into the agent folder by hand is
 honoured on the next `roster.changed`. When the upload UI is wanted, the endpoint is already there.
+
+### 7.4 The Connectors page — `/connectors` *(2026-08-19, WO4)*
+
+**Decision: a connector is created once on a page of its own, and then assigned to agents.**
+
+The owner, after real use: *"New connections should be created on a Connectors page and then
+assigned to agents — this is currently very manually entered and work has a lot of connectors."*
+Until WO3 `integrations` was per-agent only, so two agents reaching one mailbox each held a
+hand-typed copy of it and the only shared thing was the `secretRef`. roster §10.3 made the definition
+a library file; this is the surface that authors one.
+
+**The list.** One card per connector: label (or id), the id, transport, an OAuth badge where it
+applies, the `mcp__<id>__*` prefix, the `{ secretRef, resolved }` credential badges — including the
+`agentmanager secrets set <ref> --stdin` line for an unset one, which is the *same component* the
+agent editor uses — and **used by**, the referencing agents as links to `/agents/:id`. The empty state
+teaches: what a connector is, that editing one here changes it for every agent that references it,
+and that an agent can still carry a one-off server of its own in its editor.
+
+**Create and edit** reuse §7.3.1's field idiom exactly — the same `IntegrationCard` component, with
+its name field relabelled **Connector id**, because that is what it is: roster §10.3 makes a
+connector id an integration name, so the `mcp__<id>__` line the card already draws is correct here
+without a second rule. Above it sit the two library-only fields, **Label** and **Description**. The
+id is immutable once written (it is the folder name under `connectors/` and a URL segment), so it is
+disabled when editing. The same in-field warnings apply, from the same `integrationProblems` — a
+credential-shaped literal is caught here exactly as it is in the editor.
+
+**Paste-import moves up a level.** The `.mcp.json` textarea, its parsing and its preview table are
+the panel's (`mcpImport.ts`), raised one level: on this page applying creates **library**
+connectors, one `POST` per pasted server. The per-agent importer stays where it is, for one-offs.
+
+**Assign to agents…** on each card opens a multi-select of the live agents, checked where the agent
+already references the connector. Confirming posts an ordinary agent `PATCH` per *changed* agent,
+adding or removing `{ connector: "<id>" }` under the connector's id in that agent's `integrations`
+— there is no assign route and this does not invent one, because the attachment belongs to the
+identity (roster §10) and there is therefore already exactly one write path for it. An emptied record
+is sent as `integrations: null`, roster's spelling of "clear this field". An agent that already has a
+**different** server under that name is refused **inline**, with its row disabled and the reason
+beside it: the record key is the tool prefix, so renaming one of the two would change what every
+permission rule for that agent matches, and that is not a decision a dialog gets to make quietly.
+
+**Delete** surfaces roster's 409 as what it is — the blocking agents, rendered as links, because
+going and detaching it in each of them is the next thing the owner has to do.
+
+**No secret value, in either direction.** Every credential on this page is a name and a boolean, and
+the fix for an unset one is the documented CLI verb. There is no HTTP write route for a secret and
+this page adds none (foundation §3.5, roster §10).
 
 ---
 

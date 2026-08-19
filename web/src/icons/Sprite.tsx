@@ -29,7 +29,8 @@ export type IconName =
   | 'tool'
   | 'clock'
   | 'sessions'
-  | 'assignments';
+  | 'assignments'
+  | 'plug';
 
 export function Sprite(): ReactElement {
   return (
@@ -187,6 +188,21 @@ export function Sprite(): ReactElement {
         <circle cx="11" cy="5" r="2.25" />
         <path d="M1.75 13.25c0-2 1.45-3.25 3.25-3.25s3.25 1.25 3.25 3.25" strokeLinecap="round" />
         <path d="M8.75 13.25c0-2 1.45-3.25 3.25-3.25s2.25.8 2.25 2.4" strokeLinecap="round" />
+      </symbol>
+      {/* A two-pin plug: the connector library (§2.1, roster §10.3). Its own
+          glyph rather than the tool spanner, because "what this agent can reach"
+          and "what it is allowed to do" are the two things §7.3 is most careful
+          not to let anyone mistake for each other. */}
+      <symbol
+        id="icon-plug"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <path d="M6 1.5v3.5M10 1.5v3.5" strokeLinecap="round" />
+        <path d="M3.75 5h8.5v2a4.25 4.25 0 0 1-8.5 0z" strokeLinejoin="round" />
+        <path d="M8 11.25v3.25" strokeLinecap="round" />
       </symbol>
       <symbol
         id="icon-clock"

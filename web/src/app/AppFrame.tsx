@@ -44,6 +44,10 @@ interface Destination {
 const DESTINATIONS: readonly Destination[] = [
   { to: '/', label: 'Home', icon: 'home' },
   { to: '/agents', label: 'Agents', icon: 'board' },
+  // Beside Agents rather than under Settings: a connector is a thing agents are
+  // given, and the owner's complaint was that creating one was reachable only
+  // from inside an agent's editor (roster §10.3, WO4).
+  { to: '/connectors', label: 'Connectors', icon: 'plug' },
   { to: '/projects', label: 'Projects', icon: 'folder' },
   { to: '/sessions', label: 'Sessions', icon: 'sessions' },
   { to: '/assignments', label: 'Assignments', icon: 'assignments' },

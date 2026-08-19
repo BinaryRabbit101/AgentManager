@@ -68,6 +68,23 @@ export function useServices(): AppServices {
 }
 
 /**
+ * The services, or `undefined` when there is no provider above.
+ *
+ * For components that are mounted **both** inside the app and bare in a test of
+ * their own controls — the integrations panel is the one (`AgentEditor.test.tsx`
+ * renders the editor with no provider tree, because what it asserts is what the
+ * form posts). Such a component may reach the network when it can and must still
+ * render every field when it cannot, which is the same rule this whole file
+ * exists for: a screen must be mountable without the environment it ships in.
+ *
+ * Not a substitute for {@link useServices}. A screen that cannot work without the
+ * client should still throw, loudly, rather than render an empty shell.
+ */
+export function useOptionalServices(): AppServices | undefined {
+  return useContext(AppServicesContext);
+}
+
+/**
  * §1.5's bridge, feature-detected at every call site.
  *
  * Defaults to the browser stub, so a component that forgets to check still gets

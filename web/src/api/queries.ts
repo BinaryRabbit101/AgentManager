@@ -15,6 +15,7 @@ import type {
   AssignmentListView,
   AssignmentView,
   BrowseListing,
+  ConnectorListView,
   ConversationView,
   EffectiveConfig,
   PatternListView,
@@ -53,6 +54,10 @@ export const queryKeys = {
   /** Static server-side (roster §6.3) — under the `roster` prefix for tidiness
    *  rather than because anything invalidates it. */
   permissionCatalogue: ['roster', 'permission-catalogue'] as const,
+  /** The third half of the library (roster §10.3, WO3). Under the same `roster`
+   *  prefix as the board and the templates, and named in §3.4's map beside them:
+   *  a `connector.json` edited on disk arrives as the same `roster.changed`. */
+  connectors: ['roster', 'connectors'] as const,
   projects: (includeArchived: boolean) => ['projects', { includeArchived }] as const,
   project: (id: string) => ['projects', 'one', id] as const,
   browse: (path: string | null) => ['fs', 'browse', path] as const,
@@ -132,6 +137,26 @@ export function usePermissionCatalogue(client: ApiClient): UseQueryResult<Permis
     queryFn: async () =>
       unwrap(await client.request<PermissionCatalogue>('/roster/permission-catalogue')),
     staleTime: Infinity,
+  });
+}
+
+/**
+ * `GET /api/roster/connectors` — the connector library (roster §10.3, WO4).
+ *
+ * Read by two surfaces at once: the Connectors page, and the agent editor's
+ * integrations panel, which needs the library to render a reference row as
+ * something more than an id. One query key, so the second of the two costs
+ * nothing and the two can never show different labels for the same connector.
+ *
+ * `retry: false` is inherited from the client, so a core that predates the route
+ * costs one 404 per mount and both surfaces degrade to "no library" rather than
+ * to an error the user cannot act on.
+ */
+export function useConnectors(client: ApiClient): UseQueryResult<ConnectorListView> {
+  return useQuery({
+    queryKey: queryKeys.connectors,
+    queryFn: async () => unwrap(await client.request<ConnectorListView>('/roster/connectors')),
+    staleTime: DEFAULT_STALE_TIME_MS,
   });
 }
 

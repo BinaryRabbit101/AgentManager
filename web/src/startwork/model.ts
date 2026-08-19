@@ -605,8 +605,11 @@ function chipAction(
   }
   if (row.state === 'missing-secret') {
     // foundation §3.5: there is no HTTP write route for a secret and this does
-    // not add one. Settings is where the CLI verb is shown.
-    return { kind: 'secrets', label: 'Set the secret…', to: '/settings' };
+    // not add one — the fix is `agentmanager secrets set <ref> --stdin`, and the
+    // Connectors page is where that command is actually printed beside the ref
+    // it is missing (WO4). This used to point at `/settings`, which has no
+    // secrets UI at all: a link to a screen that cannot help is worse than none.
+    return { kind: 'secrets', label: 'Set the secret…', to: '/connectors' };
   }
   return undefined;
 }

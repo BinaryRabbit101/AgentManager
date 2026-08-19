@@ -21,6 +21,12 @@
  *    programmatic `mcpServers` option does not accept (§10, and the schema makes
  *    it unrepresentable), so {@link INTEGRATION_TRANSPORTS} has three members and
  *    the paste-importer rewrites the alias rather than passing it through.
+ * 3. **A reference is not a config.** roster §10.3's third attachment shape,
+ *    `{ "connector": "<id>" }`, is a strict one-key object: the library owns the
+ *    definition and the agent owns only the local name it mounts it under. So a
+ *    row that carries {@link IntegrationForm.connector} serialises to that and
+ *    nothing else — no hint, no override — and the only way it becomes editable
+ *    here is by being *converted*, which drops the reference outright.
  *
  * The predicates below (`integrationNameProblem`, `isCredentialShapedKey`,
  * `isSecretKey`) are deliberate re-statements of `src/modules/roster/schema.ts`,
@@ -72,6 +78,26 @@ export interface IntegrationForm {
   readonly oauth: boolean;
   /** `env` for stdio, `headers` for sse/http — §10's two credential-bearing maps. */
   readonly fields: readonly CredentialField[];
+  /**
+   * The library connector this row **references** (roster §10.3, WO3/WO4).
+   *
+   * Present makes the row a *reference*: it serialises to `{ connector: "<id>" }`
+   * and nothing else, and every field above it is inert. An optional field rather
+   * than a discriminated union on purpose — the two variants share the one thing
+   * the form actually owns, the record **key** (`name`), which is the agent-local
+   * server name in both cases and therefore the tool prefix in both cases. A
+   * union would have made "rename the row" two different operations.
+   *
+   * Detaching drops the row; **Convert to inline copy** clears this and fills the
+   * fields from the library's config, which is the one way a row moves between
+   * the two variants.
+   */
+  readonly connector?: string | undefined;
+}
+
+/** Whether this row is a library reference rather than a config of its own. */
+export function isConnectorRef(form: IntegrationForm): boolean {
+  return form.connector !== undefined && form.connector !== '';
 }
 
 export const EMPTY_INTEGRATION: IntegrationForm = Object.freeze({
@@ -201,6 +227,15 @@ export function integrationsOf(value: unknown): IntegrationForm[] {
   for (const [name, entry] of Object.entries(record)) {
     const raw = asRecord(entry);
     if (raw === undefined) continue;
+    // roster §10.3's third shape, dispatched on the presence of `connector`
+    // exactly as roster's own `integrationAttachmentSchema` dispatches: a ref
+    // carries no transport, so reading it as one would invent a `stdio` server
+    // with an empty command and report it as a broken definition.
+    const connector = raw['connector'];
+    if (typeof connector === 'string') {
+      out.push({ ...EMPTY_INTEGRATION, name, connector });
+      continue;
+    }
     const transport = transportOf(raw);
     const args = raw['args'];
     out.push({
@@ -216,6 +251,25 @@ export function integrationsOf(value: unknown): IntegrationForm[] {
     });
   }
   return out;
+}
+
+/** The row **Attach from library** appends: a reference under the library id. */
+export function connectorRefForm(connectorId: string): IntegrationForm {
+  return { ...EMPTY_INTEGRATION, name: connectorId, connector: connectorId };
+}
+
+/**
+ * A library connector's config, read into an editable row under `name`.
+ *
+ * What **Convert to inline copy** produces. It goes through `integrationsOf`
+ * rather than through a second reader, because the library's `config` *is*
+ * roster's `IntegrationConfig` — the same object an inline integration holds
+ * (roster §10.3 decision 2) — so a second parser here would be a second dialect
+ * of the shape the library exists to keep single.
+ */
+export function inlineFormOf(name: string, config: unknown): IntegrationForm {
+  const [form] = integrationsOf({ [name]: config });
+  return form ?? { ...EMPTY_INTEGRATION, name };
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +314,14 @@ export function integrationsBody(
   for (const form of forms) {
     const name = form.name.trim();
     if (name === '') continue;
+    // A reference is a strict one-key object (roster's `connectorRefSchema`).
+    // Not even the `toolPrefixHint` rides along: an override beside a reference
+    // would be a second place the connector is defined, which is the exact thing
+    // the library exists to remove (roster §10.3).
+    if (isConnectorRef(form)) {
+      out[name] = { connector: (form.connector ?? '').trim() };
+      continue;
+    }
     const fields = fieldsBody(form.fields);
     const hasFields = Object.keys(fields).length > 0;
     // Derived on write and display-only (§3, §10) — and only when the name is
@@ -312,9 +374,26 @@ export interface IntegrationProblem {
  * works in `.mcp.json` but **not** in the programmatic `mcpServers` option") is
  * what makes it wrong anyway.
  */
-export function integrationProblems(forms: readonly IntegrationForm[]): IntegrationProblem[] {
+export interface IntegrationProblemOptions {
+  /**
+   * The ids the connector library actually holds (roster §10.3).
+   *
+   * **Fetched, never guessed** — omit it and no reference is judged, because a
+   * dangling-connector warning derived from a list that failed to load would
+   * accuse a perfectly good definition. When it is present, a reference to an id
+   * that is not in it is roster's `missing-connector` said in the panel instead
+   * of at launch.
+   */
+  readonly connectorIds?: readonly string[] | undefined;
+}
+
+export function integrationProblems(
+  forms: readonly IntegrationForm[],
+  options: IntegrationProblemOptions = {},
+): IntegrationProblem[] {
   const problems: IntegrationProblem[] = [];
   const seen = new Set<string>();
+  const known = options.connectorIds === undefined ? undefined : new Set(options.connectorIds);
 
   for (const form of forms) {
     const name = form.name.trim();
@@ -324,6 +403,23 @@ export function integrationProblems(forms: readonly IntegrationForm[]): Integrat
       problems.push({ integration: name, message: `Two servers are both called “${name}”.` });
     }
     seen.add(name);
+
+    // A reference has no config to judge: the library owns the transport, the
+    // command and the credentials, and the one thing that can be wrong here is
+    // that the library no longer holds it.
+    if (isConnectorRef(form)) {
+      const id = (form.connector ?? '').trim();
+      if (known !== undefined && !known.has(id)) {
+        problems.push({
+          integration: name,
+          message:
+            `“${name}” references the library connector “${id}”, which the library does not ` +
+            'hold. Recreate it on the Connectors page, or convert this row to an inline copy — ' +
+            'a dangling reference refuses the launch (roster §10.3).',
+        });
+      }
+      continue;
+    }
 
     if (form.transport === 'stdio' && form.command.trim() === '') {
       problems.push({ integration: name, message: 'A stdio server needs a command to run.' });
@@ -395,15 +491,35 @@ export interface IntegrationSummary {
   readonly toolPrefix: string;
   /** The refs it needs, by name only. Never a value; there is none to have. */
   readonly secretRefs: readonly string[];
+  /** Set when the row is a library reference (roster §10.3). */
+  readonly connector?: string | undefined;
 }
 
 export function integrationSummaries(value: unknown): IntegrationSummary[] {
-  return integrationsOf(value).map((form) => ({
-    name: form.name,
-    transport: form.transport,
-    target:
-      form.transport === 'stdio' ? [form.command, ...argsOf(form.args)].join(' ').trim() : form.url,
-    toolPrefix: mcpToolPrefix(form.name),
-    secretRefs: form.fields.filter((field) => field.secret).map((field) => field.value),
-  }));
+  return integrationsOf(value).map((form) => {
+    // A reference's *target* is the library entry, said in words rather than as
+    // a bare id: the saved definition genuinely does not know the command, and a
+    // blank line here would read as "this server runs nothing".
+    if (isConnectorRef(form)) {
+      const id = form.connector ?? '';
+      return {
+        name: form.name,
+        transport: form.transport,
+        target: `library connector “${id}”`,
+        toolPrefix: mcpToolPrefix(form.name),
+        secretRefs: [],
+        connector: id,
+      };
+    }
+    return {
+      name: form.name,
+      transport: form.transport,
+      target:
+        form.transport === 'stdio'
+          ? [form.command, ...argsOf(form.args)].join(' ').trim()
+          : form.url,
+      toolPrefix: mcpToolPrefix(form.name),
+      secretRefs: form.fields.filter((field) => field.secret).map((field) => field.value),
+    };
+  });
 }

@@ -29,6 +29,7 @@ import { OFFLINE_BANNER_DELAY_MS } from './ConnectionIndicator';
  */
 const EMPTY = routes({
   '/api/roster/agents': { agents: [], diagnostics: [] },
+  '/api/roster/connectors': { connectors: [], diagnostics: [] },
   '/api/projects': { projects: [] },
   '/api/questions': { questions: [] },
   '/api/sessions': { sessions: [], next: null },
@@ -139,6 +140,9 @@ describe('the frame and the debug panel (§2.2, IMPLEMENTATION §1)', () => {
     for (const label of [
       'Home',
       'Agents',
+      // §2.1's connector library (WO4), beside Agents: the thing agents are
+      // given, rather than a setting.
+      'Connectors',
       'Projects',
       'Sessions',
       'Assignments',
@@ -205,6 +209,7 @@ describe('the frame and the debug panel (§2.2, IMPLEMENTATION §1)', () => {
       '/agents',
       '/agents/new',
       '/agents/a1',
+      '/connectors',
       '/projects',
       '/projects/p1',
       '/sessions',

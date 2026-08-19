@@ -39,6 +39,19 @@
   font-size: var(--font-size-subsection);
 }
 
+/*
+  A reference to a library connector (roster §10.3). Same box as an editable
+  server, dimmer ground: the difference the eye has to catch is that there is
+  nothing here to type into — the definition lives on the Connectors page.
+*/
+.integration--ref {
+  background: var(--surface-sunken);
+}
+
+.integration__ref-head {
+  margin: 0 0 var(--space-2);
+}
+
 /* The `mcp__<server>__` prefix, said where the name it is derived from is. */
 .integration__prefix {
   margin: calc(-1 * var(--space-2)) 0 var(--space-4);
@@ -179,6 +192,83 @@
 
 .import__ref {
   color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------------------
+   The Connectors page (§7.4, roster §10.3)
+   --------------------------------------------------------------------------- */
+
+/*
+  One card per library connector. The same list idiom the agent page's summary
+  uses below, because it is the same kind of thing being listed — a server, its
+  prefix and its credential state — and two shapes for that would be two things
+  to learn.
+*/
+.connectors {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.connectors > li {
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+
+.connectors__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.connectors code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+.connectors__description {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+}
+
+/* Who would break if this were deleted — the same answer the 409 gives. */
+.connectors__used-by {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-meta);
+}
+
+/*
+  The assign multi-select, opened under the card it belongs to rather than as a
+  modal: it is a list as long as the roster, and a dialog that scrolled its own
+  body would hide the card the owner is deciding about.
+*/
+.connectors__assign {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+
+.connectors__assign fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.connectors__assign legend {
+  padding: 0;
+  font-weight: 600;
+  font-size: var(--font-size-subsection);
 }
 
 /* ---------------------------------------------------------------------------

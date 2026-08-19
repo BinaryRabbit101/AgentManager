@@ -315,16 +315,19 @@ describe('the connector chips', () => {
     expect(connectorsNeedAttention(chips)).toBe(true);
   });
 
-  it('links a missing secret to settings and a missing connector to the agent editor', () => {
+  it('links a missing secret to the connectors page and an unattached one to the agent editor', () => {
     const chips = connectorChips(
       [withConnectors('sam', [row('gmail', 'missing-secret')])],
       ['todo'],
     );
+    // WO4: `/connectors`, not `/settings`. There is no secrets UI in settings —
+    // the `agentmanager secrets set <ref> --stdin` line is printed on the
+    // connectors page, beside the ref that is missing.
     const secret = chips.find((chip) => chip.state === 'missing-secret');
     expect(secret?.action).toEqual({
       kind: 'secrets',
       label: 'Set the secret…',
-      to: '/settings',
+      to: '/connectors',
     });
 
     // WO5's `requiredIntegrations`: a connector the task needs and the agent
