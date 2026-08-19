@@ -723,6 +723,27 @@ the disabled button rather than leaving it mysteriously off. Everything else is 
 is a dry-run compile against agent × project and a solo assignment is whole-project scope, so what it
 shows is what will apply; a pattern narrows further and the dialog says so through its scope field.
 
+**Connector preflight** (WO6 item 2, roster §10.2). Per selected agent, one chip per declared
+integration — `ready`, `needs authorising`, `missing secret`, `not attached` — read off the roster
+list the dialog already has, so N seated agents cost no extra request and the chips appear the moment
+a name is ticked. The block is quiet when everything is ready and takes the attention ground when it
+is not, on the elevation banner's reasoning: the incident of 2026-08-19 was an agent that met a dead
+connector mid-run and went looking on the machine for API keys, and the cheapest place to say "this
+one is not ready" is before the session starts.
+
+**It is advice, never a gate**, and more emphatically here than anywhere else in the dialog. A
+connector reported `needs-auth` may well be authorised already — the CLI owns the OAuth grant and
+roster only remembers what a session reported (roster §10.1) — so disabling **Start** on an unknown
+would stop work that would have run. §10.4's rule holds: the client refuses nothing the server would
+accept.
+
+The actions are the honest ones for what can be done *before* a session exists, which for OAuth is
+nothing: the pinned SDK has no headless authorize call (roster §10.1's table), so the chip explains
+that the session raises the authorisation link rather than offering a button that goes nowhere. The
+two states that **can** be fixed from here get real links — `missing secret` to Settings, where the
+`agentmanager secrets set <ref> --stdin` verb lives (foundation §3.5; there is still no HTTP write
+route for a secret), and `not attached` to that agent's integrations panel (§7.3.1).
+
 **Remote access toggle** (home edition only). At the desk it pre-authorises every selected agent by
 calling `PUT /api/remote/agents/:id/access`. From the tailnet it rides the start as
 `confirmRemoteAccess: true`, granting and starting in one call (remote §6.3).
@@ -840,6 +861,7 @@ memory, your hooks or your MCP servers. Give each agent its own connectors here.
 | stdio: command, arguments | one argument per line, like the permission rule lists |
 | sse/http: URL | http(s) only |
 | `env` (stdio) / `headers` (sse/http) | key + value rows, each with a **secret** toggle |
+| sse/http: **authorise with OAuth** | roster §10.1's `auth: "oauth"`. Ticking it means this server authorises *the human*, not this machine: no `secretRef`, no credential header, nothing to scavenge. The credential rows stay available for non-credential headers (`X-Tenant`) and roster refuses a credential-shaped one beside it |
 
 **Credentials are references, never values.** A row's secret toggle stores `{ "secretRef": "<key>" }`
 and the box then holds a *key name* (`mcp.gmail.token`); an existing ref renders as its name, which
@@ -978,6 +1000,21 @@ permission mode, workspace kind + branch, and the badges that must never be miss
 **elevated permissions (with the reason)**, **started remotely**, **question bridge disabled** (from
 `session.started`'s `questionBridge: 'disabled'`, runner §5.6), **MCP server needs auth**, and any
 `session.diagnostic`.
+
+**The MCP connector card** (WO6 item 3) sits with the notices rather than in the block list, and is
+**one row per server** no matter how many diagnostics arrive about it. Two reasons, both structural:
+runner's `mcp_*` diagnostics carry no `seq`, so the block list — which is keyed by `seq` — drops them
+outright; and an action that scrolls away with the transcript is not an action. Each incoming
+diagnostic *refines* the row: `mcp_needs_auth` opens it, `mcp_authorize_url` adds the
+**Authenticate…** link, `mcp_authorized` closes it, and `mcp_reconnect_failed` /
+`mcp_reconnect_unavailable` turn it into "relaunch the turn", in runner's own words.
+
+**Authenticate… is a link and nothing more**, because that is genuinely the whole flow. The CLI runs
+OAuth discovery and the code exchange itself and surfaces the browser step as a `mode: "url"`
+elicitation (roster §10.1); what it needs from the human is a visit. The SDK then tells the session
+the grant landed (`system`/`elicitation_complete`) and the session reconnects the server, so there is
+no "I'm done" button to press and nothing for the user to paste back. Where reconnection is not
+available the row says so, rather than the UI guessing.
 
 **Body**: an ordered list of blocks keyed by `seq`.
 

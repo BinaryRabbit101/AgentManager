@@ -59,6 +59,19 @@ export interface ImageAttachment {
 
 export interface PushOptions {
   readonly attachments?: readonly ImageAttachment[];
+  /**
+   * Context, not work: the message rides along but does not count as a turn the
+   * session is owed (WO6 item 4).
+   *
+   * §2.4 step 3 closes the queue when `pushed <= turns`, which is exactly right
+   * for a steer — the user asked for something, so a turn must answer it. A
+   * launch note ("the todo connector is down") is the opposite: it must reach
+   * the model's context, and it must not buy the session an extra turn in which
+   * the agent replies "understood". So a silent push buffers the message and
+   * leaves {@link SessionInputQueue.pushed} alone, and the close arithmetic is
+   * untouched.
+   */
+  readonly silent?: boolean;
 }
 
 export interface SessionInputQueue extends AsyncIterable<SDKUserMessage> {
@@ -145,7 +158,9 @@ export function createInputQueue(options: InputQueueOptions = {}): SessionInputQ
       try {
         if (closed) return uuid;
         buffer.push(userMessage(uuid, text, pushOptions.attachments ?? []));
-        pushed += 1;
+        // See `PushOptions.silent`: a context note is delivered but is not a
+        // turn the session owes an answer to.
+        if (pushOptions.silent !== true) pushed += 1;
         wake();
       } catch (error) {
         fail(error);

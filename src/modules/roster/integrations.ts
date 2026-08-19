@@ -198,6 +198,196 @@ export async function integrationCredentialStatus(
 }
 
 // ---------------------------------------------------------------------------
+// Preflight (§10, WO6 item 2)
+// ---------------------------------------------------------------------------
+
+/** True when this integration authorises the human rather than carrying a key. */
+export function isOAuthIntegration(config: IntegrationConfig): boolean {
+  return config.transport !== 'stdio' && config.auth === 'oauth';
+}
+
+/**
+ * The four states Start-work shows per declared integration.
+ *
+ * | state | means |
+ * |---|---|
+ * | `ready` | everything this machine can settle before launch is settled |
+ * | `needs-auth` | an OAuth grant this build cannot see, or a server the last session reported as `needs-auth`/`failed` |
+ * | `missing-secret` | a `secretRef` the store does not hold — the launch will refuse (§10) |
+ * | `not-attached` | the task asked for a connector this agent does not declare |
+ */
+export const INTEGRATION_STATES = [
+  'ready',
+  'needs-auth',
+  'missing-secret',
+  'not-attached',
+] as const;
+export type IntegrationState = (typeof INTEGRATION_STATES)[number];
+
+/**
+ * One integration as the preflight sees it — **data, never a value**.
+ *
+ * This is the `{ secretRef, resolved }` projection widened rather than a second
+ * one: `credentials` below is literally the same array §10 already specifies,
+ * scoped to this server, and everything added is derived from the definition,
+ * from booleans, or from a status a session already reported.
+ */
+export interface IntegrationPreflight {
+  readonly integration: string;
+  /** Absent for `not-attached` — there is no declaration to describe. */
+  readonly transport?: 'stdio' | 'sse' | 'http' | undefined;
+  /** How it authorises: `oauth`, `credentials` (env/headers), or `none`. */
+  readonly auth: 'oauth' | 'credentials' | 'none';
+  readonly toolPrefix: string;
+  readonly state: IntegrationState;
+  /** `{ secretRef, resolved }` for this server only (§10). Never a value. */
+  readonly credentials: readonly IntegrationCredentialStatus[];
+  /** The refs that did not resolve, by name — what `agentmanager secrets set` needs. */
+  readonly missingSecretRefs: readonly string[];
+  /** True when a task template named it in `requiredIntegrations` (WO5). */
+  readonly required: boolean;
+  /**
+   * The status the most recent session reported for this server, when one is
+   * remembered. `undefined` means "nothing has run yet on this build", which is
+   * different from "it was fine" and is why the OAuth default below is cautious.
+   */
+  readonly lastSeenStatus?: string | undefined;
+  /** One sentence for the chip's tooltip — the honest reason for `state`. */
+  readonly detail: string;
+}
+
+export interface IntegrationPreflightInput {
+  readonly definition: Pick<AgentDefinition, 'integrations'>;
+  readonly secrets: SecretResolver;
+  /** WO5's `requiredIntegrations` for the task about to start, when there is one. */
+  readonly required?: readonly string[] | undefined;
+  /**
+   * Server name → the status the last session reported (`connected`, `failed`,
+   * `needs-auth`, …), as roster's own `MCP_SERVER_STATUSES` spells them.
+   *
+   * Supplied by the service from what it heard on `runner.mcp.status`. It is a
+   * *memory*, not an authority: the CLI owns the OAuth grant and caches it under
+   * `CLAUDE_CONFIG_DIR` in a private shape this element deliberately does not
+   * read (see the DESIGN note), so the only honest evidence that an OAuth
+   * connector is authorised is that a session on this machine got it connected.
+   */
+  readonly lastSeen?: Readonly<Record<string, string>> | undefined;
+}
+
+/**
+ * Every declared integration, plus a `not-attached` row per required name the
+ * agent does not declare.
+ *
+ * Ordered as the definition orders them, then the missing required ones — so a
+ * chip row is stable across refreshes and the thing that is *wrong* is last,
+ * where the eye lands after reading what is right.
+ */
+export async function integrationPreflight(
+  input: IntegrationPreflightInput,
+): Promise<IntegrationPreflight[]> {
+  const declared = input.definition.integrations ?? {};
+  const required = new Set(input.required ?? []);
+  const credentials = await integrationCredentialStatus(input.definition, input.secrets);
+  const out: IntegrationPreflight[] = [];
+
+  for (const [name, config] of Object.entries(declared)) {
+    const mine = credentials.filter((credential) => credential.integration === name);
+    const missing = mine.filter((credential) => !credential.resolved).map((one) => one.secretRef);
+    const oauth = isOAuthIntegration(config);
+    const lastSeen = input.lastSeen?.[name];
+    const base = {
+      integration: name,
+      transport: config.transport,
+      auth: oauth
+        ? ('oauth' as const)
+        : mine.length > 0
+          ? ('credentials' as const)
+          : ('none' as const),
+      toolPrefix: mcpToolPrefix(name),
+      credentials: mine,
+      missingSecretRefs: missing,
+      required: required.has(name),
+      ...(lastSeen === undefined ? {} : { lastSeenStatus: lastSeen }),
+    };
+
+    // A ref that will not resolve outranks everything else: §10 makes it a
+    // *launch refusal*, so a chip that said "needs auth" would understate it.
+    if (missing.length > 0) {
+      out.push({
+        ...base,
+        state: 'missing-secret',
+        detail:
+          `${missing.join(', ')} is not in this machine's secret store, so a launch that ` +
+          'compiles this connector is refused before the session starts.',
+      });
+      continue;
+    }
+
+    if (oauth) {
+      // The cautious default, and the reason for it: this build cannot read the
+      // CLI's OAuth grant, so "connected once" is the only positive evidence
+      // there is. Reporting `ready` without it would be reassuring and wrong.
+      if (lastSeen === 'connected') {
+        out.push({
+          ...base,
+          state: 'ready',
+          detail: 'Authorised — the last session on this machine connected to it.',
+        });
+        continue;
+      }
+      out.push({
+        ...base,
+        state: 'needs-auth',
+        detail:
+          lastSeen === undefined
+            ? 'Authorises by OAuth. No session has connected to it on this machine yet, so the ' +
+              'grant is unknown until one runs: the session raises the authorisation link when ' +
+              'the server asks for it.'
+            : `The last session reported it as "${lastSeen}". Start the session and follow the ` +
+              'authorisation link it raises.',
+      });
+      continue;
+    }
+
+    if (lastSeen === 'needs-auth' || lastSeen === 'failed') {
+      out.push({
+        ...base,
+        state: 'needs-auth',
+        detail: `The last session reported this server as "${lastSeen}".`,
+      });
+      continue;
+    }
+
+    out.push({
+      ...base,
+      state: 'ready',
+      detail:
+        mine.length === 0
+          ? 'Needs no credential from this machine.'
+          : `${String(mine.length)} credential reference(s), all resolvable.`,
+    });
+  }
+
+  for (const name of required) {
+    if (name in declared) continue;
+    out.push({
+      integration: name,
+      auth: 'none',
+      toolPrefix: mcpToolPrefix(name),
+      state: 'not-attached',
+      credentials: [],
+      missingSecretRefs: [],
+      required: true,
+      detail:
+        `This task needs the "${name}" connector and this agent does not declare it. Add it in ` +
+        'the agent’s integrations panel.',
+    });
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Compilation
 // ---------------------------------------------------------------------------
 
@@ -280,6 +470,16 @@ export async function compileIntegrations(
       continue;
     }
 
+    // §10's OAuth mode compiles to *nothing extra*, and that is the design
+    // rather than an omission. The SDK's remote server configs have no auth
+    // field (`sdk.d.ts:1037`, `:1152`); a remote MCP server that needs OAuth
+    // answers the CLI's first request with a challenge, and the CLI runs
+    // discovery, dynamic client registration and the authorisation code flow
+    // itself, surfacing the browser step as a `mode: "url"` elicitation
+    // (`sdk.d.ts:582`, `Options.onElicitation` at `:1568`). So the only thing
+    // roster must not do is synthesise an `Authorization` header — which the
+    // schema already makes unrepresentable — and any non-credential header the
+    // owner declared still travels, because a routing header is not auth.
     const headers =
       config.headers === undefined
         ? undefined

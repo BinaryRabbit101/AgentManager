@@ -365,11 +365,92 @@ describe('what init makes checkable (§10, roster §7.1, roster §10)', () => {
       );
       expect(needsAuth?.payload).toMatchObject({ severity: 'warn', server: 'github' });
       expect(needsAuth?.persist).toBe(true);
+      // WO6 item 3: the card is actionable, and honest about the relaunch. The
+      // scripted session has no `reconnectMcpServer`, which is the build where
+      // "authorise and relaunch" is the true instruction.
+      expect(needsAuth?.payload).toMatchObject({ action: 'authenticate', relaunchRequired: true });
+      expect(String((needsAuth?.payload as { message: string }).message)).toContain('relaunch');
+
+      // WO6 item 4's second bullet: the fact is *also* in the session's own
+      // context, so the agent starts knowing rather than discovering.
+      const notes = script.pushed
+        .map((message) => JSON.stringify(message.message.content))
+        .filter((content) => content.includes('system-reminder'));
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toContain('github (mcp__github__*)');
+      expect(notes[0]).toContain('not authorised');
+      expect(notes[0]).not.toContain('files (mcp__files__*)');
+      expect(notes[0]).toContain('report_status');
 
       // "the session is not failed for it".
       expect(settled.status).toBe('done');
     } finally {
       harness.close();
+    }
+  });
+
+  it('says a failed server out loud, and injects no note when every server connected', async () => {
+    const failing = scriptedQuery({
+      messages: [
+        fakeInit({ mcpServers: [{ name: 'todo', status: 'failed' }] }),
+        ...successScript('done'),
+      ],
+    });
+    const clean = scriptedQuery({
+      messages: [
+        fakeInit({ mcpServers: [{ name: 'todo', status: 'connected' }] }),
+        ...successScript('done'),
+      ],
+    });
+
+    const withFailure = makeLaunchHarness({ dataRoot: dataRoot(), query: failing.query });
+    try {
+      const seed = withFailure.seed();
+      const started = await withFailure.service.startSession({
+        assignmentId: seed.assignmentId,
+        agentId: seed.agentId,
+        projectId: seed.projectId,
+        prompt: 'Use the MCP server.',
+      });
+      await withFailure.service.awaitSettled(started.sessionId);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const failed = ofType(withFailure, 'session.diagnostic').find(
+        (event) => (event.payload as { code: string }).code === 'mcp_failed',
+      );
+      expect(failed?.payload).toMatchObject({ severity: 'warn', server: 'todo' });
+      expect(
+        failing.pushed.some((message) =>
+          JSON.stringify(message.message.content).includes('system-reminder'),
+        ),
+      ).toBe(true);
+    } finally {
+      withFailure.close();
+    }
+
+    const healthy = makeLaunchHarness({ dataRoot: `${temp.path}\\data2`, query: clean.query });
+    try {
+      const seed = healthy.seed();
+      const started = await healthy.service.startSession({
+        assignmentId: seed.assignmentId,
+        agentId: seed.agentId,
+        projectId: seed.projectId,
+        prompt: 'Use the MCP server.',
+      });
+      await healthy.service.awaitSettled(started.sessionId);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Nothing to say, so nothing is said: a reminder on every healthy launch
+      // would be tokens spent teaching the agent to skip reminders.
+      expect(
+        clean.pushed.some((message) =>
+          JSON.stringify(message.message.content).includes('system-reminder'),
+        ),
+      ).toBe(false);
+    } finally {
+      healthy.close();
     }
   });
 

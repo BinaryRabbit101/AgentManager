@@ -484,12 +484,34 @@ The engine never parses prose for a verdict. A turn either reported structurally
 4. Unread mail             up to mailbox.inlineMax messages, oldest first, then "N older — call read_mailbox"
 5. Open decisions          any open question card for this assignment + how to state a stance (§6.4)
 6. Termination rules       rounds remaining, budget remaining, what convergence means here
-7. Required close          "Before you finish, call mcp__agentmanager__report_status with your verdict."
+7. Tools and integrations  the fixed no-scavenging paragraph (below)
+8. Required close          "Before you finish, call mcp__agentmanager__report_status with your verdict."
 ```
 
 Sections 3–5 are the only dynamic parts; templates live in code and are not user-editable in v1.
 Section 2 carries one extra fixed line on a multi-seat pattern — the mailbox tempo, spelled out in
 §5.1 — so that a seat knows a message it sends cannot be answered inside the turn that sent it.
+
+**Section 7 is a fixed constant, emitted for every pattern including solo** (`TOOLING_GUARDRAIL` in
+`prompt.ts`, WO6 item 4):
+
+> *"Use only the tools and MCP servers provided to this session. If a tool or integration you need is
+> missing, failing, or unauthorized, call `mcp__agentmanager__report_status` with state "blocked"
+> naming it. Never search the filesystem, environment, or configuration for credentials or API keys —
+> that is always the wrong move, and the block report is the fast path to getting the connector
+> fixed."*
+
+It exists because on 2026-08-19 an agent whose todo MCP server was unavailable responded by searching
+the machine for API credentials. Nothing in its prompt had told it what to do instead, and "look for
+a key" is a plausible next step for a model given a job and no exit — so the paragraph names the
+forbidden move and the *fast* one in the same breath, and it is a constant rather than a template
+because a rule that varies by pattern is a rule an author has to re-audit per pattern.
+
+Two consequences for the byte cap. Section 7 is **not** in the degradation ladder — 3, 4 and 5 are
+dropped, and a prompt small enough to lose the guardrail is one that had already lost the goal — and
+the pathological final slice now cuts the *head* rather than the tail, so sections 7 and 8 survive it
+whole. Cutting at `maxBytes` from the end used to take the tooling rule and the required close with
+it, which is precisely backwards about which bytes are disposable.
 
 ### 3.3 v1's pattern: the adversarial pair
 

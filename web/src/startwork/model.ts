@@ -21,6 +21,8 @@
 import type {
   AgentView,
   AssignmentView,
+  IntegrationPreflight,
+  IntegrationState,
   Project,
   SeatDefinition,
   TaskTemplateView,
@@ -540,4 +542,128 @@ export function shortAssignmentId(random: () => number = Math.random): string {
   return Math.floor(random() * 36 ** 6)
     .toString(36)
     .padStart(6, '0');
+}
+
+// ---------------------------------------------------------------------------
+// Connector preflight (§6's privilege step; roster §10, WO6 item 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * The chip a preflight row renders as, and the action beside it.
+ *
+ * **This is advice, never a blocker.** §10.4's rule — "refuses nothing
+ * client-side that the server would accept" — applies with extra force here,
+ * because a connector this build reports as `needs-auth` may well be authorised
+ * already: the CLI owns the OAuth grant and roster only remembers what a session
+ * reported (roster §10). Turning an unknown into a disabled **Start** would stop
+ * work that would have run.
+ *
+ * The actions are the honest ones for what the SDK can do before a session
+ * exists, which is *nothing*: there is no headless authorize call in the pinned
+ * `@anthropic-ai/claude-agent-sdk` (see `src/modules/runner/mcpAuth.ts`), so the
+ * OAuth action explains where the link appears rather than pretending to open
+ * one. The two states that *can* be fixed from here — a missing secret and a
+ * connector the agent does not have — get real links.
+ */
+export interface ConnectorChip {
+  readonly key: string;
+  readonly agentId: string;
+  readonly agentName: string;
+  readonly integration: string;
+  readonly state: IntegrationState;
+  readonly label: string;
+  readonly detail: string;
+  /** Where the fix lives, when it is a place. */
+  readonly action?: {
+    readonly kind: 'editor' | 'secrets';
+    readonly label: string;
+    readonly to: string;
+  };
+}
+
+const CHIP_LABELS: Readonly<Record<IntegrationState, string>> = {
+  ready: 'ready',
+  'needs-auth': 'needs authorising',
+  'missing-secret': 'missing secret',
+  'not-attached': 'not attached',
+};
+
+function chipAction(
+  agentId: string,
+  row: IntegrationPreflight,
+): ConnectorChip['action'] | undefined {
+  if (row.state === 'not-attached') {
+    return {
+      kind: 'editor',
+      label: 'Add the connector…',
+      to: `/agents/${encodeURIComponent(agentId)}`,
+    };
+  }
+  if (row.state === 'missing-secret') {
+    // foundation §3.5: there is no HTTP write route for a secret and this does
+    // not add one. Settings is where the CLI verb is shown.
+    return { kind: 'secrets', label: 'Set the secret…', to: '/settings' };
+  }
+  return undefined;
+}
+
+/**
+ * Every seated agent's connectors, flattened into one ordered chip list.
+ *
+ * Ordered worst-first *within* each agent — `not-attached`, then
+ * `missing-secret`, then `needs-auth`, then `ready` — because a row the user
+ * must act on should not be below the fold of a row that is fine.
+ */
+export function connectorChips(
+  agents: readonly AgentView[],
+  required: readonly string[] = [],
+): readonly ConnectorChip[] {
+  const rank: Readonly<Record<IntegrationState, number>> = {
+    'not-attached': 0,
+    'missing-secret': 1,
+    'needs-auth': 2,
+    ready: 3,
+  };
+  const chips: ConnectorChip[] = [];
+
+  for (const agent of agents) {
+    const agentId = agent.definition.id;
+    const declared = agent.integrations ?? [];
+    // `not-attached` is a fact about the *task*, so the list endpoint cannot
+    // report it and this adds it — the same rule roster's own projection uses.
+    const missing = required
+      .filter((name) => !declared.some((row) => row.integration === name))
+      .map((name): IntegrationPreflight => ({
+        integration: name,
+        auth: 'none',
+        toolPrefix: `mcp__${name}__`,
+        state: 'not-attached',
+        credentials: [],
+        missingSecretRefs: [],
+        required: true,
+        detail: `This task needs the “${name}” connector and ${agent.definition.name} does not declare it.`,
+      }));
+
+    const rows = [...declared, ...missing].sort((a, b) => rank[a.state] - rank[b.state]);
+    for (const row of rows) {
+      const action = chipAction(agentId, row);
+      chips.push({
+        key: `${agentId}:${row.integration}`,
+        agentId,
+        agentName: agent.definition.name,
+        integration: row.integration,
+        state: row.state,
+        label: CHIP_LABELS[row.state],
+        detail: row.detail,
+        ...(action === undefined ? {} : { action }),
+      });
+    }
+  }
+
+  return chips;
+}
+
+/** True when at least one chip is something the user might want to fix first. */
+export function connectorsNeedAttention(chips: readonly ConnectorChip[]): boolean {
+  return chips.some((chip) => chip.state !== 'ready');
 }

@@ -78,6 +78,8 @@ import { isRemoteClient } from '../remote/access';
 import { useAppStore, type StartWorkIntent } from '../state/store';
 
 import {
+  connectorChips,
+  connectorsNeedAttention,
   connectorWarnings,
   declaredRoles,
   defaultArtifactPath,
@@ -504,6 +506,19 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
     const ranked = rankForSeats(pattern?.seats ?? [], selected);
     return swapped ? [...ranked].reverse() : ranked;
   }, [pattern, selected, swapped]);
+
+  /**
+   * roster §10's connector preflight, per selected agent (WO6 item 2).
+   *
+   * Read off the roster list this dialog already has — `GET /api/roster/agents`
+   * carries the projection — so N seated agents cost no extra request, and the
+   * chips appear the moment a name is ticked rather than after a round trip.
+   *
+   * `requiredIntegrations` (WO5's task templates) is not in this build's task
+   * shape yet; when it is, it is the second argument and `not-attached` starts
+   * appearing. The code path and its test exist so that is a one-line change.
+   */
+  const chips = useMemo(() => connectorChips(selected), [selected]);
 
   const banner = elevationBanner(
     project.data?.defaults.permissionElevation,
@@ -1310,6 +1325,58 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
                 </p>
               )}
             </details>
+          )}
+
+          {/*
+            --- connectors, beside the permissions (roster §10, WO6 item 2) ----
+
+            Never collapsed when anything needs attention, for the reason the
+            elevation banner is never collapsed: the incident of 2026-08-19 was
+            an agent that met a dead connector mid-run and went looking on the
+            machine for API keys. Saying so *before* the session starts is the
+            cheapest place to say it.
+
+            Advice, not a gate. An OAuth connector this build has never seen
+            connect reports `needs-auth` because the grant lives with the CLI and
+            roster only remembers what a session reported — so **Start** stays
+            enabled and the chip explains where the authorisation link appears.
+          */}
+          {chips.length === 0 ? null : (
+            <div
+              className="launch__connectors"
+              data-attention={connectorsNeedAttention(chips) ? 'true' : 'false'}
+              role="note"
+            >
+              <strong>Connectors</strong>
+              <ul className="launch__chips">
+                {chips.map((chip) => (
+                  <li
+                    key={chip.key}
+                    className="launch__chip"
+                    data-state={chip.state}
+                    data-agent={chip.agentId}
+                    title={chip.detail}
+                  >
+                    <span className="launch__chip-name">
+                      {count === 1 ? chip.integration : `${chip.agentName} · ${chip.integration}`}
+                    </span>
+                    <span className="launch__chip-state">{chip.label}</span>
+                    {chip.action === undefined ? null : (
+                      <Link to={chip.action.to} onClick={onClose}>
+                        {chip.action.label}
+                      </Link>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {connectorsNeedAttention(chips) ? (
+                <p className="launch__reason">
+                  A connector that is not ready does not stop the run. The session raises the
+                  authorisation link when the server asks for it, and an agent that cannot reach a
+                  tool is told to report the work blocked rather than look for credentials.
+                </p>
+              ) : null}
+            </div>
           )}
 
           {/*

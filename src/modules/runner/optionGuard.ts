@@ -35,6 +35,14 @@ export const WHITELISTED_OPTION_PATHS: readonly string[] = [
   'resume',
   'sessionId',
   'stderr',
+  /**
+   * WO6 item 3. Runner-owned for exactly the reason `canUseTool` is: an
+   * elicitation is a question **to the human**, and runner owns every path a
+   * session has to one (§5). Roster does not compile it and could not — the
+   * callback needs the abort signal, the diagnostic emitter and the message
+   * stream, none of which exist at compile time.
+   */
+  'onElicitation',
 ];
 
 /**

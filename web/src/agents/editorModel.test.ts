@@ -181,7 +181,15 @@ describe('integrations (roster §10)', () => {
         {
           ...baseline,
           integrations: [
-            { name: 'gmail', transport: 'stdio', command: 'npx', args: '', url: '', fields: [] },
+            {
+              name: 'gmail',
+              transport: 'stdio',
+              command: 'npx',
+              args: '',
+              url: '',
+              oauth: false,
+              fields: [],
+            },
           ],
         },
         baseline,

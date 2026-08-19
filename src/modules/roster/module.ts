@@ -236,6 +236,32 @@ export function createRosterModule(
       let watcher: RosterWatcher = inertWatcher();
       let templateWatcher: RosterWatcher = inertWatcher();
 
+      /**
+       * §10's preflight memory (WO6): what a session's `system/init` said about
+       * this agent's MCP servers.
+       *
+       * Taken on the bus rather than by runner calling roster, because the event
+       * already exists and already carries `ids.agentId` (runner §10's `ids`
+       * rule). Roster is a *listener* here — it learns from what ran; it does not
+       * ask runner anything and runner does not know this listener exists.
+       */
+      const unsubscribeMcp = ctx.bus.subscribe(['runner.mcp.status'], (event) => {
+        const agentId = event.ids.agentId;
+        if (agentId === undefined) return;
+        const servers = (event.payload as { servers?: unknown }).servers;
+        if (!Array.isArray(servers)) return;
+        service.noteMcpStatus(
+          agentId,
+          servers.filter(
+            (server): server is { name: string; status: string } =>
+              typeof server === 'object' &&
+              server !== null &&
+              typeof (server as { name?: unknown }).name === 'string' &&
+              typeof (server as { status?: unknown }).status === 'string',
+          ),
+        );
+      });
+
       return {
         start() {
           if (!ctx.config.library.watch) {
@@ -287,6 +313,7 @@ export function createRosterModule(
         stop() {
           watcher.close();
           templateWatcher.close();
+          unsubscribeMcp();
         },
 
         health() {

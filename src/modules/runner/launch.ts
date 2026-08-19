@@ -117,7 +117,9 @@ import {
   WorkspaceUnavailableError,
   isLaunchFailure,
 } from './errors.js';
-import { createInputQueue, type ImageAttachment } from './inputQueue.js';
+import { createInputQueue, type ImageAttachment, type SessionInputQueue } from './inputQueue.js';
+import { createMcpAuthCoordinator, mcpLaunchContextNote } from './mcpAuth.js';
+import type { SdkSession } from './sdk.js';
 import type { LeaseBook } from './leases.js';
 import {
   createLiveSessions,
@@ -667,8 +669,101 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
           log(level, message, detail);
         },
       });
+      /**
+       * The live `Query`, once it exists.
+       *
+       * Needed by the OAuth coordinator below, which is built *before* the
+       * session it will reconnect — the callback has to be an option, and the
+       * options are what `query()` is called with. A `let` closed over is the
+       * honest expression of that ordering; the coordinator only reaches it
+       * after an elicitation, by which time the session is long since open.
+       */
+      let openedSdkSession: SdkSession | undefined = undefined;
+
+      /** `Query.reconnectMcpServer` + a fresh status read, after a grant lands. */
+      async function reconnectAfterGrant(
+        subject: RunnerSessionRecord,
+        server: string,
+      ): Promise<void> {
+        const open = openedSdkSession;
+        if (open?.reconnectMcpServer === undefined) {
+          // Said plainly rather than left silent: WO6 item 3's "otherwise the
+          // card says the turn must be relaunched" case.
+          emit('session.diagnostic', subject, {
+            severity: 'warn',
+            code: 'mcp_reconnect_unavailable',
+            message:
+              `The "${server}" connector was authorised, but this CLI build cannot reconnect an ` +
+              'MCP server inside a running session. Relaunch the turn to pick it up.',
+            server,
+            relaunchRequired: true,
+          });
+          return;
+        }
+        try {
+          await open.reconnectMcpServer(server);
+          const live = await open.mcpServerStatus?.();
+          if (live !== undefined && live.length > 0) {
+            emit('runner.mcp.status', subject, {
+              sessionId: subject.id,
+              servers: live.map((one) => ({ name: one.name, status: one.status })),
+            });
+          }
+        } catch (error) {
+          emit('session.diagnostic', subject, {
+            severity: 'warn',
+            code: 'mcp_reconnect_failed',
+            message:
+              `The "${server}" connector was authorised but did not reconnect: ${describe(error)}. ` +
+              'Relaunch the turn to pick it up.',
+            server,
+            relaunchRequired: true,
+          });
+        }
+      }
+
+      // WO6 item 3. Built before the options so the callback can close over it,
+      // and held for the whole run so `elicitation_complete` can settle the
+      // waiter the `url` elicitation opened. `mcpAuth.ts`'s header records what
+      // the pinned SDK does and does not offer here.
+      const mcpAuth = createMcpAuthCoordinator({
+        signal: abort.signal,
+        emit: (event) => {
+          emit('session.diagnostic', session, {
+            severity: event.severity,
+            code: event.code,
+            message: event.message,
+            server: event.server,
+            ...(event.url === undefined ? {} : { authorizeUrl: event.url }),
+            action: event.code === 'mcp_authorize_url' ? 'authenticate' : null,
+          });
+        },
+        onAuthorized: (server) => {
+          // The SDK's own reconnection (`Query.reconnectMcpServer`), so a grant
+          // completed mid-turn does not cost the user a relaunch.
+          void reconnectAfterGrant(session, server);
+        },
+      });
       const options: SdkOptions = {
         ...authed,
+        /**
+         * WO6 item 3: the browser step of a remote MCP server's OAuth flow.
+         *
+         * Unhandled elicitations are declined silently by default
+         * (`sdk.d.ts:1553`), which is precisely the failure the incident
+         * produced — a connector that "just didn't work" and an agent left to
+         * improvise. With this the link reaches the user as an actionable card.
+         */
+        onElicitation: (request) =>
+          mcpAuth.onElicitation({
+            serverName: request.serverName,
+            message: request.message,
+            ...(request.mode === undefined ? {} : { mode: request.mode }),
+            ...(request.url === undefined ? {} : { url: request.url }),
+            ...(request.elicitationId === undefined
+              ? {}
+              : { elicitationId: request.elicitationId }),
+          }),
         // §9.4 / SDK-NOTES G3: `resume` and `sessionId` are mutually exclusive
         // unless `forkSession` is set, so the chain sets **at most one** and
         // runner never sets `sessionId`.
@@ -857,6 +952,7 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       // path does for a session that was orphaned.
       input.push(isResumeRun ? resumeMessage : prompt);
       const sdkSession = deps.query({ prompt: input, options });
+      openedSdkSession = sdkSession;
       live = liveSessions.open({ sessionId, input, sdk: sdkSession, transcript, abort });
 
       // --- metering (§7, M4) ------------------------------------------------
@@ -910,6 +1006,11 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
           log('warn', 'a session guard tripped and ended the session', { sessionId, guard });
         },
         onMessage: (message) => {
+          // WO6 item 3: `system` / `elicitation_complete` is how the *server*
+          // says the human finished authorising (`sdk.d.ts:4111`). It is the
+          // only signal that closes a `mode: "url"` elicitation, so it is read
+          // here, off the same stream everything else is read from.
+          mcpAuth.noteMessage(message);
           // Live deltas, deduped by assistant `message.id` (§7.1). Metering is
           // never allowed to end a session: a token count that cannot be written
           // is a bug worth a loud log line, not a lost turn.
@@ -992,7 +1093,7 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
           // §10's `runner.mcp.status` and roster §10's actionable `needs-auth`
           // card, plus roster §7.1's plugin/skill assertion — all reads of what
           // `init` reported, none of which may fail the session (M10).
-          publishInitDiagnostics(session, sdkSession, compiled.options, facts);
+          publishInitDiagnostics(session, sdkSession, compiled.options, facts, input);
         },
       });
       live.markFinished();
@@ -1454,13 +1555,18 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
    */
   function publishInitDiagnostics(
     subject: RunnerSessionRecord,
-    sdkSession: { mcpServerStatus?: () => Promise<readonly { name: string; status: string }[]> },
+    sdkSession: {
+      mcpServerStatus?: () => Promise<readonly { name: string; status: string }[]>;
+      reconnectMcpServer?: (serverName: string) => Promise<void>;
+    },
     compiledOptions: SdkOptions,
     facts: {
       mcpServers: readonly { name: string; status: string }[];
       plugins: readonly { name: string; path: string }[];
       skills: readonly string[];
     },
+    /** WO6 item 4: where the known-at-launch connector facts are injected. */
+    input?: Pick<SessionInputQueue, 'push'>,
   ): void {
     void (async () => {
       // `Query.mcpServerStatus()` is the design's source; `init.mcp_servers`
@@ -1486,16 +1592,59 @@ export function createLaunchChain(deps: LaunchChainDeps): LaunchChain {
       if (servers.length > 0) {
         emit('runner.mcp.status', subject, { sessionId: subject.id, servers });
       }
+      // WO6 item 3: the card is actionable, and honest about what completing it
+      // will and will not do. `reconnectMcpServer` exists on the pinned SDK
+      // (`sdk.d.ts:2592`) but is optional in runner's seam, so `relaunchRequired`
+      // is read off the session rather than assumed — a card that promised a
+      // reconnect this build cannot perform would be worse than one that asks
+      // for a relaunch.
+      const canReconnect = typeof sdkSession.reconnectMcpServer === 'function';
       for (const server of servers) {
         if (server.status !== 'needs-auth') continue;
         emit('session.diagnostic', subject, {
           severity: 'warn',
           code: 'mcp_needs_auth',
-          message:
-            `The MCP server "${server.name}" needs authentication before this session can use its ` +
-            'tools. The session is running without them; authorise the server and start it again.',
+          message: canReconnect
+            ? `The MCP server "${server.name}" needs authorising before this session can use its ` +
+              'tools. The session is running without them. Authorise it and this session ' +
+              'reconnects the server without a relaunch.'
+            : `The MCP server "${server.name}" needs authorising before this session can use its ` +
+              'tools. The session is running without them; authorise the server and relaunch ' +
+              'the turn.',
           server: server.name,
           status: server.status,
+          action: 'authenticate',
+          relaunchRequired: !canReconnect,
+        });
+      }
+      // A `failed` declared server was previously only a roster diagnostic
+      // nobody emitted. WO6 item 4 makes it a session fact, because "the agent
+      // starts its work knowing the connector is down" needs the down connector
+      // to have been said out loud somewhere the session view shows.
+      for (const server of servers) {
+        if (server.status !== 'failed') continue;
+        emit('session.diagnostic', subject, {
+          severity: 'warn',
+          code: 'mcp_failed',
+          message:
+            `The MCP server "${server.name}" failed to start, so none of its ` +
+            `mcp__${server.name}__* tools are mounted in this session.`,
+          server: server.name,
+          status: server.status,
+        });
+      }
+
+      // WO6 item 4's second bullet. Pushed *silently* — see `PushOptions.silent`
+      // — so the fact reaches the model's context without buying the session an
+      // extra turn in which the agent acknowledges it.
+      const note = mcpLaunchContextNote(servers);
+      if (note !== undefined && input !== undefined) {
+        input.push(note, { silent: true });
+        log('debug', 'a launch-time connector note was injected into the session context', {
+          sessionId: subject.id,
+          servers: servers
+            .filter((server) => server.status === 'failed' || server.status === 'needs-auth')
+            .map((server) => server.name),
         });
       }
     })().catch((error: unknown) => {

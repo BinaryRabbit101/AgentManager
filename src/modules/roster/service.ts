@@ -57,7 +57,12 @@ import type { ProjectContext, SessionToolsetProvider } from './sessionOptions.js
 import { duplicateAgentId, duplicateDefinition } from './duplicate.js';
 import { RosterValidationError, issuesFromZod } from './errors.js';
 import { agentIdProblem } from './ids.js';
-import { integrationCredentialStatus, type IntegrationCredentialStatus } from './integrations.js';
+import {
+  integrationCredentialStatus,
+  integrationPreflight,
+  type IntegrationCredentialStatus,
+  type IntegrationPreflight,
+} from './integrations.js';
 import {
   PACK_EXTENSION,
   buildAgentPack,
@@ -150,6 +155,18 @@ export interface AgentView {
    * badge on the card". Present exactly when {@link AgentView.credentials} is.
    */
   readonly needsCredentials?: boolean | undefined;
+  /**
+   * §10's preflight projection (WO6): one row per declared integration, with
+   * `ready` / `needs-auth` / `missing-secret` and the same `{ secretRef,
+   * resolved }` block scoped to that server.
+   *
+   * Carried on the two endpoints that already resolve credentials, so Start-work
+   * gets every seated agent's connector state from the roster read it was making
+   * anyway rather than from N extra requests. `not-attached` never appears here
+   * — it is a fact about a *task*, not about an agent, and needs the required
+   * list only {@link RosterService.integrations} is given.
+   */
+  readonly integrations?: readonly IntegrationPreflight[] | undefined;
 }
 
 /** `GET /agents` — "list; includes `uiState` and any `diagnostics`" (§9.1). */
@@ -329,6 +346,32 @@ export interface RosterService {
   listWithCredentials(): Promise<RosterListView>;
   /** The block on its own. */
   credentials(id: string): Promise<readonly IntegrationCredentialStatus[]>;
+  /**
+   * §10's preflight projection (WO6) — what Start-work renders as chips.
+   *
+   * `required` is the task's `requiredIntegrations`; a name in it that the agent
+   * does not declare comes back as `not-attached`, which is the one state this
+   * call can answer and {@link AgentView.integrations} cannot.
+   */
+  integrations(
+    id: string,
+    options?: { readonly required?: readonly string[] | undefined },
+  ): Promise<readonly IntegrationPreflight[]>;
+  /**
+   * Remember what a session's `system/init` said about this agent's MCP servers.
+   *
+   * The only positive evidence an OAuth connector is authorised. The CLI owns
+   * that grant and caches it privately under `CLAUDE_CONFIG_DIR`; roster does
+   * not read it — a parser for an undocumented file that holds plaintext access
+   * tokens would be a third `.reveal()`-equivalent site in all but name
+   * (foundation §3.2). So the memory is what a session *reported*, held in
+   * process and forgotten on restart, which is why the preflight's OAuth default
+   * is "unknown" rather than "broken".
+   */
+  noteMcpStatus(
+    agentId: string,
+    servers: readonly { readonly name: string; readonly status: string }[],
+  ): void;
   create(body: unknown): AgentView;
   patch(id: string, body: unknown): AgentView;
   /**
@@ -510,6 +553,17 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
   // and every diagnostic have to say which kind it meant.
   const templateStore = options.templates ?? createTemplateStore({ root: store.paths.root });
   const templates = createTemplateRegistry(templateStore);
+
+  /**
+   * agentId → server name → the status the last session reported (WO6).
+   *
+   * In process and unpersisted on purpose. It is a *cache of observations*, and
+   * a stale row survived across a restart would be worse than no row: an OAuth
+   * grant can be revoked from the other end at any time, so "we saw it connect
+   * last Tuesday" is not evidence about today. Losing it on restart costs one
+   * cautious `needs-auth` chip, which is the direction §10 wants to be wrong in.
+   */
+  const lastSeenMcp = new Map<string, Map<string, string>>();
 
   // -------------------------------------------------------------------------
   // The three steps every mutation ends with
@@ -761,6 +815,27 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
       return integrationCredentialStatus(agent.definition, options.secrets);
     },
 
+    async integrations(id, integrationOptions = {}) {
+      const agent = requireKnown(id);
+      return integrationPreflight({
+        definition: agent.definition,
+        // The same "no store means nothing resolves" stance `credentials` takes:
+        // a badge that is wrong in the reassuring direction is the worse error.
+        secrets: options.secrets ?? { get: () => Promise.resolve(undefined) },
+        ...(integrationOptions.required === undefined
+          ? {}
+          : { required: integrationOptions.required }),
+        lastSeen: Object.fromEntries(lastSeenMcp.get(id) ?? new Map<string, string>()),
+      });
+    },
+
+    noteMcpStatus(agentId, servers) {
+      if (servers.length === 0) return;
+      const seen = lastSeenMcp.get(agentId) ?? new Map<string, string>();
+      for (const server of servers) seen.set(server.name, server.status);
+      lastSeenMcp.set(agentId, seen);
+    },
+
     async listWithCredentials() {
       const view = service.list();
       const agents = await Promise.all(
@@ -770,6 +845,7 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
             ...agent,
             credentials,
             needsCredentials: credentials.some((credential) => !credential.resolved),
+            integrations: await service.integrations(agent.definition.id),
           };
         }),
       );
@@ -783,6 +859,7 @@ export function createRosterService(options: RosterServiceOptions): RosterServic
         ...view,
         credentials,
         needsCredentials: credentials.some((credential) => !credential.resolved),
+        integrations: await service.integrations(id),
       };
     },
 

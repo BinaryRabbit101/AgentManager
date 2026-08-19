@@ -964,7 +964,40 @@ mechanism foundation §1.5 and §6.5 provide.
 
 `runner.mcp.status` carries roster's `pending | connected | failed | needs-auth | disabled` vocabulary
 (roster §10) unchanged, and a `needs-auth` server is additionally raised as a `session.diagnostic` so
-the UI can render it as an actionable card rather than a generic failure.
+the UI can render it as an actionable card rather than a generic failure. Roster subscribes to it for
+its own preflight memory (roster §10.1) — a listener runner does not know about and must not acquire
+an opinion on.
+
+**Remote MCP authorisation (WO6 item 3).** Runner sets `Options.onElicitation` — a runner-owned
+option, on §3.3's whitelist for `canUseTool`'s exact reason: an elicitation is a question **to the
+human**, and runner owns every path a session has to one. Roster does not compile it and could not,
+since the callback needs the abort signal, the diagnostic emitter and the message stream. Five
+`session.diagnostic` codes come out of it, and each one is a distinct thing a person can do:
+
+| Code | Payload beyond `{ severity, code, message }` | Means |
+|---|---|---|
+| `mcp_needs_auth` | `{ server, status, action: 'authenticate', relaunchRequired }` | init reported `needs-auth`. `relaunchRequired` is read off the live session (`Query.reconnectMcpServer` present or not), never assumed |
+| `mcp_authorize_url` | `{ server, authorizeUrl, action: 'authenticate' }` | the server raised a `mode: "url"` elicitation; this is the page the human opens |
+| `mcp_authorized` | `{ server }` | `system`/`elicitation_complete` arrived; the server is being reconnected |
+| `mcp_reconnect_failed` / `mcp_reconnect_unavailable` | `{ server, relaunchRequired: true }` | the grant landed and this turn cannot use it |
+| `mcp_failed` | `{ server, status }` | the server did not start; there is nothing to authorise |
+
+The url-mode elicitation is **parked, not auto-accepted**: answering `accept` immediately would tell
+the MCP server the human had finished before they had opened the page. It settles on
+`elicitation_complete` or on the session's abort — never left pending, which `sdk.d.ts:1305` warns is
+a hang bounded only by the server's own timeout. A `form`-mode elicitation is declined *with a
+diagnostic*, because the SDK's default for an unhandled one is a silent decline and "the connector
+did nothing" is a worse sentence than "the connector asked something this build cannot ask you".
+
+**Known-at-launch connector facts reach the agent's context (WO6 item 4).** When init reports a
+declared server `failed` or `needs-auth`, the fact is pushed onto the input queue as a
+system-reminder line naming each down server, its `mcp__<server>__*` prefix, and the sanctioned next
+move — `report_status` with state `blocked`, and never a search for credentials. The push is
+**silent** (`PushOptions.silent`): §2.4 step 3 closes the queue when `pushed <= turns`, which is right
+for a steer the user is owed an answer to and wrong for context, so a silent push buffers the message
+without buying the session an extra turn in which the agent replies "understood". Nothing is pushed
+when every declared server connected — a reminder on every healthy launch is tokens spent teaching
+the agent to skip reminders.
 
 ---
 

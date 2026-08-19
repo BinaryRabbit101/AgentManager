@@ -509,6 +509,100 @@ describe('the grant prompt and its automatic retry (§6, §13.4)', () => {
   });
 });
 
+/**
+ * WO6 item 2. The chips are advice: the incident of 2026-08-19 was an agent that
+ * met a dead connector mid-run and went looking for API keys, and the cheapest
+ * place to say "this one is not ready" is before the session starts.
+ */
+describe('the connector preflight (roster §10, WO6)', () => {
+  const withConnectors = anAgent({
+    id: 'priya',
+    name: 'Priya',
+    integrationStates: [
+      {
+        integration: 'files',
+        transport: 'stdio',
+        auth: 'none',
+        toolPrefix: 'mcp__files__',
+        state: 'ready',
+        credentials: [],
+        missingSecretRefs: [],
+        required: false,
+        detail: 'Needs no credential from this machine.',
+      },
+      {
+        integration: 'todo',
+        transport: 'http',
+        auth: 'oauth',
+        toolPrefix: 'mcp__todo__',
+        state: 'needs-auth',
+        credentials: [],
+        missingSecretRefs: [],
+        required: false,
+        detail: 'Authorises by OAuth. No session has connected to it on this machine yet.',
+      },
+      {
+        integration: 'gmail',
+        transport: 'stdio',
+        auth: 'credentials',
+        toolPrefix: 'mcp__gmail__',
+        state: 'missing-secret',
+        credentials: [{ integration: 'gmail', secretRef: 'mcp.gmail.token', resolved: false }],
+        missingSecretRefs: ['mcp.gmail.token'],
+        required: false,
+        detail: 'mcp.gmail.token is not in this machine’s secret store.',
+      },
+    ],
+  });
+
+  it('renders a chip per connector, worst first, and never a secret value', async () => {
+    const fixture = serving({ agents: [withConnectors] });
+    mount(<App />, { respond: fixture.respond });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
+    const dialog = await flow();
+
+    const chips = await within(dialog).findAllByRole('listitem');
+    const connectors = chips.filter((chip) => chip.dataset['state'] !== undefined);
+    expect(connectors.map((chip) => chip.dataset['state'])).toEqual([
+      'missing-secret',
+      'needs-auth',
+      'ready',
+    ]);
+    expect(within(dialog).getByText('needs authorising')).toBeInTheDocument();
+    // The panel is a `secretRef` name at most — there is no route that returns
+    // a value, so there is nothing here to leak (roster §10).
+    expect(dialog.textContent).not.toContain('mcp.gmail.token');
+  });
+
+  it('links the missing secret to settings and starts anyway (§10.4: advice, not a gate)', async () => {
+    const fixture = serving({ agents: [withConnectors] });
+    mount(<App />, { respond: fixture.respond });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
+    const dialog = await flow();
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole('link', { name: 'Set the secret…' })).toHaveAttribute(
+        'href',
+        '/settings',
+      ),
+    );
+
+    const user = userEvent.setup();
+    await user.type(taskOf(dialog), 'Sort the inbox');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(fixture.posts).toContain('/api/assignments/solo'));
+  });
+
+  it('says nothing for an agent with no connectors', async () => {
+    const fixture = serving();
+    mount(<App />, { respond: fixture.respond });
+    openFlow({ agentIds: ['priya'], projectId: 'lpm', origin: 'drag' });
+    const dialog = await flow();
+    await waitFor(() => expect(taskOf(dialog)).toHaveFocus());
+    expect(within(dialog).queryByText('Connectors')).toBeNull();
+  });
+});
+
 describe('Escape closes the flow and starts nothing (§15)', () => {
   it('closes without a request', async () => {
     const fixture = serving();
