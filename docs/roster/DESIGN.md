@@ -194,14 +194,19 @@ was before the editor existed, by writing the file, and shipping a list route wi
 is the honest version of that. A malformed folder answers `404` by id as well as appearing in the
 list's diagnostics, because answering with something for it would make a broken file look applied.
 
-**Seeding** is §2.1's, with a second stamp. Two starter templates ship — "Reply to todo tickets"
-and "Draft email replies", both `solo` — through the same `seed.ts` pass, the same real parser and
-the same "never overwrite a folder that exists" rule. They run on `roster.json`'s
-`templatesSeededAt` rather than on `seededAt`, because templates arrived after agents did: every
-library that already exists has taken the agent decision and holds no templates, and hanging the
-second decision off the first would mean nobody who already uses AgentManager ever receives them.
-The pass therefore also runs on a library the agent half deliberately left alone. Editions do not
-differ (D6).
+**Seeding** is §2.1's, with a second stamp — and, since 2026-08-19, an empty seed list. Two
+starter templates originally shipped ("Reply to todo tickets", "Draft email replies", both `solo`,
+per WO5) through the same `seed.ts` pass, the same real parser and the same "never overwrite a
+folder that exists" rule, on `roster.json`'s `templatesSeededAt` rather than on `seededAt`. The
+owner retired them the same day: the Start-work "Start from" strip they populated appeared on
+every project in both editions, whether or not the install had a mailbox or ticket queue anywhere
+near it — and the strip already renders only when templates exist, so shipping none is what makes
+the dialog open clean. The machinery stays (the template *system* is load-bearing — WO8's triggers
+fire templates), and the pass gained a **retirement half** that runs on every boot regardless of
+the stamp: a retired starter whose `template.json` still hashes to exactly what seeding wrote is
+removed; any other bytes mean the owner made it theirs and it is never touched. A removal that
+fails (a held handle) is a `roster.unseed-failed` warning and is retried next boot. Editions do
+not differ (D6).
 
 ---
 

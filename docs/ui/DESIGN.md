@@ -520,11 +520,11 @@ question now, and the selection asks it:
 ```
 Start work                                                [×]
 ┌──────────────────────────────────────────────────────────┐
-│  Start from                                              │
-│  ┌────────┐ ┌──────────────┐ ┌──────────────┐            │   ← blank card first
-│  │ Blank  │ │ Reply to     │ │ Draft email  │  →         │
-│  │        │ │ todo tickets │ │ replies      │            │
-│  └────────┘ └──────────────┘ └──────────────┘            │
+│  Start from                                              │   ← the whole section renders only when
+│  ┌────────┐ ┌──────────────┐ ┌──────────────┐            │     the library holds templates; none
+│  │ Blank  │ │ My weekly    │ │ My ticket    │  →         │     ship, so a fresh install never
+│  │        │ │ digest       │ │ triage       │            │     sees it (owner, 2026-08-19 — the
+│  └────────┘ └──────────────┘ └──────────────┘            │     starters fit neither edition)
 │                                                          │
 │  Project                                                 │
 │  📁 littlepocketmuseum            [ Change project ]      │   ← skipped when the gesture named one
@@ -624,7 +624,10 @@ strip of cards at the top of the dialog, **blank card first**. The blank card is
 bolted on: it is today's whole flow, and putting it first is what makes picking a template a
 choice rather than a mode. The strip does not render at all when there are no templates — or when
 the core predates the route — so a library with none opens on exactly the dialog it opened on
-yesterday.
+yesterday. And none ship: the two WO5 starters were retired the day they landed (owner,
+2026-08-19 — they surfaced on every project in both editions, connectors or not), so a fresh
+install never sees the section. It appears the moment the owner authors a template — or WO8's
+triggers give them a reason to.
 
 **Picking one prefills; it never owns.**
 

@@ -154,6 +154,15 @@ export function createRosterModule(
             `seeded ${String(seeded.templates.seeded.length)} starter task template(s)`,
           );
         }
+        // A deleted library file must never be silent — say which retired
+        // starters the pass removed and why they qualified (§2.4).
+        if (seeded.templates.removed.length > 0) {
+          ctx.logger.info(
+            { templateIds: seeded.templates.removed, libraryRoot },
+            `removed ${String(seeded.templates.removed.length)} retired starter task template(s) ` +
+              'left byte-identical to what seeding wrote (owner decision, 2026-08-19)',
+          );
+        }
       }
 
       /**

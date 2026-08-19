@@ -42,7 +42,7 @@
  * in the prefilled field rather than silently eaten.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { z } from 'zod';
@@ -343,6 +343,8 @@ export interface TemplateStore {
   load(id: string): TemplateLoadOutcome;
   /** Writes `template.json` atomically and reads the folder back. */
   write(template: TaskTemplate): ResolvedTemplate;
+  /** Deletes one template's folder. A folder that is not there is a no-op. */
+  remove(id: string): void;
 }
 
 export function createTemplateStore(options: TemplateStoreOptions): TemplateStore {
@@ -473,6 +475,13 @@ export function createTemplateStore(options: TemplateStoreOptions): TemplateStor
         );
       }
       return outcome.template;
+    },
+
+    remove(id) {
+      // The same retry posture the test helpers use everywhere on Windows —
+      // an editor or the watcher holding a handle briefly must not turn a
+      // deliberate delete into a crash.
+      rmSync(templateDir(id), { recursive: true, force: true, maxRetries: 5 });
     },
   };
 }

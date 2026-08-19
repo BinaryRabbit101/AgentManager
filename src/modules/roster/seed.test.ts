@@ -36,6 +36,7 @@ import {
   LIBRARY_README_FILENAME,
   MIRA,
   PRIYA,
+  RETIRED_SEED_TEMPLATES,
   SAM,
   SEED_AGENTS,
   SEED_TEMPLATES,
@@ -363,122 +364,103 @@ describe('every seed is launchable (M10)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The two starter task templates (WO5)
+// Task templates: the empty seed list, and the retired starters
+// (WO5; retired 2026-08-19 by owner decision)
 // ---------------------------------------------------------------------------
 
-describe('seeding the starter task templates (WO5)', () => {
-  it('is the two WO5 names, both solo, and both pass the template schema', () => {
-    expect(SEED_TEMPLATES.map((seed) => seed.id)).toEqual([
-      'todo-ticket-replies',
-      'email-reply-drafts',
-    ]);
-    for (const seed of SEED_TEMPLATES) {
-      const template = seedTemplateDefinition(seed);
-      // Parsed once by `seedTemplateDefinition`, and asserted again against the
-      // schema itself, so this does not rest on that function's own parser.
-      expect(taskTemplateSchema.safeParse(template).success).toBe(true);
-      expect(template.pattern).toBe('solo');
-      expect(template.id).toBe(seed.id);
-      // Both write a document, so both name where it goes and both pre-answer
-      // the gates that writing one raises (WO4's chips).
-      expect(template.artifactPathTemplate).toContain('{{slug}}');
-      expect(template.goalTemplate).toContain('{{source}}');
-      expect(template.preGrantTools).toContain('Write');
-    }
-    expect(SEED_TEMPLATES.map((seed) => seedTemplateDefinition(seed).name)).toEqual([
-      'Reply to todo tickets',
-      'Draft email replies',
-    ]);
-  });
+describe('seeding the starter task templates (WO5, retired 2026-08-19)', () => {
+  it('ships no starters, and a fresh library seeds none — but still stamps', () => {
+    expect(SEED_TEMPLATES).toEqual([]);
 
-  it('writes both into a fresh library once, and reseeding duplicates nothing', () => {
     const store = bootstrapped(harness);
-
-    const first = seedLibrary({ store, clock: () => FIXED_NOW });
-    expect(first.templates.reason).toBe('seeded');
-    expect(first.templates.seeded).toEqual(['todo-ticket-replies', 'email-reply-drafts']);
-    expect(readdirSync(join(harness.libraryRoot, 'templates')).sort()).toEqual([
-      'email-reply-drafts',
-      'todo-ticket-replies',
-    ]);
+    const result = seedLibrary({ store, clock: () => FIXED_NOW });
+    expect(result.templates.reason).toBe('seeded');
+    expect(result.templates.seeded).toEqual([]);
+    // The Start-work strip renders only when templates exist, so this is
+    // the dialog opening with no "Start from" section at all.
+    expect(harness.service.listTemplates().templates).toEqual([]);
+    // The stamp still records that the (empty) decision was taken, keeping
+    // the once-ever semantics for any future seed.
     expect(readRosterMetadata(libraryPaths(harness.libraryRoot)).templatesSeededAt).toBe(
       FIXED_NOW.toISOString(),
     );
-
-    const second = seedLibrary({ store, clock: () => FIXED_NOW });
-    expect(second.templates.reason).toBe('already-seeded');
-    expect(second.templates.seeded).toEqual([]);
-    expect(readdirSync(join(harness.libraryRoot, 'templates')).sort()).toEqual([
-      'email-reply-drafts',
-      'todo-ticket-replies',
-    ]);
   });
 
-  it('reaches a library that was seeded with agents before templates existed', () => {
+  it('keeps the retired starters valid — they are the retirement comparison key', () => {
+    expect(RETIRED_SEED_TEMPLATES.map((seed) => seed.id)).toEqual([
+      'todo-ticket-replies',
+      'email-reply-drafts',
+    ]);
+    for (const seed of RETIRED_SEED_TEMPLATES) {
+      // A retired seed that stops parsing could never byte-match what seeding
+      // wrote, and the pass would silently stop cleaning installs.
+      expect(taskTemplateSchema.safeParse(seedTemplateDefinition(seed)).success).toBe(true);
+    }
+  });
+
+  it('removes an untouched retired starter from a stamped install', () => {
     const store = bootstrapped(harness);
-    // What every existing install looks like: `seededAt` recorded, and no
-    // `templatesSeededAt` at all, because that field did not exist when it was
-    // written. Hanging the template pass off `seededAt` would strand these.
-    writeFileSync(
-      libraryPaths(harness.libraryRoot).rosterJson,
-      JSON.stringify({ schemaVersion: 1, seededAt: FIXED_NOW.toISOString() }),
-      'utf8',
-    );
+    // What the owner's install looks like: both starters written by an earlier
+    // build's seed pass, `templatesSeededAt` stamped that day.
+    const before = seedLibrary({
+      store,
+      clock: () => FIXED_NOW,
+      templates: RETIRED_SEED_TEMPLATES,
+      retired: [],
+    });
+    expect(before.templates.seeded).toEqual(['todo-ticket-replies', 'email-reply-drafts']);
 
     const result = seedLibrary({ store, clock: () => FIXED_NOW });
-    expect(result.reason).toBe('already-seeded');
-    expect(result.seeded).toEqual([]);
-    // The agent half wrote nothing, and the template half still ran.
-    expect(result.templates.seeded).toEqual(['todo-ticket-replies', 'email-reply-drafts']);
-    expect(readRosterMetadata(libraryPaths(harness.libraryRoot)).seededAt).toBe(
-      FIXED_NOW.toISOString(),
-    );
-    expect(readRosterMetadata(libraryPaths(harness.libraryRoot)).templatesSeededAt).not.toBeNull();
+    expect(result.templates.reason).toBe('already-seeded');
+    expect(result.templates.removed).toEqual(['todo-ticket-replies', 'email-reply-drafts']);
+    expect(existsSync(join(harness.libraryRoot, 'templates', 'todo-ticket-replies'))).toBe(false);
+    expect(existsSync(join(harness.libraryRoot, 'templates', 'email-reply-drafts'))).toBe(false);
+
+    // And the pass is idempotent: a second boot has nothing left to remove.
+    expect(seedLibrary({ store, clock: () => FIXED_NOW }).templates.removed).toEqual([]);
   });
 
-  it('never overwrites a template the owner authored, and never returns a deleted one', () => {
+  it('never removes a starter the owner has edited, nor their own templates', () => {
     const store = bootstrapped(harness);
-    seedLibrary({ store, clock: () => FIXED_NOW });
-
-    const mine = join(harness.libraryRoot, 'templates', 'todo-ticket-replies', 'template.json');
-    writeFileSync(mine, '{ "mine": true }', 'utf8');
-    rmSync(join(harness.libraryRoot, 'templates', 'email-reply-drafts'), {
-      recursive: true,
-      force: true,
+    seedLibrary({
+      store,
+      clock: () => FIXED_NOW,
+      templates: RETIRED_SEED_TEMPLATES,
+      retired: [],
     });
 
-    seedLibrary({ store, clock: () => FIXED_NOW });
+    // One starter edited — even trivially — is the owner's now.
+    const mine = join(harness.libraryRoot, 'templates', 'todo-ticket-replies', 'template.json');
+    const edited = readFileSync(mine, 'utf8').replace(
+      'Reply to todo tickets',
+      'Reply to my tickets',
+    );
+    writeFileSync(mine, edited, 'utf8');
 
-    expect(readFileSync(mine, 'utf8')).toBe('{ "mine": true }');
-    expect(existsSync(join(harness.libraryRoot, 'templates', 'email-reply-drafts'))).toBe(false);
-  });
-
-  it('loads both through the real registry, with no diagnostics', () => {
-    const store = bootstrapped(harness);
-    seedLibrary({ store, clock: () => FIXED_NOW });
-    harness.service.load();
-
-    const listed = harness.service.listTemplates();
-    expect(listed.diagnostics).toEqual([]);
-    expect(listed.templates.map((one) => one.template.id).sort()).toEqual([
-      'email-reply-drafts',
-      'todo-ticket-replies',
-    ]);
-    // §2.4's one extra input is asked for by both, because both need to know
-    // *which* queue or mailbox.
-    expect(listed.templates.every((one) => one.variables.includes('source'))).toBe(true);
+    const result = seedLibrary({ store, clock: () => FIXED_NOW });
+    // The untouched one goes; the edited one stays, this boot and every boot.
+    expect(result.templates.removed).toEqual(['email-reply-drafts']);
+    expect(readFileSync(mine, 'utf8')).toBe(edited);
+    expect(seedLibrary({ store, clock: () => FIXED_NOW }).templates.removed).toEqual([]);
+    expect(existsSync(join(harness.libraryRoot, 'templates', 'todo-ticket-replies'))).toBe(true);
   });
 
   it('reports a template that will not write as a diagnostic, not a throw', () => {
     const store = bootstrapped(harness);
     // A `templates/` that is a *file* is the cheapest real way to make every
-    // write fail: no folder can be created underneath it.
+    // write fail: no folder can be created underneath it. The seed list is
+    // empty now, so the write path is exercised through its test seam.
     rmSync(join(harness.libraryRoot, 'templates'), { recursive: true, force: true });
     writeFileSync(join(harness.libraryRoot, 'templates'), 'not a directory', 'utf8');
 
-    const result = seedLibrary({ store, clock: () => FIXED_NOW });
+    const result = seedLibrary({
+      store,
+      clock: () => FIXED_NOW,
+      templates: RETIRED_SEED_TEMPLATES,
+      retired: [],
+    });
     expect(result.templates.seeded).toEqual([]);
-    expect(result.templates.diagnostics).toHaveLength(SEED_TEMPLATES.length);
+    expect(result.templates.diagnostics).toHaveLength(RETIRED_SEED_TEMPLATES.length);
     expect(result.templates.diagnostics[0]?.code).toBe('roster.seed-failed');
     expect(result.templates.diagnostics[0]?.level).toBe('warn');
     // And the agents still arrived — one broken half does not take the other.

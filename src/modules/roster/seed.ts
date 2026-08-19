@@ -43,17 +43,22 @@
  * 4. **No secrets, no integrations.** None of the four needs a credential, so a
  *    clean install has nothing to configure before the board works.
  *
- * ## And two task templates (WO5, 2026-08-19)
+ * ## And task templates (WO5, 2026-08-19) — now shipped empty
  *
- * The same pass writes the two starter **task templates** of §2.4 — "Reply to
- * todo tickets" and "Draft email replies" — under the same three rules, with one
- * deliberate difference: the template half runs on its **own** stamp
- * (`roster.json`'s `templatesSeededAt`) rather than on `seededAt`. Templates
- * arrived after agents did, so every library that already exists has taken the
- * agent decision and has no templates at all; hanging the second decision off
- * the first would mean nobody who already uses AgentManager ever receives them.
- * See {@link seedTemplates}.
+ * The same pass used to write two starter **task templates** ("Reply to todo
+ * tickets", "Draft email replies") under the same rules, on the template half's
+ * **own** stamp (`roster.json`'s `templatesSeededAt`). The owner retired them
+ * the same day (2026-08-19): the "Start from" strip they existed to populate
+ * showed on every project, in both editions, whether or not the install had a
+ * mailbox or ticket queue anywhere near it — noise in the dialog's prime row.
+ * The strip already renders only when templates exist, so the fix is to ship
+ * none: {@link SEED_TEMPLATES} is empty, and {@link seedTemplates} additionally
+ * **removes** a retired starter whose bytes are exactly what seeding wrote — an
+ * edited copy is the owner's and is never touched. The machinery stays: the
+ * template *system* is load-bearing (WO8 triggers fire templates), and the
+ * stamp keeps the once-ever semantics for any future seed.
  */
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -68,6 +73,7 @@ import {
   TASK_TEMPLATE_SCHEMA_VERSION,
   createTemplateStore,
   parseTaskTemplate,
+  serialiseTaskTemplate,
   type TaskTemplate,
   type TemplateStore,
 } from './templates.js';
@@ -394,7 +400,8 @@ hint.
 export const SEED_AGENTS: readonly SeedAgent[] = [PRIYA, ADA, SAM, MIRA];
 
 // ---------------------------------------------------------------------------
-// The two starter task templates (WO5)
+// Task templates: the (empty) seed list, and the two retired starters (WO5,
+// retired 2026-08-19 — see the module header)
 // ---------------------------------------------------------------------------
 
 /**
@@ -411,15 +418,11 @@ export interface SeedTemplate {
 }
 
 /**
- * "Reply to todo tickets" — WO5's first starter.
+ * "Reply to todo tickets" — WO5's first starter, **retired 2026-08-19**.
  *
- * `solo`, because the job is drafting rather than reviewing, and because a pair
- * on a queue of tickets spends its rounds arguing about the first one. It
- * declares **no** `requiredIntegrations`: a ticket queue is a file, a URL or an
- * MCP server depending on whose queue it is, so `{{source}}` asks rather than
- * the template assuming — and a starter that warned about a connector nobody
- * has on a clean install would be a warning that teaches people to ignore
- * warnings.
+ * Kept byte-for-byte as it seeded, because that is what the retirement pass
+ * compares against: only a copy that still serialises to exactly these bytes
+ * was written by us and never touched, and only that copy is removed.
  */
 export const TODO_TICKET_REPLIES: SeedTemplate = {
   id: 'todo-ticket-replies',
@@ -452,13 +455,11 @@ human sends.`,
 };
 
 /**
- * "Draft email replies" — WO5's second starter.
+ * "Draft email replies" — WO5's second starter, **retired 2026-08-19**.
  *
- * This one *does* declare a `requiredIntegrations`, and deliberately: an agent
- * with no mailbox connector cannot read a mailbox, so the warning is true on
- * the day it fires. It is still only a warning — the picker offers every agent
- * and the dialog links to the integrations editor (ui §7.3.1) rather than
- * removing the row, which is the whole difference between ranking and gating.
+ * Kept for the same reason {@link TODO_TICKET_REPLIES} is: it is the
+ * comparison key that lets the retirement pass tell "still exactly what we
+ * wrote" from "the owner's now".
  */
 export const EMAIL_REPLY_DRAFTS: SeedTemplate = {
   id: 'email-reply-drafts',
@@ -490,8 +491,26 @@ sends.`,
   },
 };
 
-/** The starter templates, in the order the dialog's strip renders them. */
-export const SEED_TEMPLATES: readonly SeedTemplate[] = [TODO_TICKET_REPLIES, EMAIL_REPLY_DRAFTS];
+/**
+ * The starter templates this build seeds: none.
+ *
+ * Owner decision, 2026-08-19: the "Start from" strip the starters populated was
+ * superfluous — it fit neither the home nor the work edition's projects — and
+ * the strip already hides itself when the library holds no templates. The list
+ * stays (with its seam in {@link SeedLibraryOptions}) so a future seed is one
+ * entry away, behind the same once-ever stamp.
+ */
+export const SEED_TEMPLATES: readonly SeedTemplate[] = [];
+
+/**
+ * The starters this build actively removes when they are still exactly what
+ * seeding wrote. An edited copy — different bytes — is the owner's template
+ * and is left alone forever.
+ */
+export const RETIRED_SEED_TEMPLATES: readonly SeedTemplate[] = [
+  TODO_TICKET_REPLIES,
+  EMAIL_REPLY_DRAFTS,
+];
 
 /**
  * One starter template as a validated {@link TaskTemplate}.
@@ -538,6 +557,8 @@ export interface SeedLibraryOptions {
   readonly agents?: readonly SeedAgent[];
   /** The same seam for the template pass (WO5). */
   readonly templates?: readonly SeedTemplate[];
+  /** And for the retirement half of that pass. */
+  readonly retired?: readonly SeedTemplate[];
 }
 
 /** What the template half of a seeding run did (WO5). */
@@ -546,6 +567,8 @@ export interface SeedTemplatesResult {
   readonly seeded: readonly string[];
   /** Ids whose folder already existed and so were left completely alone. */
   readonly skipped: readonly string[];
+  /** Retired starters removed by this run because their bytes were still ours. */
+  readonly removed: readonly string[];
   readonly reason: 'seeded' | 'already-seeded';
   /** What `roster.json`'s `templatesSeededAt` should hold afterwards. */
   readonly stampedAt: string;
@@ -572,13 +595,16 @@ export interface SeedTemplatesOptions {
   readonly seededAt: string | null;
   readonly clock?: Clock;
   readonly templates?: readonly SeedTemplate[];
+  /** Overridable for the same reason `templates` is. */
+  readonly retired?: readonly SeedTemplate[];
 }
 
 /**
- * Writes the starter task templates, once (WO5).
+ * Writes the starter task templates, once (WO5) — and removes the retired ones,
+ * always (owner decision, 2026-08-19).
  *
- * Three rules, two of them borrowed verbatim from the agent pass and one that
- * is deliberately *not*:
+ * The write half keeps its three rules, two of them borrowed verbatim from the
+ * agent pass and one that is deliberately *not*:
  *
  * - **Through the real parser and the real store.** A starter that would not
  *   validate cannot ship, and the folder it lands in is indistinguishable from
@@ -593,16 +619,53 @@ export interface SeedTemplatesOptions {
  *   hold agents would mean nobody who already uses AgentManager ever gets them.
  *   A colliding id is still skipped, which is what protects a cloned roster that
  *   brought its own.
+ *
+ * The retirement half runs on **every** boot, before and regardless of the
+ * stamp — the installs it exists for were stamped the day they were seeded. It
+ * is idempotent and byte-strict: a retired id's folder is removed only when its
+ * `template.json` still serialises to exactly what {@link seedTemplateDefinition}
+ * wrote. Any other bytes — edited, reformatted, replaced — mean the owner has
+ * made it theirs, and it is never touched again.
  */
 export function seedTemplates(options: SeedTemplatesOptions): SeedTemplatesResult {
   const clock: Clock = options.clock ?? ((): Date => new Date());
   const seeds = options.templates ?? SEED_TEMPLATES;
+  const retired = options.retired ?? RETIRED_SEED_TEMPLATES;
   const diagnostics: Diagnostic[] = [];
+
+  const removed: string[] = [];
+  for (const seed of retired) {
+    if (!options.store.hasFolder(seed.id)) continue;
+    const onDisk = options.store.load(seed.id);
+    // `load` hashes the authored bytes; matching the hash of our own
+    // serialisation is the "still exactly what seeding wrote" test. A folder
+    // that no longer parses cannot match and is left where it is — malformed
+    // is the owner's to notice via the board's diagnostics, not ours to erase.
+    if (!onDisk.ok) continue;
+    const ours = createHash('sha256')
+      .update(serialiseTaskTemplate(seedTemplateDefinition(seed)), 'utf8')
+      .digest('hex');
+    if (onDisk.template.contentHash !== ours) continue;
+    try {
+      options.store.remove(seed.id);
+      removed.push(seed.id);
+    } catch (cause) {
+      diagnostics.push({
+        level: 'warn',
+        code: 'roster.unseed-failed',
+        message:
+          `the retired starter template "${seed.id}" could not be removed ` +
+          `(${cause instanceof Error ? cause.message : String(cause)}); it will be retried ` +
+          'on the next boot.',
+      });
+    }
+  }
 
   if (options.seededAt !== null) {
     return {
       seeded: [],
       skipped: [],
+      removed,
       reason: 'already-seeded',
       stampedAt: options.seededAt,
       diagnostics,
@@ -634,7 +697,14 @@ export function seedTemplates(options: SeedTemplatesOptions): SeedTemplatesResul
     }
   }
 
-  return { seeded, skipped, reason: 'seeded', stampedAt: isoTimestamp(clock()), diagnostics };
+  return {
+    seeded,
+    skipped,
+    removed,
+    reason: 'seeded',
+    stampedAt: isoTimestamp(clock()),
+    diagnostics,
+  };
 }
 
 /**
@@ -660,10 +730,14 @@ export function seedLibrary(options: SeedLibraryOptions): SeedResult {
   // hanging the templates off that stamp would mean every existing install never
   // gets them. Its own stamp is what makes it once-ever (WO5).
   const templates = seedTemplates({
-    store: createTemplateStore({ root: paths.root, ...(options.hooks === undefined ? {} : { hooks }) }),
+    store: createTemplateStore({
+      root: paths.root,
+      ...(options.hooks === undefined ? {} : { hooks }),
+    }),
     seededAt: metadata.templatesSeededAt,
     clock,
     ...(options.templates === undefined ? {} : { templates: options.templates }),
+    ...(options.retired === undefined ? {} : { retired: options.retired }),
   });
   diagnostics.push(...templates.diagnostics);
   const stamped = { ...metadata, templatesSeededAt: templates.stampedAt };
