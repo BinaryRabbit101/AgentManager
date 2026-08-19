@@ -77,17 +77,21 @@ import { useAppStore, type StartWorkIntent } from '../state/store';
 
 import {
   declaredRoles,
+  defaultArtifactPath,
   defaultRole,
   goalWithWorkers,
   launchableProjects,
   openAssignmentCounts,
   patternFor,
   patternRequest,
+  preGrantKey,
+  preGrantList,
   preselectedAgentIds,
   rankForSeats,
   refusedProjects,
   scopePathList,
   seatMembers,
+  shortAssignmentId,
   soloRequest,
   startBlocker,
   teamworkFor,
@@ -210,9 +214,47 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
     leadRaw !== null && selectedIds.includes(leadRaw) ? leadRaw : (selectedIds[0] ?? null);
 
   const [scopePaths, setScopePaths] = useState('');
-  const [artifactPath, setArtifactPath] = useState('');
+  /**
+   * §3's artifact prefill, as *two* pieces of state rather than one.
+   *
+   * While the field is untouched the value is derived from the task the user is
+   * typing, so the default tracks the goal instead of freezing whatever the goal
+   * was when the pattern was chosen (usually the empty string, at which point
+   * the "default" would be `docs/assignments/assignment-xxxxxx/DRAFT.md` for
+   * every run). The first keystroke in the field takes ownership and the
+   * derivation stops — a prefill that overwrote what the user typed would be the
+   * work-item seed's bug, made worse by being about a path.
+   */
+  const [artifactPathRaw, setArtifactPath] = useState<string | null>(null);
   const [roundCap, setRoundCap] = useState('');
   const [tokenBudget, setTokenBudget] = useState('');
+  /**
+   * The directory tail, minted once per opened dialog.
+   *
+   * In a ref rather than in state because it must not change while the user
+   * types — a value that re-rolled on every render would show a different path
+   * every keystroke, and a value derived from the task would collide for two
+   * runs of the same goal, which is the thing it exists to prevent.
+   */
+  const shortIdRef = useRef<string>(shortAssignmentId());
+  const artifactPath = artifactPathRaw ?? defaultArtifactPath(task, shortIdRef.current);
+
+  /** §3's pattern fields, collapsed behind one disclosure with their values on it. */
+  const [patternOptionsOpen, setPatternOptionsOpen] = useState(false);
+
+  // --- the permission preflight (WO4 §1) ---------------------------------
+  /** roster's `validate`, once per selected agent, keyed by agent id. */
+  const [preflight, setPreflight] = useState<ReadonlyMap<string, PermissionPreview>>(new Map());
+  /**
+   * The chips the user has ticked or unticked *by hand*.
+   *
+   * Held separately from the defaults so a re-validate — a changed project, a
+   * flipped write toggle — refreshes the chip list without discarding a decision
+   * the user already made about a tool that is still on it.
+   */
+  const [preGrantOverrides, setPreGrantOverrides] = useState<ReadonlyMap<string, boolean>>(
+    new Map(),
+  );
 
   // --- submission --------------------------------------------------------
   const [busy, setBusy] = useState(false);
@@ -276,6 +318,84 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
     );
   }, [pattern]);
 
+  /**
+   * §1's preflight: `validate` per seat, with the assignment's posture.
+   *
+   * One call per selected agent rather than one for the whole selection,
+   * because roster composes per `(agent, project)` and a merged answer would be
+   * a set no session ever runs under. Runs only when there is a project and at
+   * least one agent — before that there is nothing to compile against.
+   *
+   * The result is *replaced*, never merged: an unticked agent's chips must
+   * leave the dialog with them, and a stale entry for somebody no longer
+   * selected would put a `preGrant` in the create call for an agent with no
+   * seat, which the server refuses by name.
+   */
+  const selectedKey = selectedIds.join(' ');
+  useEffect(() => {
+    if (projectId === '' || selectedIds.length === 0) {
+      setPreflight(new Map());
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const entries = await Promise.all(
+        selectedIds.map(
+          async (agentId) =>
+            [agentId, await fetchPermissionPreview(client, agentId, projectId, write)] as const,
+        ),
+      );
+      // A selection that changed while the calls were in flight has already
+      // triggered the next run; writing this one would flash the old chips.
+      if (!cancelled) setPreflight(new Map(entries));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `selectedKey` stands in for `selectedIds`, which is a new array on every
+    // render; the ids are what the effect actually depends on, and joining them
+    // is what stops the preflight re-running for a selection that did not change.
+  }, [client, projectId, selectedKey, write]);
+
+  /**
+   * The chips, per agent, with each one's ticked state resolved.
+   *
+   * The default is roster's `remembered` — WO4 §1: "default ON for tools the
+   * same agent was previously allowed on this project… default OFF otherwise" —
+   * and an override is the user's own click. Deriving rather than storing means
+   * a refreshed preflight cannot leave a tick behind for a tool that no longer
+   * gates.
+   */
+  const preflightRows = useMemo(
+    () =>
+      selectedIds.flatMap((agentId) => {
+        const result = preflight.get(agentId);
+        if (result === undefined || result.state !== 'ready') return [];
+        return [
+          {
+            agentId,
+            chips: result.gateLiable.map((tool) => ({
+              ...tool,
+              ticked: preGrantOverrides.get(preGrantKey(agentId, tool.tool)) ?? tool.remembered,
+            })),
+          },
+        ];
+      }),
+    [preflight, preGrantOverrides, selectedIds],
+  );
+
+  const ticked = useMemo(() => {
+    const keys = new Set<string>();
+    for (const row of preflightRows) {
+      for (const chip of row.chips) {
+        if (chip.ticked) keys.add(preGrantKey(row.agentId, chip.tool));
+      }
+    }
+    return keys;
+  }, [preflightRows]);
+
+  const preGrants = useMemo(() => preGrantList(ticked), [ticked]);
+
   /** The one selected id, for the solo-only controls — known before the roster is. */
   const soloAgentId = count === 1 ? selectedIds[0] : undefined;
   const soloAgent = selected.length === 1 ? selected[0] : undefined;
@@ -290,6 +410,30 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
     policy.allowed,
     policy.layer,
   );
+
+  /**
+   * §3's "shown as filled-in values that can be expanded, not required fields".
+   *
+   * The summary is the whole reason the disclosure is allowed to be closed: a
+   * collapsed section that says nothing is a hidden decision, and a collapsed
+   * section that prints its values is a default the user can accept by not
+   * opening it.
+   */
+  const patternOptionsSummary = [
+    scopePathList(scopePaths).length === 0
+      ? 'whole project'
+      : `${String(scopePathList(scopePaths).length)} scope path${
+          scopePathList(scopePaths).length === 1 ? '' : 's'
+        }`,
+    pattern?.requires.artifactPath === true ? artifactPath : null,
+    roundCap === '' ? 'no round cap' : `${roundCap} rounds`,
+    tokenBudget === '' ? 'budget needed' : `${Number(tokenBudget).toLocaleString()} tokens`,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(' · ');
+
+  /** The one pattern field with no default at all (§7.2) — never hidden. */
+  const budgetMustBeAsked = teamwork === 'team' && tokenBudget.trim() === '';
 
   const blocker = startBlocker({
     hasOrchestrator,
@@ -335,6 +479,9 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
           role: count === 1 ? effectiveRole : defaultRole(agent),
           write,
           workItemIds: selectedItems,
+          // Only this agent's: a solo is one seat, and the server refuses a
+          // pre-grant naming somebody who holds no seat in the assignment.
+          preGrants: preGrants.filter((grant) => grant.agentId === agentId),
           confirmRemoteAccess,
         }),
       });
@@ -400,6 +547,12 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
         artifactPath,
         roundCap,
         tokenBudget,
+        // Narrowed to the agents that actually took a seat: the team path seats
+        // only the lead, and the others ride in the goal as a suggestion (§3.5),
+        // so their chips describe assignments this call is not creating.
+        preGrants: preGrants.filter((grant) =>
+          members.some((member) => member.agentId === grant.agentId),
+        ),
         confirmRemoteAccess,
       }),
     });
@@ -499,6 +652,7 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
                     onChange={(event) => {
                       setProjectId(event.target.value);
                       setPreview(undefined);
+                      setPreflight(new Map());
                     }}
                   >
                     <option value="">Choose a project…</option>
@@ -783,9 +937,28 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
               </>
             ) : null}
 
-            {/* The pattern's own required fields, driven by `GET /api/patterns`. */}
+            {/*
+              The pattern's own fields, driven by `GET /api/patterns` — and
+              **collapsed**, because §3's minimal path is "pick project → tick
+              agents → type the task → Start" and every one of these now has a
+              value the user can read off the summary without opening it.
+
+              Forced open when the team path has no budget: §7.2 gives the
+              overseer no default on purpose, so that one field is genuinely
+              being asked for and hiding it would hide the reason Start is off.
+            */}
             {pattern === undefined ? null : (
-              <div className="startwork__pattern-fields">
+              <details
+                className="launch__section startwork__pattern-options"
+                open={patternOptionsOpen || budgetMustBeAsked}
+                onToggle={(event) => {
+                  setPatternOptionsOpen((event.target as HTMLDetailsElement).open);
+                }}
+              >
+                <summary>
+                  Rounds, budget and scope
+                  <span className="launch__summary-line">{` ${patternOptionsSummary}`}</span>
+                </summary>
                 <label className="field">
                   <span>Scope paths (comma separated)</span>
                   <input
@@ -795,11 +968,13 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
                 </label>
                 {pattern.requires.artifactPath ? (
                   <label className="field">
-                    <span>Artifact path (required by this pattern)</span>
+                    {/* No longer "(required by this pattern)": it is filled in,
+                        and a field with a value in it that calls itself required
+                        reads as a demand rather than as a default. */}
+                    <span>Artifact path</span>
                     <input
                       value={artifactPath}
                       onChange={(event) => setArtifactPath(event.target.value)}
-                      required
                     />
                   </label>
                 ) : null}
@@ -829,9 +1004,59 @@ export function StartWork({ intent, onClose }: StartWorkProps): ReactElement {
                     required={teamwork === 'team'}
                   />
                 </label>
-              </div>
+              </details>
             )}
           </fieldset>
+
+          {/* --- the permission preflight (WO4 §1) ------------------------- */}
+          {preflightRows.length === 0 ? null : (
+            <fieldset className="startwork__step startwork__preflight">
+              <legend>Permission gates</legend>
+              <p className="startwork__note">
+                These tools would stop and ask mid-run. Pre-allow them for this assignment and they
+                will not — only for this assignment, and only for the agent named.
+              </p>
+              {preflightRows.map((row) => (
+                <div
+                  key={row.agentId}
+                  className="startwork__preflight-row"
+                  data-agent={row.agentId}
+                >
+                  <span className="startwork__preflight-who">{nameFor(agents, row.agentId)}</span>
+                  {row.chips.length === 0 ? (
+                    <span className="empty">Nothing here would gate.</span>
+                  ) : (
+                    <ul className="startwork__chips">
+                      {row.chips.map((chip) => (
+                        <li key={chip.tool}>
+                          <label className="launch__toggle" data-tool={chip.tool}>
+                            <input
+                              type="checkbox"
+                              checked={chip.ticked}
+                              aria-label={`Pre-allow ${chip.tool} for ${nameFor(
+                                agents,
+                                row.agentId,
+                              )}`}
+                              onChange={(event) => {
+                                const key = preGrantKey(row.agentId, chip.tool);
+                                const next = new Map(preGrantOverrides);
+                                next.set(key, event.target.checked);
+                                setPreGrantOverrides(next);
+                              }}
+                            />
+                            {chip.tool}
+                            {chip.remembered ? (
+                              <span className="startwork__chip-note"> already allowed</span>
+                            ) : null}
+                          </label>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </fieldset>
+          )}
 
           {/* --- privilege, never collapsed (§6) --------------------------- */}
           {soloAgentId === undefined ? null : (

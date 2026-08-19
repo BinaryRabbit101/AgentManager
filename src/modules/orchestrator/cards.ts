@@ -36,6 +36,35 @@ import type { QuestionInbox, QuestionKind, QuestionOption } from './questions.js
  */
 export const GATE_CARD_PREFIX = 'orchestrator.gate.';
 
+/**
+ * Stamps the round a tool gate belongs to onto its card — WO4 addendum §6's
+ * "which seat/turn is asking", the turn half.
+ *
+ * The *seat* half is runner's: it holds the role at gate time and puts it on
+ * the request. The *turn* is not — runner has no turn rows and orchestrator's
+ * are the only place the number exists — so it is stamped here, on the way
+ * through, from the session the card was raised against.
+ *
+ * Written as a `cardPolicy` rather than inside the inbox because that hook is
+ * already "last chance to shape a card before its row is written" (§7.3), and a
+ * second interception point for the same job is a second thing to keep in step.
+ * Silent for a card with no session (every engine-raised one) and for a session
+ * with no turn (a solo, which has no driver and therefore no turn rows).
+ */
+export function withAskingTurn<
+  T extends { readonly sessionId: string | null; readonly context?: unknown },
+>(
+  turns: { findBySession(sessionId: string): { readonly round: number } | undefined } | undefined,
+  request: T,
+): T {
+  const sessionId = request.sessionId;
+  if (turns === undefined || sessionId === null || sessionId === '') return request;
+  const turn = turns.findBySession(sessionId);
+  if (turn === undefined) return request;
+  const context = (request.context ?? {}) as Record<string, unknown>;
+  return { ...request, context: { ...context, round: turn.round } };
+}
+
 /** The two answers every gate offers. There is deliberately no third. */
 export const GATE_OPTIONS: readonly QuestionOption[] = [
   { id: 'approve', label: 'Approve' },

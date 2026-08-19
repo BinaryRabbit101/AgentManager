@@ -87,6 +87,7 @@ ALTER TABLE assignments ADD COLUMN lead_agent_id        TEXT;   -- the seat that
 ALTER TABLE assignments ADD COLUMN write                INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE assignments ADD COLUMN artifact_path        TEXT;   -- repo-relative; required by `pair`
 ALTER TABLE assignments ADD COLUMN pattern_config_json  TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE assignments ADD COLUMN pre_grants_json      TEXT NOT NULL DEFAULT '[]';  -- 0004, §2.3
 ALTER TABLE assignments ADD COLUMN phase                TEXT NOT NULL DEFAULT 'planned';
 ALTER TABLE assignments ADD COLUMN halt_reason          TEXT;
 ALTER TABLE assignments ADD COLUMN updated_at           TEXT;
@@ -197,6 +198,33 @@ the first turn immediately; otherwise the assignment sits at `phase: planned` un
 behind the same validation, plus the extra rules of §9 that only apply to a machine caller
 (nesting depth, budget debited from the parent, mandatory non-null budget, approval gate when
 `write: true`).
+
+**Pre-grants: the gates the user answered before the run** *(added 2026-08-19, WO4 §2)*.
+
+`CreateAssignmentRequest` and `createSolo` both accept `preGrants?: { agentId, tool }[]` — a list of
+tool gates the Start-work dialog pre-answered (ui §6). They are stored on the assignment as
+`pre_grants_json` (§2.1) and returned on the view, because a standing permission the user cannot see
+is a standing permission they will not trust — roster §9.1's argument for the permission preview,
+applied to the narrower thing.
+
+A JSON column rather than a table, per foundation §1.1: the set is written once at creation, read
+whole by exactly one reader, and never queried by predicate. `scope_json` and `pattern_config_json`
+are the same shape for the same reason.
+
+Four properties are load-bearing, and each is a way this could have become something worse:
+
+- **It is an answer, not a permission.** Roster's `compilePermissions` remains the sole composer
+  (roster §6.2). A pre-grant can only pre-answer a card the compiled permissions *would have raised*;
+  a tool the deny set removed raises no card, so a pre-grant on it grants nothing.
+- **Its scope is `(assignment, agent, tool)`.** Deliberately narrower than roster's Always-allow,
+  which edits the agent's baseline and outlives every assignment. A pre-grant expires with the row.
+- **A pre-grant naming an agent with no seat here is a named refusal**, `pre_grant_not_a_member`
+  (§9). A repeated one is not: two clients ticking one chip is one intent expressed twice, and the
+  service collapses it, exactly as roster's `allowRule` treats a repeated rule as a no-op success.
+- **The seat is named, never inferred.** `getAssignmentContext(id, { agentId })` returns
+  `preGrantedTools` already filtered to that agent, and returns **none** when the caller named
+  nobody. `role` may be resolved by the sole-member shortcut; a permission may not, because guessing
+  it would pre-answer a card somebody else's user never saw.
 
 **Work-item linking, on all three paths.** `workItemIds?: string[]` is accepted by
 `createSolo`, by `CreateAssignmentRequest`, and by `create_assignment` (§4.3). The engine is the
@@ -885,6 +913,22 @@ Everything a human must answer is a row in `questions` with a `kind` from founda
 | `budget_halt` | runner, when `tokens_used` crosses `token_budget` (runner §7.2) | "This pair has used its 400 k budget" |
 | `approval_gate` | **orchestrator only** (runner §15.1-8) | "Approve a write-capable assignment", "Circuit breaker tripped" |
 
+**What a tool gate says about itself** *(added 2026-08-19, WO4 addendum §6)*. A card's `context`
+rides through this element verbatim — that is the property that let runner add `durableRule` without
+an orchestrator change — and a tool gate now carries `seatRole`, `pattern` and, when the gated input
+itself names `scope.artifactPath`, that path. All three are runner's, set at gate time from the
+assignment context it already fetched. The **round** is not runner's and cannot be: runner has no
+turn rows, and `assignment_turns` is the only place the number exists. It is stamped here on the way
+through, by the same `cardPolicy` hook §7.3 already uses to shape a card before its row is written
+(`withAskingTurn`), and is silent for an engine-raised card and for a solo, which has no driver and
+therefore no turn rows.
+
+The point is an **informed deny**, not a nag: "Allow the agent to use Bash?" from an unnamed seat in
+a two-seat pair is a decision the user makes without knowing whose work they are stopping. The
+artifact line is set only when the call in front of the user provably writes that file — the broader
+"this seat probably needs this tool to finish" is speculation, and a card that frightened a user out
+of a correct deny would be worse than the silence it replaced.
+
 Orchestrator implements `QuestionBridge` (runner §5.2) verbatim, persists the row, attaches
 recommendations, resolves the promise on answer, and records `answered_via` from foundation's request
 origin. `POST /api/questions/:id/answer` is the single answer path for local and remote alike.
@@ -1054,6 +1098,23 @@ All are **deterministic counters over persisted state**, evaluated by the engine
 | `no_progress` | 2 consecutive drafter turns with an unchanged `artifact_hash` while claiming a revision | Halt `no_progress`. This is the "politely looping forever" guard the round cap alone does not catch. |
 | `no_artifact` | 2 `reported` drafter turns **in one round** with `artifact_hash` `null` — nothing exists at `scope.artifactPath` (§3.3, `requireArtifact`) | Re-plan the drafter once with the `artifact_missing` instruction naming the path; on the second miss halt `no_artifact`, card offering *Continue anyway* (send the critic in regardless) / *Close*. Distinct from `no_progress` (an artifact that stopped changing) and from `no_report` (the seat did report — there is just no file behind it). |
 | `tool_denials` | `permission_denials` ≥ `breakers.denialsPerSession` (5) in one session, or any denials in 3 consecutive turns | Halt `permission_fight`, card naming the denied tools and offering the roster/project edit that would fix it. An agent repeatedly hitting a wall is a configuration bug, not an agent bug. |
+
+**Denials below the breaker are still fatal, and were invisible** *(added 2026-08-19, WO4
+addendum §5)*. The breaker exists for an agent fighting a wall; a **single** deny trips nothing —
+the agent loses one call, keeps going, and can report success without its main deliverable. The
+2026-08-19 incident run ended with a clean `git status`, a drafter that reported anyway, and the
+number that would have explained it recorded on the turn row and rendered nowhere. Three changes,
+none of which touches the breaker:
+
+- `assignment_turns.permission_denied_tools` (migration 0005) keeps the denied calls' **tool names**,
+  which the SDK's `result.permission_denials` has always carried and runner had been discarding. It
+  is nullable on purpose: `NULL` means "this row predates the names" and the count is then the whole
+  story, while `'[]'` would claim a session recorded none.
+- `ConversationTurnEntry` carries `permissionDenials` and `permissionDeniedTools` (§11.2), so the
+  turn card can say "2 tool calls denied — Write, Bash" where the work is read.
+- The **completion and halt cards** append the assignment's total when it is non-zero, and say
+  nothing when it is zero. A card that prints "0 denied" on every clean run teaches the reader to
+  skip the line.
 | `tool_flood` | Per-session MCP call caps exceeded (§4.2) | Refuse the call, halt `tool_flood`, and `RunnerService.stop` that session. |
 | `stale` | An `open` assignment with no turn transition for `assignment.maxAgeHours` (24) | Halt `stale`, card offering *Continue* / *Close*. Catches wedges nothing else notices. |
 
@@ -1278,7 +1339,9 @@ ordered merge of turns and messages for one assignment.
         "report": { "state": "done", "headline": "…", "artifacts": [ { "path": "…" } ] },
         "excerpt": "…first 2 KB of the last assistant message…",
         "tokens": { "input": 0, "output": 0 }, "startedAt": "…", "endedAt": "…",
-        "exitReason": null },   // runner's exit_reason, or "launch_failed"; null on the happy path
+        "exitReason": null,     // runner's exit_reason, or "launch_failed"; null on the happy path
+        "permissionDenials": 0,           // §8.1; the turn card's warning chip (WO4 addendum §5)
+        "permissionDeniedTools": null },  // the names, or null on a row written before 0005
       { "type": "message", "from": "ada-architect", "to": "sam-skeptic", "kind": "handoff",
         "body": "…", "delivery": "inlined", "createdAt": "…" },
       { "type": "turn", "seat": "critic", "…": "…",

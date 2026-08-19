@@ -48,9 +48,15 @@ import {
   type RunnerPort,
 } from './ports.js';
 import type { QuestionInbox } from './questions.js';
-import { childViewsOf, type AssignmentRepository, type AssignmentRow } from './repository.js';
+import {
+  childViewsOf,
+  parsePreGrants,
+  type AssignmentRepository,
+  type AssignmentRow,
+} from './repository.js';
 import { emitScopeRules } from './scopeRules.js';
 import type { SessionToolset, ToolsetFactory } from './toolset.js';
+import type { TurnRepository } from './turns.js';
 import {
   isMachineCreated,
   validateCreateAssignment,
@@ -75,10 +81,33 @@ import {
   type CreateSoloRequest,
   type CreateSoloResult,
   type ListAssignmentsQuery,
+  type PreGrant,
 } from './types.js';
 
 /** Session statuses that are still alive and must be stopped on close (§2.2). */
 const LIVE_STATUSES: readonly SessionStatus[] = ['queued', 'running', 'paused'];
+
+/**
+ * The pre-grants as a *set*, in first-seen order (§2.3, WO4 §2).
+ *
+ * The validator deliberately does not refuse a repeat — two clients ticking one
+ * chip is one intent expressed twice, which roster's `allowRule` also treats as
+ * a no-op success (roster §6.2). The column should therefore hold what the user
+ * meant rather than what they clicked, and dedupe is the one place that turns
+ * the second into the first.
+ */
+function dedupePreGrants(grants: readonly PreGrant[] | undefined): readonly PreGrant[] | undefined {
+  if (grants === undefined || grants.length === 0) return undefined;
+  const seen = new Set<string>();
+  const unique: PreGrant[] = [];
+  for (const grant of grants) {
+    const key = `${grant.agentId}::${grant.tool}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push({ agentId: grant.agentId, tool: grant.tool });
+  }
+  return unique;
+}
 
 export interface AssignmentServiceOptions {
   readonly repository: AssignmentRepository;
@@ -121,6 +150,17 @@ export interface AssignmentServiceOptions {
    * rule-dropping diagnostic already covers (§4.1).
    */
   readonly toolset?: (() => ToolsetFactory | undefined) | undefined;
+  /**
+   * M5's turn repository, for the one number the read model owes the addendum:
+   * how many tool calls this assignment had denied (WO4 addendum §5).
+   *
+   * Optional because M1's service predates turns entirely and a build without
+   * the repository has no turn rows to sum — the view then reports `0`, which
+   * is the true total for an assignment that has never taken a turn rather than
+   * a placeholder. Passed directly rather than lazily: `createTurnRepository`
+   * runs before this factory in `module.ts`, so there is no cycle to break.
+   */
+  readonly turns?: TurnRepository | undefined;
   readonly log?: (message: string, detail?: Record<string, unknown>) => void;
 }
 
@@ -289,6 +329,10 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       leadAgentId: request.members[0]?.agentId,
       artifactPath: scope?.artifactPath,
       patternConfig: request.patternConfig,
+      // Collapsed here rather than refused in the validator: two clients ticking
+      // one chip is the same intent twice, and the column should hold the set
+      // the user expressed, not the clicks they made (§2.3).
+      preGrants: dedupePreGrants(request.preGrants),
       tokenBudget: request.tokenBudget ?? defaultBudget(request),
       roundCap: request.roundCap ?? defaultRoundCap(request),
       members: request.members.map((member, index) => ({
@@ -413,6 +457,11 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       tokenBudget: null,
       roundCap: null,
       ...(request.workItemIds === undefined ? {} : { workItemIds: request.workItemIds }),
+      // A solo is where the observed "Allow the agent to use Bash?" cards
+      // actually fire, so the pre-grants have to reach this path too — and they
+      // do it the same way everything else does, by riding the one
+      // `CreateAssignmentRequest` §2.3 funnels all three paths through.
+      ...(request.preGrants === undefined ? {} : { preGrants: request.preGrants }),
       ...(request.createdBy === undefined ? {} : { createdBy: request.createdBy }),
     });
 
@@ -512,6 +561,17 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       tokensUsed: row.tokensUsed,
       roundCap: row.roundCap,
       roundsUsed: row.roundsUsed,
+      // Filtered to the named agent and to nobody else. `seat` above may be
+      // resolved by the sole-member shortcut; this is not, because a pre-grant
+      // guessed onto the wrong agent would pre-answer a card that agent's user
+      // never saw. No agent named, no pre-grants (§2.3, WO4 §2).
+      preGrantedTools:
+        contextOptions?.agentId === undefined
+          ? []
+          : parsePreGrants(row.preGrantsJson)
+              .filter((grant) => grant.agentId === contextOptions.agentId)
+              .map((grant) => grant.tool),
+      artifactPath: row.artifactPath,
     };
   }
 
@@ -653,6 +713,15 @@ export function createAssignmentService(options: AssignmentServiceOptions): Assi
       // reader can follow the decomposition in.
       children: childViewsOf(repository, row.id),
       childTokensUsed: repository.childTokens(row.id).used,
+      preGrants: parsePreGrants(row.preGrantsJson),
+      // The addendum's "it finished but was denied X times", summed once here so
+      // every reader of the view — the completion banner, the halt banner, the
+      // assignments index — prints the same number rather than three clients
+      // each summing turn rows their own way (WO4 addendum §5).
+      permissionDenials: (options.turns?.list(row.id) ?? []).reduce(
+        (total, turn) => total + turn.permissionDenials,
+        0,
+      ),
     };
   }
 

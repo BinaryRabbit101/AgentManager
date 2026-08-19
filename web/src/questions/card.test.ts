@@ -12,6 +12,7 @@ import type { QuestionCard as Card } from '../api/types';
 import { QUESTION_STRENGTHS } from '../api/types';
 
 import {
+  denyConsequence,
   ALLOW_ALWAYS_OPTION_ID,
   alwaysAllowFailedMessage,
   alwaysAllowPreview,
@@ -188,8 +189,11 @@ describe('the call being gated (§11.2)', () => {
 
   it('prefers the most specific field, not the first one present', () => {
     expect(
-      gatedCall(aCard({ context: { toolName: 'Edit', toolInput: { description: 'a', file_path: 'src/x.ts' } } }))
-        ?.summary,
+      gatedCall(
+        aCard({
+          context: { toolName: 'Edit', toolInput: { description: 'a', file_path: 'src/x.ts' } },
+        }),
+      )?.summary,
     ).toBe('src/x.ts');
   });
 
@@ -298,5 +302,61 @@ describe('durableAllow — the rule is the server’s, never derived here', () =
     expect(failed).toContain('was not saved for priya');
     expect(failed).toContain('the library is read-only');
     expect(failed).not.toMatch(/remembered/u);
+  });
+});
+
+/**
+ * WO4 addendum §6: "which seat/turn is asking and… a note when the denied tool
+ * is the one the artifact write depends on. Keep it one line; the point is an
+ * informed deny, not a nag."
+ */
+describe('the informed deny (WO4 addendum §6)', () => {
+  it('names the seat and the collaboration it belongs to', () => {
+    expect(
+      denyConsequence(
+        aCard({ context: { toolName: 'Bash', seatRole: 'architect', pattern: 'pair' } }),
+      ),
+    ).toBe('Asked by the architect seat of this pair.');
+  });
+
+  it('adds the round when orchestrator stamped one', () => {
+    expect(
+      denyConsequence(
+        aCard({ context: { toolName: 'Bash', seatRole: 'architect', pattern: 'pair', round: 2 } }),
+      ),
+    ).toBe('Asked by the architect seat of this pair, round 2.');
+  });
+
+  it('drops the pattern when there is only one seat to be', () => {
+    expect(
+      denyConsequence(
+        aCard({ context: { toolName: 'Bash', seatRole: 'implementer', pattern: 'solo' } }),
+      ),
+    ).toBe('Asked by the implementer seat.');
+  });
+
+  it('adds the artifact line when the server said this call writes it', () => {
+    expect(
+      denyConsequence(
+        aCard({
+          context: {
+            toolName: 'Write',
+            seatRole: 'architect',
+            pattern: 'pair',
+            artifactPath: 'docs/assignments/x/DRAFT.md',
+          },
+        }),
+      ),
+    ).toBe(
+      'Asked by the architect seat of this pair. ' +
+        'Denying this stops docs/assignments/x/DRAFT.md being written by this call.',
+    );
+  });
+
+  it('says nothing when the card carries neither fact', () => {
+    // Every card raised before the runner started sending them, and every
+    // `AskUserQuestion`. Silence is the correct output, not a placeholder.
+    expect(denyConsequence(aCard({ context: { toolName: 'Bash' } }))).toBeUndefined();
+    expect(denyConsequence(aCard({ context: null }))).toBeUndefined();
   });
 });

@@ -291,8 +291,7 @@ export function validateCreateAssignment(input: ValidationInput): ValidationResu
   // first seat: seat order is the pattern's, and a request that names a worker
   // first must not be able to point the rule at the wrong agent.
   if (request.pattern === 'overseer') {
-    const lead =
-      request.members.find((member) => member.role === 'overseer') ?? request.members[0];
+    const lead = request.members.find((member) => member.role === 'overseer') ?? request.members[0];
     const agent = lead === undefined ? undefined : input.agents.get(lead.agentId);
     if (agent !== undefined && !agent.overseer) {
       warnings.push({
@@ -406,6 +405,37 @@ export function validateCreateAssignment(input: ValidationInput): ValidationResu
         message: scopeMessage(artifact, normalised.problem),
         details: { path: artifact, problem: normalised.problem, field: 'artifactPath' },
       });
+    }
+  }
+
+  // --- §2.3's pre-grants: an answer to a gate a seat of *this* assignment
+  // would raise, and nothing else (WO4 §2).
+  //
+  // The only rule worth having, and it is a real one: a pre-grant naming an
+  // agent with no seat is either a client bug or an attempt to pre-answer
+  // somebody else's card, and both must be a named refusal rather than a row
+  // nothing will ever read. The tool name is deliberately **not** checked
+  // against a catalogue — orchestrator does not own the tool vocabulary
+  // (roster does, and MCP servers extend it per agent), and a pre-grant on a
+  // tool the session never exposes pre-answers nothing, which is harmless.
+  {
+    const seated = new Set(request.members.map((member) => member.agentId));
+    for (const grant of request.preGrants ?? []) {
+      if (!seated.has(grant.agentId)) {
+        refusals.push({
+          code: 'pre_grant_not_a_member',
+          message:
+            `A pre-grant names agent ${grant.agentId}, who holds no seat in this assignment. ` +
+            'A pre-grant is scoped to (assignment, agent, tool) and cannot answer a gate no ' +
+            'seat here will raise.',
+          details: { agentId: grant.agentId, tool: grant.tool },
+        });
+        continue;
+      }
+      // Duplicates are collapsed rather than refused: two clicks on one chip and
+      // two clients ticking the same box are the same intent, exactly as
+      // roster's `allowRule` treats a repeated rule as a no-op success (§6.2).
+      // The service collapses them on the way to the column.
     }
   }
 

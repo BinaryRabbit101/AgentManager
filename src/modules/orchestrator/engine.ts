@@ -359,7 +359,10 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
   function childrenOf(row: AssignmentRow): readonly ChildState[] {
     if (row.pattern !== 'overseer') return [];
     return [...repository.listChildren(row.id)].reverse().map((child) => {
-      const reported = turns.list(child.id).filter((turn) => turn.report !== null).at(-1);
+      const reported = turns
+        .list(child.id)
+        .filter((turn) => turn.report !== null)
+        .at(-1);
       return {
         id: child.id,
         goal: child.goal,
@@ -798,6 +801,7 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
       exitReason?: unknown;
       summary?: unknown;
       permissionDenials?: unknown;
+      permissionDeniedTools?: unknown;
     };
     const sessionStatus = typeof payload.status === 'string' ? payload.status : 'done';
     const exitReason = typeof payload.exitReason === 'string' ? payload.exitReason : null;
@@ -827,6 +831,16 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
         // §8.1's `tool_denials` input, written where it can be re-derived from.
         ...(typeof payload.permissionDenials === 'number'
           ? { permissionDenials: payload.permissionDenials }
+          : {}),
+        // The addendum's half of the same fact: which tools, not only how
+        // many. Absent on a runner that does not send them, which is what
+        // keeps 0005's NULL meaning "this row predates the names".
+        ...(Array.isArray(payload.permissionDeniedTools)
+          ? {
+              permissionDeniedTools: payload.permissionDeniedTools.filter(
+                (name): name is string => typeof name === 'string',
+              ),
+            }
           : {}),
       });
       emitTurnEnded(row, completed, sessionStatus, exitReason, payload.permissionDenials);
@@ -1008,14 +1022,33 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
       : config.patterns.pair.maxRoundCap;
   }
 
+  /**
+   * "…and N tool calls were denied along the way", when any were (WO4 addendum
+   * §5).
+   *
+   * Appended to the *prompt* rather than added as a separate field, because the
+   * card's prompt is the sentence the user reads at the moment they decide, and
+   * the incident this comes from is precisely one where the number existed and
+   * was never in front of anybody. Silent at zero: a card that says "0 denied"
+   * on every clean run teaches the reader to skip the line.
+   */
+  function denialNote(assignmentId: string): string {
+    const total = turns.list(assignmentId).reduce((sum, turn) => sum + turn.permissionDenials, 0);
+    if (total <= 0) return '';
+    return (
+      ` ${String(total)} tool call${total === 1 ? ' was' : 's were'} denied while this ran — ` +
+      'check the work covers what those calls were for.'
+    );
+  }
+
   function raiseRoundCapCard(row: AssignmentRow, summary: string): Promise<string> {
     const cap = row.roundCap ?? 0;
     const max = maxRoundCapFor(row.pattern);
     return raiseCard(row, {
       kind: 'question',
       prompt:
-        `${summary} Accept the artifact as it stands, run one more round (up to ${String(max)} ` +
-        `in total, currently ${String(cap)}), or close it unfinished?`,
+        `${summary}${denialNote(row.id)} Accept the artifact as it stands, run one more round ` +
+        `(up to ${String(max)} in total, currently ${String(cap)}), or close it unfinished?`,
       options: ROUND_CAP_OPTIONS,
       marker: ROUND_CAP_CARD,
     });
@@ -1024,7 +1057,7 @@ export function createPatternEngine(options: PatternEngineOptions): PatternEngin
   function raiseHaltCard(row: AssignmentRow, haltReason: HaltReason): Promise<string> {
     return raiseCard(row, {
       kind: 'approval_gate',
-      prompt: haltPrompt(haltReason, row),
+      prompt: `${haltPrompt(haltReason, row)}${denialNote(row.id)}`,
       options: [
         { id: 'continue', label: 'Continue anyway' },
         { id: 'close', label: 'Close the assignment' },

@@ -39,6 +39,7 @@ import type {
   AssignmentPhase,
   AssignmentScope,
   CreatedBy,
+  PreGrant,
 } from './types.js';
 
 /** One row, base columns and orchestrator's own, flattened. */
@@ -63,6 +64,8 @@ export interface AssignmentRow {
   readonly write: boolean;
   readonly artifactPath: string | null;
   readonly patternConfigJson: string;
+  /** 0004's column, raw. Parsed by `parsePreGrants` at the one place it is read. */
+  readonly preGrantsJson: string;
   readonly phase: AssignmentPhase;
   readonly haltReason: string | null;
   readonly updatedAt: string | null;
@@ -88,6 +91,7 @@ export interface CreateAssignmentRow {
   readonly leadAgentId?: string | undefined;
   readonly artifactPath?: string | undefined;
   readonly patternConfig?: Readonly<Record<string, unknown>> | undefined;
+  readonly preGrants?: readonly PreGrant[] | undefined;
   readonly tokenBudget: number | null;
   readonly roundCap: number | null;
   readonly members: readonly {
@@ -181,6 +185,7 @@ interface RawRow {
   readonly write: number;
   readonly artifact_path: string | null;
   readonly pattern_config_json: string;
+  readonly pre_grants_json: string;
   readonly phase: AssignmentPhase;
   readonly halt_reason: string | null;
   readonly updated_at: string | null;
@@ -199,6 +204,39 @@ export interface AssignmentRepositoryOptions {
   /** Foundation's repository — the sole writer of the base columns. */
   readonly assignments: AssignmentsRepository;
   readonly clock: Clock;
+}
+
+/**
+ * 0004's `pre_grants_json`, read back defensively (§2.3, WO4 §2).
+ *
+ * Tolerant in exactly the way `parseScope` is: a column that will not parse
+ * yields **no** pre-grants rather than an exception, because the failure mode of
+ * a bad parse must be "every gate asks", which is the behaviour the feature
+ * exists to improve on and never a permission somebody did not grant. Entries
+ * that are not `{ agentId: string, tool: string }` are dropped one by one for
+ * the same reason.
+ */
+export function parsePreGrants(json: string | null): readonly PreGrant[] {
+  if (json === null || json === '') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  const grants: PreGrant[] = [];
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    const agentId = record['agentId'];
+    const tool = record['tool'];
+    if (typeof agentId !== 'string' || agentId === '') continue;
+    if (typeof tool !== 'string' || tool === '') continue;
+    grants.push({ agentId, tool });
+  }
+  return grants;
 }
 
 /**
@@ -241,17 +279,28 @@ export function createAssignmentRepository(
 
   const ownColumns =
     'created_by, parent_assignment_id, lead_agent_id, write, artifact_path, ' +
-    'pattern_config_json, phase, halt_reason, updated_at';
+    'pattern_config_json, pre_grants_json, phase, halt_reason, updated_at';
 
   const selectOwn = db.prepare<[string], RawRow>(
     `SELECT ${ownColumns} FROM assignments WHERE id = ?`,
   );
   const applyOwn = db.prepare<
-    [string, string | null, string | null, number, string | null, string, string, string, string]
+    [
+      string,
+      string | null,
+      string | null,
+      number,
+      string | null,
+      string,
+      string,
+      string,
+      string,
+      string,
+    ]
   >(
     'UPDATE assignments SET created_by = ?, parent_assignment_id = ?, lead_agent_id = ?, ' +
-      'write = ?, artifact_path = ?, pattern_config_json = ?, phase = ?, updated_at = ? ' +
-      'WHERE id = ?',
+      'write = ?, artifact_path = ?, pattern_config_json = ?, pre_grants_json = ?, phase = ?, ' +
+      'updated_at = ? WHERE id = ?',
   );
   const setPhaseStatement = db.prepare<[string, string | null, string, string]>(
     'UPDATE assignments SET phase = ?, halt_reason = ?, updated_at = ? WHERE id = ?',
@@ -323,6 +372,7 @@ export function createAssignmentRepository(
       write: own.write !== 0,
       artifactPath: own.artifact_path,
       patternConfigJson: own.pattern_config_json,
+      preGrantsJson: own.pre_grants_json,
       phase: own.phase,
       haltReason: own.halt_reason,
       updatedAt: own.updated_at,
@@ -350,6 +400,11 @@ export function createAssignmentRepository(
       input.write ? 1 : 0,
       input.artifactPath ?? null,
       JSON.stringify(input.patternConfig ?? {}),
+      // Written once, at creation, and never rewritten: a pre-grant is the
+      // answer the user gave in the dialog, and an assignment that could grow
+      // new ones after the fact would be the Always-allow memory with a
+      // different name (§2.3, WO4 §2).
+      JSON.stringify(input.preGrants ?? []),
       input.phase,
       now,
       created.id,

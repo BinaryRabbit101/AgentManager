@@ -137,6 +137,8 @@ export const REFUSAL_CODES = [
   /** §2.3 */ 'no_members',
   /** §2.3 */ 'work_item_not_found',
   /** §2.3 */ 'work_item_cross_project',
+  /** §2.3 — a pre-grant naming an agent who holds no seat here (WO4 §2). */
+  'pre_grant_not_a_member',
 ] as const;
 
 export type RefusalCode = (typeof REFUSAL_CODES)[number];

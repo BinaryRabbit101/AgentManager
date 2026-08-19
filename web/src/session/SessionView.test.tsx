@@ -17,12 +17,7 @@ import { describe, expect, it } from 'vitest';
 
 import { anAgent, json, mount, type Responder } from '../../test/harness';
 import { App } from '../App';
-import type {
-  QuestionCard,
-  SessionRecord,
-  SessionUsageTotals,
-  TranscriptLine,
-} from '../api/types';
+import type { QuestionCard, SessionRecord, SessionUsageTotals, TranscriptLine } from '../api/types';
 
 import { FORBIDDEN_USAGE_STRINGS } from './UsageRail';
 

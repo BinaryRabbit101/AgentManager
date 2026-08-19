@@ -593,3 +593,30 @@
     min-height: 44px;
   }
 }
+
+/*
+  "2 tool calls denied — Write" on a completed turn (WO4 addendum §5).
+
+  Warn-toned like .turn__status, and deliberately a sibling of it rather than a
+  variant: a denial is orthogonal to how the turn ended. The incident this comes
+  from had a turn that ended "reported" — the happy path — with the write that
+  mattered refused, so the two lines can and do appear together.
+*/
+.turn__denials {
+  margin: var(--space-1) 0;
+  color: var(--warn);
+  font-size: var(--font-size-meta);
+  font-weight: var(--weight-semibold);
+}
+
+/*
+  One line under the gated call saying who is asking and what a deny costs
+  (WO4 addendum §6). Muted: it is context for the decision, not a warning about
+  it — the point is an informed deny, not a nag.
+*/
+.question-card__consequence {
+  margin: var(--space-1) 0 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-meta);
+  text-wrap: pretty;
+}

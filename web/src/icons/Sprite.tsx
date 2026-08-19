@@ -44,7 +44,13 @@ export function Sprite(): ReactElement {
         the screen the app opens on, and the rail's first item is the way back
         to it from anywhere.
       */}
-      <symbol id="icon-home" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <symbol
+        id="icon-home"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
         <path d="M2 7 8 2l6 5v6.5H2z" strokeLinejoin="round" />
         <path d="M6.5 13.5v-4h3v4" strokeLinejoin="round" />
       </symbol>

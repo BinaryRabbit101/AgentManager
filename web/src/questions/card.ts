@@ -162,6 +162,51 @@ function firstLine(value: string): string {
 // ---------------------------------------------------------------------------
 
 /** Runner's option id. The UI matches it; it never invents it (§11.2). */
+/**
+ * Who is asking and what a deny costs — WO4 addendum §6's "one line".
+ *
+ * Two facts, both the server's, both optional:
+ *
+ * - **The seat.** "Allow the agent to use Bash?" is unanswerable in a pair
+ *   because it does not say *which* agent's work stops. `seatRole` and
+ *   `pattern` come off the card's context, which the runner fills from the
+ *   assignment context it already fetched at launch.
+ * - **The artifact.** Only when the gated input itself names
+ *   `scope.artifactPath`. That is a fact about the call being approved, not a
+ *   prediction about the agent — a drafter denied `Bash` may well write its
+ *   draft with `Write` instead, and a card that said otherwise would frighten
+ *   a user out of a correct deny. The broader dependency ("this seat probably
+ *   needs this tool to finish") is deliberately left for a later WO.
+ *
+ * `undefined` when the card carries neither, which is every card raised before
+ * the runner started sending them and every `AskUserQuestion`.
+ */
+export function denyConsequence(card: QuestionCard): string | undefined {
+  const seatRole = card.context?.seatRole;
+  const pattern = card.context?.pattern;
+  const round = card.context?.round;
+  const artifactPath = card.context?.artifactPath;
+
+  const parts: string[] = [];
+  if (seatRole !== undefined && seatRole !== '') {
+    const where =
+      pattern === undefined || pattern === '' || pattern === 'solo'
+        ? `the ${seatRole} seat`
+        : `the ${seatRole} seat of this ${pattern}`;
+    // The round only when there is one. A solo has no driver and therefore no
+    // turn rows (orchestrator §2.3), and "round undefined" is not a sentence.
+    parts.push(
+      typeof round === 'number' && round > 0
+        ? `Asked by ${where}, round ${String(round)}.`
+        : `Asked by ${where}.`,
+    );
+  }
+  if (artifactPath !== undefined && artifactPath !== '') {
+    parts.push(`Denying this stops ${artifactPath} being written by this call.`);
+  }
+  return parts.length === 0 ? undefined : parts.join(' ');
+}
+
 export const ALLOW_ALWAYS_OPTION_ID = 'allow-always';
 
 /**

@@ -1,0 +1,21 @@
+-- 0005_turn_denied_tools.sql — *which* tools were denied, not only how many
+-- (orchestrator DESIGN §8.1, §11.2; WO4 addendum §5).
+--
+-- 0002 stored `permission_denials` because the breaker needed a number. The
+-- number turned out to be the wrong grain for a human: the 2026-08-19 incident
+-- run finished with a clean `git status` and a drafter that reported success,
+-- and the evidence that a denied write was the cause sat in a count nobody
+-- rendered. "2 tool calls denied" is a chip; "`Write` denied" is a diagnosis.
+--
+-- The names exist already — the SDK's `result.permission_denials` carries
+-- `tool_name` per entry and runner has been discarding everything but `.length`
+-- since M8. This column is where the rest of that array lands.
+--
+-- Nullable rather than `NOT NULL DEFAULT '[]'`, and the distinction is
+-- load-bearing: NULL means "this row predates the names" and the UI falls back
+-- to the count, while `'[]'` would claim a session recorded no denied tools.
+-- A turn written before this migration must not be able to say that.
+--
+-- Applied inside the migration runner's transaction: no BEGIN/COMMIT and no
+-- `IF NOT EXISTS`, per foundation §1.3 and the conventions of 0001-0004.
+ALTER TABLE assignment_turns ADD COLUMN permission_denied_tools TEXT;

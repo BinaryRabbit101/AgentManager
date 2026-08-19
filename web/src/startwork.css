@@ -171,3 +171,99 @@
   bottom: 0;
   background: var(--surface-raised);
 }
+
+/*
+  The permission preflight (WO4 §1).
+
+  A visible section rather than a disclosure: the whole point is that answering
+  the gates costs one second here instead of N stalls mid-run, and a chip list
+  nobody opens saves nobody anything. Each row is one seat, its chips wrap, and
+  the ticked state is an ordinary checkbox so the keyboard and the screen reader
+  get it for free.
+*/
+.startwork__preflight-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: baseline;
+  margin-top: var(--space-2);
+}
+
+.startwork__preflight-who {
+  font-weight: var(--weight-semibold);
+  font-size: var(--font-size-meta);
+}
+
+.startwork__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.startwork__chips .launch__toggle {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill, 999px);
+  font-size: var(--font-size-meta);
+}
+
+/* "already allowed" is why the box arrived ticked; it never shouts. */
+.startwork__chip-note {
+  color: var(--text-muted);
+}
+
+.startwork__pattern-options {
+  margin-top: var(--space-3);
+}
+
+/*
+  The permission preflight (WO4 §1).
+
+  A visible section rather than a disclosure: the whole point is that answering
+  the gates costs one second here instead of N stalls mid-run, and a chip list
+  nobody opens saves nobody anything. Each row is one seat, its chips wrap, and
+  the ticked state is an ordinary checkbox so the keyboard and the screen reader
+  get it for free.
+*/
+.startwork__preflight-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: baseline;
+  margin-top: var(--space-2);
+}
+
+.startwork__preflight-who {
+  font-weight: var(--weight-semibold);
+  font-size: var(--font-size-meta);
+}
+
+.startwork__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.startwork__chips .launch__toggle {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: var(--font-size-meta);
+}
+
+/* "already allowed" is why the box arrived ticked; it never shouts. */
+.startwork__chip-note {
+  color: var(--text-muted);
+}
+
+.startwork__pattern-options {
+  margin-top: var(--space-3);
+}

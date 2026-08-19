@@ -184,7 +184,8 @@ POST /api/sessions | RunnerService.startSession()
   ├─ 2. scheduler waits ────────── until weighted capacity is free and no rate-limit cool-down
   │
   ├─ 3. assignment context ─────── orchestrator.getAssignmentContext(assignmentId)
-  │                                 → { role, write, scopeRules, tokenBudget, tokensUsed, status }
+  │                                 → { role, write, scopeRules, tokenBudget, tokensUsed, status,
+  │                                     preGrantedTools, artifactPath }
   ├─ 4. workspace lease ────────── projects.acquireWorkspace(projectId, assignmentId,
   │                                    { write, scopePaths })          ← once per assignment
   ├─ 5. launch context ─────────── projects.getEffectiveLaunchContext(projectId, assignmentId)
@@ -408,6 +409,31 @@ where permissions are computed — it is the place where an *undecided* call is 
 with roster's default-deny as the terminal fallback when no human is reachable. Runner matches no
 rule patterns and consults no rule set; roster remains the only composer. This is recorded as a
 clarification to roster in §15.4, not a change to permission composition.
+
+**A gate the user already answered does not get asked** *(added 2026-08-19, WO4 §2)*. The
+assignment context (§3.1 step 3) carries `preGrantedTools` — bare tool names, already scoped to
+`(assignment, agent)` by orchestrator §2.3 — and `canUseTool` returns *Allow once*'s exact result for
+a matching call instead of raising a card. This does **not** breach "runner matches no rule patterns
+and consults no rule set": a pre-grant is a set of **answers**, matched by `===` on the tool name,
+and the most an answer can do is stand in for a card the compiled permissions had already decided to
+raise. Nothing is widened — a call only reaches this callback after surviving the deny rules and
+failing to be auto-approved. `AskUserQuestion` is excluded unconditionally: it is not a tool gate
+(§5.3), and pre-answering it would silently discard the agent's *question* rather than a permission
+prompt, which is the same reason roster refuses an allow rule on it. Every pre-allowed call is
+recorded — a `session.diagnostic` (`tool_pre_allowed`, §10) and a transcript `system` line — because
+a permission that leaves no trace is a permission nobody can audit.
+
+**A tool gate says which seat is asking** *(added 2026-08-19, WO4 addendum §6)*. The card's
+`context` gains `seatRole` and `pattern` from the assignment context, and `artifactPath` **only**
+when the gated input itself names `scope.artifactPath` — a fact about the call being approved, not a
+prediction about the agent. The round is orchestrator's to stamp (its §6.1), because runner has no
+turn rows.
+
+**The denied calls' names travel with the count** *(added 2026-08-19, WO4 addendum §5)*.
+`session.ended` carries `permissionDeniedTools` beside `permissionDenials`, read from the SDK's own
+`result.permission_denials` — the names have always been in that array and runner had been keeping
+only its length. The field is **omitted** when the session recorded none, so a consumer can tell
+"nothing was denied" from "this build did not say".
 
 **"Always allow" is offered, and it is a roster edit** *(owner decision, 2026-08-18 — supersedes
 this paragraph's original "deliberately not offered")*. The original rationale is unchanged and is
@@ -921,7 +947,7 @@ All on foundation's typed bus (§6.5), envelope `{ type, ts, ids, payload, persi
 | `session.question.answered` | ✔ | `{ questionId, answeredVia, latencyMs, delivery: 'inline'\|'after-park', decision }` |
 | `session.paused` | ✔ | `{ reason, resumable, questionId? }` |
 | `session.resumed` | ✔ | `{ mode: 'same-session'\|'new-session', resumedFrom, sdkSessionId, priorSdkSessionId }` |
-| `session.ended` | ✔ | `{ status, exitReason, turns, durationMs, totals, costUsdEstimate, permissionDenials, summary, transcriptBytes }` |
+| `session.ended` | ✔ | `{ status, exitReason, turns, durationMs, totals, costUsdEstimate, permissionDenials, permissionDeniedTools?, summary, transcriptBytes }` — `permissionDeniedTools` is present only when the session recorded at least one (WO4 addendum §5) |
 | `session.orphaned` | ✔ | `{ lastSeq, sdkSessionId, resumable, reason }` |
 | `session.diagnostic` | ✔ | `{ severity, code, message }` — compile diagnostics, MCP `needs-auth`, `dontAsk` bridge disabled |
 | `runner.queue.changed` | ✖ | `{ running, queued, blocked, capacity, cooling }` |
@@ -1185,11 +1211,19 @@ These are runner's binding outputs. Orchestrator, remote, and UI design against 
 2. **Runner never mints assignments.** `startSession` requires an existing, `open` `assignmentId`
    (§14, D9).
 3. **`AssignmentContext`** — orchestrator must provide
-   `getAssignmentContext(assignmentId): Promise<{ id, pattern, status, role?, write: boolean,
-   scopeRules: { allow?: string[]; deny?: string[]; ask?: string[] }, tokenBudget: number | null,
-   tokensUsed: number, roundCap, roundsUsed }>`.
+   `getAssignmentContext(assignmentId, { agentId? }): Promise<{ id, pattern, status, role?, write:
+   boolean, scopeRules: { allow?: string[]; deny?: string[]; ask?: string[] }, tokenBudget: number |
+   null, tokensUsed: number, roundCap, roundsUsed, preGrantedTools: string[], artifactPath: string |
+   null }>`.
    `write` is an **assignment** property (projects §4.1 leases on write-capability, and a plan/review
    assignment must not take the write hold). `scopeRules` are raw rule strings for roster to compose.
+
+   The optional `agentId` and the last two fields arrived with WO4 (2026-08-19). `preGrantedTools` is
+   already filtered to the named seat — orchestrator §2.3 scopes a pre-grant to `(assignment, agent,
+   tool)` and returns none when no agent is named, because guessing a seat costs a prompt addendum
+   while guessing a permission costs a gate somebody wanted. `artifactPath` is carried for exactly one
+   purpose: naming it on a permission card whose input targets that file (§5.1). Runner does not read,
+   write or enforce it.
 
    `scopeRules` was a flat `string[]` (an allow-list only), which cannot express a genuinely read-only
    assignment — orchestrator raised this (orchestrator §17, R2). It is now the same three buckets

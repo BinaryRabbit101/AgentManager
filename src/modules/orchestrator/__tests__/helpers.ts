@@ -448,6 +448,8 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     runner: () => runner,
     inbox: () => built.inbox,
     toolset: () => built.toolset,
+    // The read model sums the denial total off these rows (WO4 addendum §5).
+    turns,
   };
   const service = createAssignmentService(serviceOptions);
 

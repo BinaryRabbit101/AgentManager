@@ -317,8 +317,12 @@ describe('getAssignmentContext — runner launch-chain step 3 (M1 acceptance 2)'
     const context = await h.service.getAssignmentContext(assignmentId);
     expect(Object.keys(context).sort()).toEqual(
       [
+        'artifactPath',
         'id',
         'pattern',
+        // Already filtered to the seat the caller named, and empty when it
+        // named none (§2.3, WO4 §2).
+        'preGrantedTools',
         'role',
         'roundCap',
         'roundsUsed',
@@ -336,6 +340,8 @@ describe('getAssignmentContext — runner launch-chain step 3 (M1 acceptance 2)'
       role: 'implementer',
       write: true,
       scopeRules: {},
+      preGrantedTools: [],
+      artifactPath: null,
       tokenBudget: null,
       tokensUsed: 0,
       roundCap: null,
@@ -695,5 +701,136 @@ describe('reads and patches', () => {
       tokenBudget: 50_000,
       goal: 'new',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §2.3's pre-grants — WO4 §2
+// ---------------------------------------------------------------------------
+
+/**
+ * "A pre-granted tool for that agent **in that assignment** proceeds without a
+ * card. Scope is the assignment, not the roster."
+ *
+ * Everything below is about that sentence's three words: *that* agent, *that*
+ * assignment, *that* tool. A pre-grant that leaked across any of the three
+ * would be a standing permission nobody granted, which is the failure mode
+ * roster's Always-allow is deliberately louder about.
+ */
+describe('assignment-scoped pre-grants (§2.3; WO4 §2)', () => {
+  it('persists what creation was given and returns it on the view', async () => {
+    const h = open({ agents: [ADA, SAM] });
+    const created = await h.service.createAssignment({
+      projectId: PROJECT_ID,
+      pattern: 'pair',
+      goal: 'Improve the telemetry page',
+      members: [
+        { agentId: 'ada', role: 'architect' },
+        { agentId: 'sam', role: 'skeptic' },
+      ],
+      preGrants: [
+        { agentId: 'ada', tool: 'Bash' },
+        { agentId: 'sam', tool: 'Read' },
+      ],
+      autoStart: false,
+    });
+
+    expect(h.service.get(created.assignmentId).preGrants).toEqual([
+      { agentId: 'ada', tool: 'Bash' },
+      { agentId: 'sam', tool: 'Read' },
+    ]);
+  });
+
+  it('collapses a repeated chip rather than refusing it', async () => {
+    const h = open({ agents: [ADA] });
+    const created = await h.service.createSolo({
+      projectId: PROJECT_ID,
+      agentId: 'ada',
+      prompt: 'go',
+      preGrants: [
+        { agentId: 'ada', tool: 'Bash' },
+        { agentId: 'ada', tool: 'Bash' },
+      ],
+    });
+
+    // Two clients ticking one box is one intent expressed twice — the same
+    // reading roster's `allowRule` gives a repeated rule (roster §6.2).
+    expect(h.service.get(created.assignmentId).preGrants).toEqual([
+      { agentId: 'ada', tool: 'Bash' },
+    ]);
+  });
+
+  it('refuses a pre-grant naming an agent with no seat here', async () => {
+    const h = open({ agents: [ADA, SAM] });
+    await expect(
+      h.service.createAssignment({
+        projectId: PROJECT_ID,
+        pattern: 'pair',
+        members: [
+          { agentId: 'ada', role: 'architect' },
+          { agentId: 'sam', role: 'skeptic' },
+        ],
+        preGrants: [{ agentId: 'nobody', tool: 'Bash' }],
+        autoStart: false,
+      }),
+    ).rejects.toMatchObject({
+      refusals: [expect.objectContaining({ code: 'pre_grant_not_a_member' }) as unknown],
+    });
+  });
+
+  it('hands the launch chain only the named seat’s tools', async () => {
+    const h = open({ agents: [ADA, SAM] });
+    const created = await h.service.createAssignment({
+      projectId: PROJECT_ID,
+      pattern: 'pair',
+      members: [
+        { agentId: 'ada', role: 'architect' },
+        { agentId: 'sam', role: 'skeptic' },
+      ],
+      preGrants: [
+        { agentId: 'ada', tool: 'Bash' },
+        { agentId: 'sam', tool: 'Read' },
+      ],
+      autoStart: false,
+    });
+
+    const forAda = await h.service.getAssignmentContext(created.assignmentId, { agentId: 'ada' });
+    expect(forAda.preGrantedTools).toEqual(['Bash']);
+
+    // Ada's grant is not Sam's. This is the whole point of the scope.
+    const forSam = await h.service.getAssignmentContext(created.assignmentId, { agentId: 'sam' });
+    expect(forSam.preGrantedTools).toEqual(['Read']);
+
+    // And a caller that names nobody gets nothing: `role` may be inferred from a
+    // sole member, a permission never is.
+    const unnamed = await h.service.getAssignmentContext(created.assignmentId);
+    expect(unnamed.preGrantedTools).toEqual([]);
+  });
+
+  it('does not reach a second assignment for the same agent', async () => {
+    const h = open({ agents: [ADA] });
+    const granted = await h.service.createSolo({
+      projectId: PROJECT_ID,
+      agentId: 'ada',
+      prompt: 'the one with the grant',
+      preGrants: [{ agentId: 'ada', tool: 'Bash' }],
+    });
+    const plain = await h.service.createSolo({
+      projectId: PROJECT_ID,
+      agentId: 'ada',
+      prompt: 'the one without',
+    });
+
+    expect(
+      (await h.service.getAssignmentContext(granted.assignmentId, { agentId: 'ada' }))
+        .preGrantedTools,
+    ).toEqual(['Bash']);
+    // It expires with the assignment because it *is* the assignment's. Nothing
+    // about the agent changed, which is the difference from Always-allow.
+    expect(
+      (await h.service.getAssignmentContext(plain.assignmentId, { agentId: 'ada' }))
+        .preGrantedTools,
+    ).toEqual([]);
+    expect(h.service.get(plain.assignmentId).preGrants).toEqual([]);
   });
 });

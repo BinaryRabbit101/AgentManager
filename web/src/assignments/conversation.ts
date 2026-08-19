@@ -145,6 +145,29 @@ export function exitReasonWord(reason: string): string {
 }
 
 /**
+ * "2 tool calls denied — Write, Bash", or `undefined` when none were.
+ *
+ * WO4 addendum §5: a turn that reported success while its main deliverable was
+ * refused looks exactly like a turn that succeeded, and the count that would
+ * have said otherwise was recorded and rendered nowhere. Silent at zero, for
+ * the reason every other note here is silent on the happy path.
+ *
+ * The names are appended **only when the row has them**. An older row carries a
+ * count and a `null` list, and inventing "and we don't know which" for it would
+ * be longer than the fact it is reporting.
+ */
+export function denialNote(turn: ConversationTurnEntry): string | undefined {
+  const denied = turn.permissionDenials;
+  if (typeof denied !== 'number' || denied <= 0) return undefined;
+  const headline = `${String(denied)} tool call${denied === 1 ? '' : 's'} denied`;
+  const names = turn.permissionDeniedTools;
+  if (names === null || names === undefined || names.length === 0) return headline;
+  // Deduplicated: three denied `Bash` calls are one fact about `Bash`, and the
+  // count above already carries "three".
+  return `${headline} — ${[...new Set(names)].join(', ')}`;
+}
+
+/**
  * §10.2: "Turn status is shown when it is **not** the happy path."
  *
  * `reported` and `running` return `undefined` — a chip saying "this went fine"
@@ -157,9 +180,10 @@ export function exitReasonWord(reason: string): string {
  */
 export function turnStatusNote(turn: ConversationTurnEntry): string | undefined {
   const status: TurnStatus = turn.status;
-  const because = turn.exitReason === null || turn.exitReason === undefined
-    ? ''
-    : ` — ${exitReasonWord(turn.exitReason)}`;
+  const because =
+    turn.exitReason === null || turn.exitReason === undefined
+      ? ''
+      : ` — ${exitReasonWord(turn.exitReason)}`;
   switch (status) {
     case 'unstructured':
       return 'finished without a structured report';
@@ -350,12 +374,28 @@ export interface AssignmentBanner {
   readonly linkToQuestions: boolean;
 }
 
+/**
+ * " · 3 tool calls were denied while this ran." — or nothing (addendum §5).
+ *
+ * On the completion and halt banners rather than only on the turn cards,
+ * because those two are read *at the moment the result is judged* and a per-turn
+ * chip three scrolls up is not in that moment. Leading separator included so
+ * the caller concatenates rather than deciding about punctuation.
+ */
+export function assignmentDenialNote(assignment: AssignmentView): string {
+  const total = assignment.permissionDenials;
+  if (typeof total !== 'number' || total <= 0) return '';
+  return ` · ${String(total)} tool call${total === 1 ? ' was' : 's were'} denied while this ran.`;
+}
+
 export function bannerFor(assignment: AssignmentView): AssignmentBanner | undefined {
   if (assignment.phase === 'halted') {
     return {
       tone: 'danger',
       heading: `Halted — ${haltWord(assignment.haltReason)}`,
-      detail: 'Answer the card that resolves it, or close the assignment.',
+      detail: `Answer the card that resolves it, or close the assignment.${assignmentDenialNote(
+        assignment,
+      )}`,
       linkToQuestions: true,
     };
   }
@@ -373,8 +413,10 @@ export function bannerFor(assignment: AssignmentView): AssignmentBanner | undefi
       heading: 'Converged',
       detail:
         assignment.artifactPath === null
-          ? 'The seats agreed and the assignment closed.'
-          : `The seats agreed. The artifact is ${assignment.artifactPath}.`,
+          ? `The seats agreed and the assignment closed.${assignmentDenialNote(assignment)}`
+          : `The seats agreed. The artifact is ${
+              assignment.artifactPath
+            }.${assignmentDenialNote(assignment)}`,
       linkToQuestions: false,
     };
   }

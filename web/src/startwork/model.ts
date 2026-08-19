@@ -230,6 +230,8 @@ export interface SoloRequest {
   readonly role?: string;
   readonly write?: true;
   readonly workItemIds?: readonly string[];
+  /** Gates pre-answered in the dialog (WO4 §2). Omitted when nothing was ticked. */
+  readonly preGrants?: readonly PreGrant[];
   readonly confirmRemoteAccess?: true;
 }
 
@@ -246,6 +248,7 @@ export function soloRequest(input: {
   readonly role: string | undefined;
   readonly write: boolean;
   readonly workItemIds: readonly string[];
+  readonly preGrants: readonly PreGrant[];
   readonly confirmRemoteAccess: boolean;
 }): SoloRequest {
   return {
@@ -258,6 +261,10 @@ export function soloRequest(input: {
     // item to `in_progress` server-side — the UI never sets a status it does
     // not own (§4).
     ...(input.workItemIds.length === 0 ? {} : { workItemIds: input.workItemIds }),
+    // Omitted rather than sent empty: a body that always carries the key would
+    // make "nothing was pre-allowed" indistinguishable from "this client does
+    // not do pre-grants" on the server side.
+    ...(input.preGrants.length === 0 ? {} : { preGrants: input.preGrants }),
     ...(input.confirmRemoteAccess ? { confirmRemoteAccess: true as const } : {}),
   };
 }
@@ -270,6 +277,7 @@ export interface PatternRequest {
   readonly scope: { readonly paths: readonly string[]; readonly artifactPath?: string };
   readonly roundCap?: number;
   readonly tokenBudget?: number;
+  readonly preGrants?: readonly PreGrant[];
   readonly autoStart: false;
   readonly confirmRemoteAccess?: true;
 }
@@ -299,6 +307,7 @@ export function patternRequest(input: {
   readonly artifactPath: string;
   readonly roundCap: string;
   readonly tokenBudget: string;
+  readonly preGrants: readonly PreGrant[];
   readonly confirmRemoteAccess: boolean;
 }): PatternRequest {
   return {
@@ -312,6 +321,7 @@ export function patternRequest(input: {
     },
     ...(input.roundCap === '' ? {} : { roundCap: Number(input.roundCap) }),
     ...(input.tokenBudget === '' ? {} : { tokenBudget: Number(input.tokenBudget) }),
+    ...(input.preGrants.length === 0 ? {} : { preGrants: input.preGrants }),
     autoStart: false,
     ...(input.confirmRemoteAccess ? { confirmRemoteAccess: true as const } : {}),
   };
@@ -346,4 +356,93 @@ export function startBlocker(input: {
     return 'This pattern needs a token budget — it has no default.';
   }
   return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// The preflight and the prerequisites (WO4 §1, §3)
+// ---------------------------------------------------------------------------
+
+/**
+ * One gate the user pre-answered, exactly as orchestrator's create call takes it.
+ *
+ * Scoped to `(assignment, agent, tool)` server-side: the client sends the two
+ * halves it knows, and the assignment supplies the third by being the row the
+ * grant is stored on. It is deliberately **not** a permission rule — the chip
+ * says "do not stop and ask about this tool", and roster stays the only thing
+ * that decides what the tool may do when it runs.
+ */
+export interface PreGrant {
+  readonly agentId: string;
+  readonly tool: string;
+}
+
+/** The key the dialog holds a ticked chip under. Two fields, one string. */
+export function preGrantKey(agentId: string, tool: string): string {
+  return `${agentId}::${tool}`;
+}
+
+/**
+ * The ticked chips as the create call's `preGrants`, in a stable order.
+ *
+ * Sorted rather than insertion-ordered, because the set is what matters and a
+ * test asserting on a request body should not have to know which chip the user
+ * happened to click first.
+ */
+export function preGrantList(ticked: ReadonlySet<string>): readonly PreGrant[] {
+  return [...ticked].sort().flatMap((key) => {
+    const split = key.indexOf('::');
+    if (split <= 0) return [];
+    return [{ agentId: key.slice(0, split), tool: key.slice(split + 2) }];
+  });
+}
+
+/**
+ * The slug half of §3's default artifact path: the goal's first words.
+ *
+ * Lowercased, non-alphanumerics collapsed to single hyphens, capped at five
+ * words so a paragraph-long goal does not become a directory nobody can type.
+ * An empty or symbol-only goal yields `assignment`, because the path has to be
+ * *something*: `docs/assignments//DRAFT.md` is not an editable default, it is a
+ * broken one.
+ */
+export function assignmentSlug(goal: string): string {
+  const words = goal
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, ' ')
+    .trim()
+    .split(' ')
+    .filter((word) => word !== '')
+    .slice(0, 5);
+  return words.length === 0 ? 'assignment' : words.join('-');
+}
+
+/**
+ * §3's prefill: `docs/assignments/<slug>-<shortId>/DRAFT.md`.
+ *
+ * The short id is the caller's rather than this function's, so the value is
+ * pure and a test can assert the whole string. It is there because two
+ * assignments started from the same goal on the same project would otherwise
+ * draft over each other's file — and the second one silently, since WO2's pair
+ * guard only checks that *a* file is at the path, not that this run wrote it.
+ *
+ * Editable and never empty-blocking: the dialog seeds the field with this and
+ * the user may replace it with anything, including a path in another tree.
+ */
+export function defaultArtifactPath(goal: string, shortId: string): string {
+  const suffix = shortId === '' ? '' : `-${shortId}`;
+  return `docs/assignments/${assignmentSlug(goal)}${suffix}/DRAFT.md`;
+}
+
+/**
+ * A short tail for the artifact directory, distinct per opened dialog.
+ *
+ * Not a ULID: this is a directory name a human reads and types, and the
+ * assignment's real id is 26 characters. Six base-36 characters is two billion
+ * values, which is far more than the number of assignments that will ever share
+ * one goal's first five words.
+ */
+export function shortAssignmentId(random: () => number = Math.random): string {
+  return Math.floor(random() * 36 ** 6)
+    .toString(36)
+    .padStart(6, '0');
 }

@@ -123,10 +123,7 @@ function serving(options: Options = {}): {
         : json(card);
     }
     if (path.endsWith('/permissions/allow')) {
-      const agentId = path.slice(
-        '/api/roster/agents/'.length,
-        -'/permissions/allow'.length,
-      );
+      const agentId = path.slice('/api/roster/agents/'.length, -'/permissions/allow'.length);
       const body: unknown =
         typeof init.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined;
       allowCalls.push({ agentId, body });

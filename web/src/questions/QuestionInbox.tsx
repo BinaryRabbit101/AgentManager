@@ -30,11 +30,7 @@ import type { QuestionCard, QuestionListView, QuestionStatus } from '../api/type
 import { useServices } from '../app/AppContext';
 import { useAppStore } from '../state/store';
 
-import {
-  alwaysAllowFailedMessage,
-  alwaysAllowRememberedMessage,
-  type DurableAllow,
-} from './card';
+import { alwaysAllowFailedMessage, alwaysAllowRememberedMessage, type DurableAllow } from './card';
 import { QuestionCardView } from './QuestionCardView';
 
 /**

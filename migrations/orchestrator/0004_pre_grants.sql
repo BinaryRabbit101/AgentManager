@@ -1,0 +1,24 @@
+-- 0004_pre_grants.sql — the gates the user pre-answered in the Start-work
+-- dialog (orchestrator DESIGN §2.1, §2.3; WO4 §2).
+--
+-- A pre-grant is a permission gate answered *before* the run instead of during
+-- it: "this agent, this tool, this assignment — do not stop and ask". It is
+-- deliberately narrower than roster's Always-allow memory, which is a standing
+-- edit to the agent's baseline. A pre-grant expires with the assignment row and
+-- never widens what roster compiled: it can only pre-answer a card the compiled
+-- permissions would have raised.
+--
+-- A JSON column rather than a table, and the reason is foundation §1.1's rule
+-- of thumb read honestly. The set is written once, at creation, as a whole; it
+-- is never queried by predicate — the only reader is `getAssignmentContext`,
+-- which already hydrates this exact row for the launching session and filters
+-- the list in memory. `scope_json` and `pattern_config_json` are the same shape
+-- for the same reason, so this is the element's existing convention rather than
+-- a new mechanism. A join table would buy indexed lookups nothing performs.
+--
+-- `NOT NULL DEFAULT '[]'` so every existing row reads as "nothing pre-granted"
+-- without a backfill, exactly as `pattern_config_json` defaults to '{}'.
+--
+-- Applied inside the migration runner's transaction: no BEGIN/COMMIT and no
+-- `IF NOT EXISTS`, per foundation §1.3 and the conventions of 0001-0003.
+ALTER TABLE assignments ADD COLUMN pre_grants_json TEXT NOT NULL DEFAULT '[]';

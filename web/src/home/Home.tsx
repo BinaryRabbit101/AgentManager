@@ -187,7 +187,11 @@ export function Home(): ReactElement {
         {attention.length === 0 ? null : (
           <ul className="record-list" data-region="attention">
             {attention.map((assignment) => (
-              <li key={assignment.id} className="record-row home-row" data-assignment-id={assignment.id}>
+              <li
+                key={assignment.id}
+                className="record-row home-row"
+                data-assignment-id={assignment.id}
+              >
                 <Link
                   className="record-row__name"
                   to={`/assignments/${encodeURIComponent(assignment.id)}`}
@@ -309,8 +313,8 @@ export function Home(): ReactElement {
           <p className="empty">
             {nothingEverRan ? (
               <>
-                Nothing has finished yet. <Link to="/projects">Launch an agent at a project</Link> to
-                start a run.
+                Nothing has finished yet. <Link to="/projects">Launch an agent at a project</Link>{' '}
+                to start a run.
               </>
             ) : (
               'Nothing has finished yet.'

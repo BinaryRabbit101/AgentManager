@@ -586,13 +586,64 @@ token budget.
   required**: the pattern has no default on purpose (orchestrator §7.2), and an uncapped overseer is an
   unbounded tree.
 
+### Prerequisites are defaults, not questions *(2026-08-19, WO4 §3)*
+
+The minimal path is **pick a project → tick agents → type the task → Start**, and everything a
+pattern adds sits behind one disclosure, **Rounds, budget and scope**, whose summary line prints the
+values it holds — `3 rounds · 400,000 tokens · docs/assignments/…/DRAFT.md`. A collapsed section
+that says nothing is a hidden decision; a collapsed section that prints its values is a default the
+user accepts by not opening it. (It is named for its contents rather than "Options", because step 3
+already has an Options fold and two controls with one accessible name is one name too many.)
+
+- **artifactPath** is prefilled `docs/assignments/<slug>-<shortId>/DRAFT.md` — the goal's first five
+  words, slugified, plus six base-36 characters minted once per opened dialog. It is derived from
+  the task **while the field is untouched**, so the default tracks what the user is typing rather
+  than freezing the empty string the goal was when the pattern was chosen; the first keystroke in
+  the field takes ownership and the derivation stops. The label no longer says "required by this
+  pattern": a field with a value in it that calls itself required reads as a demand rather than as a
+  default. The short id is there because two assignments started from the same goal would otherwise
+  draft over each other's file, and the second one silently — WO2's pair guard checks that *a* file
+  is at the path, not that this run wrote it.
+- **roundCap / tokenBudget** keep the pattern's own defaults from `GET /api/patterns` and are never
+  required fields. The **one** exception is the overseer's token budget, which orchestrator §7.2
+  gives no default on purpose: when it is empty the disclosure is forced open, because hiding the
+  field would hide the reason Start is off.
+
+### The permission preflight *(2026-08-19, WO4 §1)*
+
+When a project and at least one agent are selected, the dialog calls
+`POST /api/roster/agents/:id/validate` **once per seat**, with the assignment's write posture, and
+renders that agent's `gateLiable` tools (roster §9.1) as a short chip list per agent under
+**Permission gates**. Each chip is a checkbox — *Pre-allow for this assignment* — defaulted **ON**
+for a tool roster reports as `remembered` and **OFF** otherwise, with "already allowed" beside the
+ones that arrived ticked so the default explains itself.
+
+One call per agent rather than one for the selection: roster composes per `(agent, project)` and a
+merged answer would be a set no session runs under. The result is *replaced* on every change, never
+merged, so unticking an agent takes its chips with it — a stale entry would put a `preGrant` in the
+create call for an agent with no seat, which the server refuses by name.
+
+It is a **visible section, not a disclosure**, and that is the whole point: the observed pair run had
+two "Allow the agent to use Bash?" cards answered mid-flight, each of which pauses a session and
+costs a trip to the machine. One second in the dialog buys that back; a chip list nobody opens buys
+nothing. It still blocks nothing — every chip has a default, and Start is unaffected.
+
+The ticked chips ride the create call as `preGrants: { agentId, tool }[]` (orchestrator §2.3),
+narrowed to the agents that actually take a seat — the team path seats only the lead. The key is
+**omitted** rather than sent empty when nothing is ticked, so the server can tell "nothing was
+pre-allowed" from "this client does not do pre-grants". A pre-grant is scoped to the assignment and
+expires with it; it never widens the agent's baseline, and the section says so in a sentence.
+
+Any gate that still fires mid-run — a tool nobody predicted, an MCP tool the catalogue does not
+carry — remains a question card, unchanged. This removes the *predictable* interruptions only.
+
 ### Submit
 
 | Shape | Request |
 |---|---|
-| solo | `POST /api/assignments/solo { projectId, agentId, prompt, role?, write?, workItemIds? }` → `{ assignmentId, sessionId }`, then `/sessions/:id` (orchestrator §16.7) |
+| solo | `POST /api/assignments/solo { projectId, agentId, prompt, role?, write?, workItemIds?, preGrants? }` → `{ assignmentId, sessionId }`, then `/sessions/:id` (orchestrator §16.7) |
 | independent | the same call, once per selected agent, same prompt; then the first session |
-| pair | `POST /api/assignments { pattern: 'pair', members: [drafter, critic], goal, scope, roundCap?, tokenBudget?, autoStart: false }` |
+| pair | `POST /api/assignments { pattern: 'pair', members: [drafter, critic], goal, scope, roundCap?, tokenBudget?, preGrants?, autoStart: false }` |
 | team | `POST /api/assignments { pattern: 'overseer', members: [lead], goal, scope, roundCap?, tokenBudget, autoStart: false }` |
 
 A pattern create is **always parked** (`autoStart: false`) and followed by a review step showing every
@@ -1009,6 +1060,11 @@ count; the UI only asks which of the two the header is about. `/assignments` and
 print the same number the same way, from `phase === 'running'`, which is the only in-flight evidence
 a list row is served.
 
+The completion and halt banners append the assignment's **total** denial count when it is
+non-zero — "· 3 tool calls were denied while this ran." — because those two are read at the moment
+the result is judged, and a per-turn chip three scrolls up is not in that moment. Nothing is said
+when the total is zero.
+
 **Body**: rounds as labelled sections, entries within them as a dialogue:
 
 - **Turn** — a chat-style entry attributed by avatar + name + **seat** ("Sam · skeptic"), carrying the
@@ -1017,6 +1073,12 @@ a list row is served.
   as markdown, linked artifacts, tokens, and a **View full session** link to `/sessions/:id`. Turn
   status is shown when it is not the happy path: `unstructured` renders as "finished without a
   structured report", `blocked` as "waiting on a decision", `failed`/`orphaned` with the exit reason.
+  A turn with `permissionDenials > 0` also carries a **warning chip** — "2 tool calls denied — Write,
+  Bash" — naming the tools when the row has them and falling back to the count when it does not
+  (orchestrator §11.2; a row written before that migration says `null`, not `[]`). It is a *sibling*
+  of the status line rather than a variant of it, and deliberately so: a denial is orthogonal to how
+  the turn ended, and the 2026-08-19 incident's drafter ended `reported` — the happy path — with the
+  write that mattered refused. Silent at zero, like every other note here.
 - **Message** — an indented, quieter entry with `from → to`, kind, and body, and the **delivery**
   state rendered distinctly: `inlined`, `read`, `undelivered` and `undeliverable`. Orchestrator §16.5
   requires the distinction and it matters: "I sent it and they ignored me" and "I sent it and they
@@ -1141,6 +1203,7 @@ and the client joins nothing: no roster, project or assignment fetch stands betw
 | **Kind chip** | `question` / `approval_gate` / `budget_halt`, one inbox, three kinds (orchestrator §16.3) |
 | **The call being gated** | `context.toolName` and `context.toolInput` (orchestrator §11.1), directly under the prompt: the tool name as a chip and a one-line summary of the input — the command, the path, the URL — with the whole input behind a disclosure. **"Allow the agent to use Bash?" is not a decision anyone can make**; the whole question is *which* Bash, and a card that withholds it is asking the user to approve something they cannot see. The input is the agent's own and therefore untrusted (§1.4): it goes into the DOM as text, in a container that scrolls itself (§15). |
 | **Attribution** | every recommendation carries its `agentId` **and the role it held**; an engine-raised gate is attributed to **"AgentManager"**, never to an agent (orchestrator §16.2) |
+| **What a deny costs** | one muted line under the gated call, from `context.seatRole` / `context.pattern` / `context.round` and, when present, `context.artifactPath` — *"Asked by the architect seat of this pair, round 2. Denying this stops `docs/…/DRAFT.md` being written by this call."* All four are the server's and the UI derives none of them; the line is absent entirely when the card carries none. The point is an **informed deny**, not a nag: the artifact sentence appears only when the gated input itself names that path, because "this seat probably needs this tool to finish" is a guess, and a card that frightened a user out of a correct deny would be worse than the silence it replaced. (2026-08-19, WO4 addendum §6.) |
 | **Stance ladder** | `blocking | strong | lean | defer` rendered **as the word** — never a number, never a bar, never a percentage (orchestrator §16.1). `blocking` is uppercase and red-marked, `strong` bold, `lean` normal, `defer` muted. Colour is always secondary to the word. |
 | **Order** | the server's order (strength rank, then seat order). The UI does not sort. |
 | **Disagreement / contested** | server-computed flags; `disagreement` renders a divider, `contested` a stronger banner. Never derived client-side. |

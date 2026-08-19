@@ -216,8 +216,8 @@ export function createRunnerModule(
         // orchestrator's when it is on the registry, runner's stub when it is
         // not — resolved per launch for the same reason (§11.3, M3's brief).
         assignmentContext: {
-          getAssignmentContext: (assignmentId) =>
-            assignmentContextProvider(ctx).getAssignmentContext(assignmentId),
+          getAssignmentContext: (assignmentId, options) =>
+            assignmentContextProvider(ctx).getAssignmentContext(assignmentId, options),
         },
         leases,
         secrets: ctx.secrets,

@@ -65,6 +65,7 @@ function row(overrides: Partial<AssignmentRow> = {}): AssignmentRow {
     write: true,
     artifactPath: 'docs/x/DESIGN.md',
     patternConfigJson: '{}',
+    preGrantsJson: '[]',
     phase: 'running',
     haltReason: null,
     updatedAt: null,
@@ -84,6 +85,7 @@ function turn(overrides: Partial<TurnRow> & { seat: string; status: TurnStatus }
     sessionId: `s${String(turnSeq)}`,
     prevSessionId: null,
     permissionDenials: 0,
+    permissionDeniedTools: null,
     report: null,
     outputText: null,
     artifactHash: null,
@@ -418,9 +420,11 @@ describe('no critic turn without an artifact (§3.3, §8.1 `no_artifact`)', () =
   });
 
   it('plans the critic exactly as before when the file is really there', () => {
-    expect(
-      plan([reportedWithNothing({ artifactHash: 'h1' })]),
-    ).toMatchObject({ seat: CRITIC_SEAT, round: 1, prompt: { intent: 'critique' } });
+    expect(plan([reportedWithNothing({ artifactHash: 'h1' })])).toMatchObject({
+      seat: CRITIC_SEAT,
+      round: 1,
+      prompt: { intent: 'critique' },
+    });
   });
 
   it('does not guard an assignment with no artifact path, or one that opted out', () => {
@@ -594,9 +598,7 @@ describe('a blocked seat waits for the user, then resumes (§3.3, §4.4)', () =>
 
   it('re-plans the seat when the answer is stale and no card is open', () => {
     const first = blocked();
-    expect(
-      plan([first], { openQuestion: staleAnswer, hasOpenQuestion: false }),
-    ).toMatchObject({
+    expect(plan([first], { openQuestion: staleAnswer, hasOpenQuestion: false })).toMatchObject({
       seat: DRAFTER_SEAT,
       round: 1,
       prompt: { intent: 'retry', retryOfTurnId: first.id },
@@ -613,9 +615,10 @@ describe('a blocked seat waits for the user, then resumes (§3.3, §4.4)', () =>
   });
 
   it('still waits while a card is open, however stale the last answer is', () => {
-    expect(
-      plan([blocked()], { openQuestion: staleAnswer, hasOpenQuestion: true }),
-    ).toEqual({ wait: true, reason: 'awaiting_answer' });
+    expect(plan([blocked()], { openQuestion: staleAnswer, hasOpenQuestion: true })).toEqual({
+      wait: true,
+      reason: 'awaiting_answer',
+    });
   });
 
   it('retries a blocked seat once per round, then waits rather than spinning', () => {
@@ -670,10 +673,7 @@ function leadState(
   });
 }
 
-function leadPlan(
-  turns: readonly TurnRow[],
-  overrides: Partial<AssignmentState> = {},
-): PlanResult {
+function leadPlan(turns: readonly TurnRow[], overrides: Partial<AssignmentState> = {}): PlanResult {
   return OVERSEER_PATTERN.plan(leadState(turns, overrides));
 }
 
@@ -756,9 +756,7 @@ describe('the overseer’s cadence (M10-2, §3.5)', () => {
   });
 
   it('plans a review round carrying every child that finished, and continues the lead’s session', () => {
-    const decomposed = [
-      leadTurn({ status: 'reported', report: report(), sessionId: 'lead-1' }),
-    ];
+    const decomposed = [leadTurn({ status: 'reported', report: report(), sessionId: 'lead-1' })];
     const finished = child({ id: 'c1' });
     const next = leadPlan(decomposed, { children: [finished] });
     expect(next).toMatchObject({
@@ -786,9 +784,9 @@ describe('the overseer’s cadence (M10-2, §3.5)', () => {
     const fresh = child({ id: 'c2', closedAt: '2026-08-16T13:00:00.000Z' });
 
     expect(childrenAwaitingReview(leadState(turns, { children: [reviewed] }))).toEqual([]);
-    expect(
-      childrenAwaitingReview(leadState(turns, { children: [reviewed, fresh] })),
-    ).toEqual([fresh]);
+    expect(childrenAwaitingReview(leadState(turns, { children: [reviewed, fresh] }))).toEqual([
+      fresh,
+    ]);
     expect(leadPlan(turns, { children: [reviewed, fresh] })).toMatchObject({
       round: 3,
       prompt: { intent: 'review', children: [fresh] },
@@ -849,9 +847,10 @@ describe('the overseer’s cadence (M10-2, §3.5)', () => {
       round: 3,
       prompt: { intent: 'review', children: [] },
     });
-    expect(
-      leadPlan(turns, { children: [reviewed], resumeRequested: true, roundCap: 2 }),
-    ).toEqual({ halt: true, haltReason: 'review_unresolved' });
+    expect(leadPlan(turns, { children: [reviewed], resumeRequested: true, roundCap: 2 })).toEqual({
+      halt: true,
+      haltReason: 'review_unresolved',
+    });
   });
 
   it('halts review_unresolved when the lead reports no verdict at all', () => {

@@ -563,6 +563,15 @@ export interface AssignmentView {
   readonly updatedAt: string | null;
   readonly closedAt: string | null;
   readonly members: readonly AssignmentMember[];
+  /**
+   * Σ of `permission_denials` across this assignment's turns (WO4 addendum §5).
+   *
+   * On the completion and halt banners, so "it finished but was denied X times"
+   * is readable at the moment the result is judged. Optional on the wire for a
+   * core that predates it: absent reads as "not reported", and the banner then
+   * says nothing rather than claiming zero.
+   */
+  readonly permissionDenials?: number;
 }
 
 export interface AssignmentListView {
@@ -633,6 +642,15 @@ export interface ConversationTurnEntry {
    * than the column.
    */
   readonly exitReason: string | null;
+  /**
+   * How many tool calls this turn had denied, and which (WO4 addendum §5).
+   *
+   * `permissionDeniedTools` is `null` on a turn row written before the names
+   * were recorded — the count is then the whole story, and the chip says so
+   * rather than claiming an empty list of names.
+   */
+  readonly permissionDenials?: number;
+  readonly permissionDeniedTools?: readonly string[] | null;
   readonly retryOfTurnId: string | null;
 }
 
@@ -795,6 +813,23 @@ export interface QuestionCard {
     readonly toolInput?: unknown;
     readonly durableRule?: string;
     readonly agentId?: string;
+    /**
+     * Which seat of which collaboration is asking (WO4 addendum §6).
+     *
+     * "Allow the agent to use Bash?" from an unnamed seat in a two-seat pair is
+     * a decision the user makes without knowing whose work they are stopping.
+     */
+    readonly seatRole?: string;
+    readonly pattern?: string;
+    /** The round the asking turn belongs to — stamped by orchestrator, which is
+     *  the only element that has turn rows. */
+    readonly round?: number;
+    /**
+     * Set by the runner **only** when this call's own input names the
+     * assignment's artifact — so denying it provably stops that file being
+     * written, rather than probably.
+     */
+    readonly artifactPath?: string;
   } | null;
   readonly createdAt: string;
   readonly holdUntil: string | null;

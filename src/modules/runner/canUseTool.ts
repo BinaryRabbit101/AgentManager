@@ -174,8 +174,39 @@ export interface QuestionCanUseToolDeps {
   /** `runner.question.expireHours`, carried on the request (§5.2). */
   readonly expireHours: number;
   readonly clock: Clock;
+  /**
+   * Tool gates the user pre-answered for this seat, from the assignment context
+   * (orchestrator §2.3, WO4 §2).
+   *
+   * Bare tool names, already scoped to `(assignment, agent)` by orchestrator.
+   * Matching is `===` on the name and nothing else, which is why the file
+   * header's "runner matches no rule patterns and consults no rule set" is
+   * still true: this is a set of **answers**, not of rules. It cannot widen
+   * anything — a call only reaches here after surviving the deny rules and
+   * failing to be auto-approved, so the most a pre-grant can do is stand in for
+   * the card that call was already going to raise.
+   */
+  readonly preGrantedTools?: readonly string[] | undefined;
+  /**
+   * The seat this session holds, for the card's "which of them is asking" line
+   * (WO4 addendum §6). Absent when the assignment could not name one.
+   */
+  readonly seat?:
+    { readonly role?: string | undefined; readonly pattern?: string | undefined } | undefined;
+  /**
+   * `scope.artifactPath` for this assignment, so a deny can say what it costs
+   * (WO4 addendum §6). Absent when the assignment declares none.
+   */
+  readonly artifactPath?: string | undefined;
   readonly onRaised?: ((raised: RaisedQuestion) => void) | undefined;
   readonly onSettled?: ((settled: SettledQuestion) => void) | undefined;
+  /**
+   * A gate that was answered before it was asked. Called instead of raising a
+   * card, so the decision is still on the record (WO4 §2's "recorded in the
+   * transcript/timeline as pre-allowed") — a permission that leaves no trace is
+   * a permission nobody can audit.
+   */
+  readonly onPreAllowed?: ((preAllowed: { readonly toolName: string }) => void) | undefined;
   /**
    * §5.4 stage 2. Called **before** the denial is returned, with the question
    * still open — the caller closes the query and settles the row `paused` /
@@ -277,6 +308,35 @@ export function createQuestionCanUseTool(deps: QuestionCanUseToolDeps): CanUseTo
       return deny(options.toolUseID, deps.policy.denyMessage);
     }
 
+    // WO4 §2: a gate the user answered in the Start-work dialog does not get
+    // asked again. It sits here, after roster's policy refusal and before any
+    // card-building, because a pre-grant is an *answer* and an answer belongs
+    // exactly where the answer would have arrived.
+    //
+    // `AskUserQuestion` is excluded unconditionally: it is not a tool gate
+    // (§5.1, §5.3) — it is the agent asking the user something, and
+    // pre-answering it would silently discard a question rather than a
+    // permission prompt. Roster refuses an allow rule on it for the same
+    // reason (SDK-NOTES C2).
+    if (toolName !== ASK_USER_QUESTION_TOOL && deps.preGrantedTools?.includes(toolName) === true) {
+      deps.onPreAllowed?.({ toolName });
+      log('info', 'a tool call was pre-allowed for this assignment; no card was raised', {
+        sessionId: deps.sessionId,
+        assignmentId: deps.assignmentId,
+        agentId: deps.agentId,
+        toolName,
+      });
+      // Byte for byte the *Allow once* result (§5.3's tool-gate row): the input
+      // is echoed unchanged and there is no `updatedPermissions`, because
+      // widening the live session's permissions is the composition roster owns.
+      return {
+        behavior: 'allow',
+        updatedInput: input,
+        toolUseID: options.toolUseID,
+        decisionClassification: 'user_temporary',
+      };
+    }
+
     const spec = toolName === ASK_USER_QUESTION_TOOL ? readAskUserQuestion(input) : undefined;
     const askedAt = deps.clock().getTime();
     const holdUntil = new Date(askedAt + deps.holdMs).toISOString();
@@ -300,6 +360,10 @@ export function createQuestionCanUseTool(deps: QuestionCanUseToolDeps): CanUseTo
         ? [ALLOW_ONCE_OPTION, DENY_OPTION]
         : [ALLOW_ONCE_OPTION, ALLOW_ALWAYS_OPTION, DENY_OPTION]);
 
+    // Resolved once: the answer is "does *this* input name the artifact", and
+    // asking twice would let the condition and the value disagree.
+    const artifactAtRisk = artifactWriteTarget(deps.artifactPath, input);
+
     let questionId: string | null = null;
     const request: AskQuestionRequest = {
       sessionId: deps.sessionId,
@@ -322,6 +386,18 @@ export function createQuestionCanUseTool(deps: QuestionCanUseToolDeps): CanUseTo
         // a rule, not a vibe. `agentId` is already on the request, but the card
         // projection does not surface it and the roster edit is addressed to it.
         ...(durableRule === undefined ? {} : { durableRule, agentId: deps.agentId }),
+        // WO4 addendum §6, the non-speculative half: *which* of them is asking.
+        // "Allow the agent to use Bash?" from an unnamed seat in a two-seat pair
+        // is a decision the user makes without knowing whose work they are
+        // stopping.
+        ...(deps.seat?.role === undefined ? {} : { seatRole: deps.seat.role }),
+        ...(deps.seat?.pattern === undefined ? {} : { pattern: deps.seat.pattern }),
+        // The other half, and it is a *fact* rather than a guess: this call
+        // names the artifact the assignment is judged on, so denying it stops
+        // that file being written. Set only when the gated input itself carries
+        // the path — the broader "this agent might have used Bash to write it"
+        // is exactly the speculation the addendum told us not to build.
+        ...(artifactAtRisk === undefined ? {} : { artifactPath: artifactAtRisk }),
       },
       holdUntil,
       expiresAt,
@@ -508,6 +584,47 @@ export function createQuestionCanUseTool(deps: QuestionCanUseToolDeps): CanUseTo
       decisionClassification: 'user_reject',
     };
   }
+}
+
+/**
+ * Whether *this* gated call is the one that writes the assignment's artifact —
+ * WO4 addendum §6, and deliberately the narrow reading of it.
+ *
+ * The addendum asks for "a note when the denied tool is the one the artifact
+ * write depends on", and adds: "if wiring the artifact-dependency hint proves
+ * speculative, ship the seat/turn context alone". So the hint is set only when
+ * the *input in front of the user* names the artifact path — a `Write`/`Edit`
+ * whose `file_path` is that file, or a shell command with the path in it. That
+ * is a fact about the call being approved, not a prediction about the agent.
+ *
+ * What is deliberately **not** inferred: that a drafter which loses `Bash` will
+ * therefore fail to write its artifact by some other route. It might use `Write`
+ * instead, and a card that said otherwise would be wrong in the direction that
+ * scares a user out of a correct deny.
+ *
+ * Path comparison is slash-normalised and case-insensitive, matching
+ * `permissionRules.ts`'s treatment of Windows paths; a substring test is enough
+ * for the shell case because the alternative — parsing a command line to find
+ * its redirection target — is the speculation this function exists to avoid.
+ */
+function artifactWriteTarget(
+  artifactPath: string | undefined,
+  input: Record<string, unknown>,
+): string | undefined {
+  if (artifactPath === undefined || artifactPath.trim() === '') return undefined;
+  const wanted = normaliseForCompare(artifactPath);
+  if (wanted === '') return undefined;
+
+  for (const field of ['file_path', 'path', 'notebook_path', 'command']) {
+    const value = input[field];
+    if (typeof value !== 'string') continue;
+    if (normaliseForCompare(value).includes(wanted)) return artifactPath;
+  }
+  return undefined;
+}
+
+function normaliseForCompare(value: string): string {
+  return value.replaceAll('\\', '/').trim().toLowerCase();
 }
 
 /**

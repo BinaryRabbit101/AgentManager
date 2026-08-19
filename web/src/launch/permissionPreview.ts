@@ -40,9 +40,25 @@ export interface EffectivePermissions {
   readonly elevation: PermissionElevation | null;
 }
 
+/**
+ * One tool that would stop and ask at runtime (roster §6.3, §9.1).
+ *
+ * Roster derives this; the client never re-derives it, for the reason the whole
+ * file exists — deciding "would this gate" needs the compiled policy as well as
+ * the rule set, and a second implementation of that in a browser is a second
+ * implementation of §6.1's evaluation order.
+ */
+export interface GateLiableTool {
+  readonly tool: string;
+  readonly reason: 'ask_rule' | 'not_auto_allowed';
+  /** The agent already carries a rule about this tool on this project. */
+  readonly remembered: boolean;
+}
+
 export interface ValidateResponse {
   readonly effective: EffectivePermissions;
   readonly diagnostics?: readonly Diagnostic[];
+  readonly gateLiable?: readonly GateLiableTool[];
 }
 
 export type PermissionPreview =
@@ -50,6 +66,12 @@ export type PermissionPreview =
       readonly state: 'ready';
       readonly effective: EffectivePermissions;
       readonly diagnostics: readonly Diagnostic[];
+      /**
+       * Empty on a core that predates the field, which reads as "no chips" —
+       * the dialog then behaves exactly as it did before the preflight
+       * existed rather than claiming nothing will gate.
+       */
+      readonly gateLiable: readonly GateLiableTool[];
     }
   /** Roster refused, or answered something that is not a compiled set. */
   | { readonly state: 'failed'; readonly message: string };
@@ -68,10 +90,19 @@ export async function fetchPermissionPreview(
   client: ApiClient,
   agentId: string,
   projectId: string,
+  /**
+   * The assignment's posture (WO4 §1: "call `validate` for each seat with the
+   * assignment's posture"). Omitted means "let roster assume", which is what
+   * every caller before the preflight did and what `assumedWriteAccess` on the
+   * response reports; a read-only assignment removes the file-mutating tools
+   * outright, so the chip list is a different list and asking with the wrong
+   * posture would show gates the run will never raise.
+   */
+  write?: boolean,
 ): Promise<PermissionPreview> {
   const result = await client.request<ValidateResponse>(
     `/roster/agents/${encodeURIComponent(agentId)}/validate`,
-    { method: 'POST', body: { projectId } },
+    { method: 'POST', body: write === undefined ? { projectId } : { projectId, write } },
   );
 
   if (result.kind === 'ok') {
@@ -83,6 +114,7 @@ export async function fetchPermissionPreview(
       state: 'ready',
       effective: value.effective,
       diagnostics: value.diagnostics ?? [],
+      gateLiable: value.gateLiable ?? [],
     };
   }
 

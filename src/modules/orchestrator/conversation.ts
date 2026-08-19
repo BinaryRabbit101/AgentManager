@@ -52,6 +52,18 @@ export interface ConversationTurnEntry {
    * through to, so this is the only place the reason can be read at all.
    */
   readonly exitReason: string | null;
+  /**
+   * How many tool calls this turn had denied, and which (WO4 addendum §5).
+   *
+   * On the entry because the turn card is where the work is judged, and a
+   * drafter that reported success while its write was refused looks exactly
+   * like a drafter that succeeded. `permissionDeniedTools` is `null` on a row
+   * written before 0005 — the count is the fallback, and the two fields are
+   * separate so the UI can render "2 tool calls denied" without inventing names
+   * it was not given.
+   */
+  readonly permissionDenials: number;
+  readonly permissionDeniedTools: readonly string[] | null;
   /** Present when this turn re-ran a seat that produced no report (§3.3). */
   readonly retryOfTurnId: string | null;
   readonly turnId: string;
@@ -179,6 +191,8 @@ export function createConversationReader(
         startedAt: turn.startedAt,
         endedAt: turn.endedAt,
         exitReason: turn.exitReason,
+        permissionDenials: turn.permissionDenials,
+        permissionDeniedTools: turn.permissionDeniedTools,
         retryOfTurnId: turn.retryOfTurnId,
       });
     }

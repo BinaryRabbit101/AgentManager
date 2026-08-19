@@ -42,6 +42,7 @@ import {
   type CreateAssignmentRequest,
   type CreateSoloRequest,
   type ListAssignmentsQuery,
+  type PreGrant,
 } from './types.js';
 
 export interface AssignmentRoutesDeps {
@@ -124,6 +125,35 @@ function readScope(record: Record<string, unknown>): AssignmentScope | undefined
   };
 }
 
+/**
+ * §2.3's `preGrants` — a body-shape read, not a rule check.
+ *
+ * Whether the named agent actually holds a seat is §9-12's rule and lives in the
+ * validator, for the same reason `members[].role` is checked in both places: one
+ * answers "that is not a shape I recognise", the other "that is not allowed
+ * here", and collapsing them would give one code to two different mistakes.
+ */
+function readPreGrants(record: Record<string, unknown>): readonly PreGrant[] | undefined {
+  const raw = record['preGrants'];
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) {
+    throw new InvalidRequestError(
+      '"preGrants" must be an array of { agentId, tool }.',
+      'preGrants',
+    );
+  }
+  return raw.map((entry, index) => {
+    const grant = asRecord(entry);
+    if (grant === undefined) {
+      throw new InvalidRequestError(`preGrants[${String(index)}] must be an object.`, 'preGrants');
+    }
+    return {
+      agentId: requiredString(grant, 'agentId'),
+      tool: requiredString(grant, 'tool'),
+    };
+  });
+}
+
 function readMembers(record: Record<string, unknown>): readonly AssignmentMemberRequest[] {
   const raw = record['members'];
   if (!Array.isArray(raw)) {
@@ -167,6 +197,7 @@ function readCreateRequest(body: unknown): CreateAssignmentRequest {
   const tokenBudget = optionalNumberOrNull(record, 'tokenBudget');
   const roundCap = optionalNumberOrNull(record, 'roundCap');
   const workItemIds = optionalStringArray(record, 'workItemIds');
+  const preGrants = readPreGrants(record);
   const autoStart = optionalBoolean(record, 'autoStart');
 
   return {
@@ -179,6 +210,7 @@ function readCreateRequest(body: unknown): CreateAssignmentRequest {
     ...(tokenBudget === undefined ? {} : { tokenBudget }),
     ...(roundCap === undefined ? {} : { roundCap }),
     ...(workItemIds === undefined ? {} : { workItemIds }),
+    ...(preGrants === undefined ? {} : { preGrants }),
     ...(autoStart === undefined ? {} : { autoStart }),
     // `createdBy` and `parentAssignmentId` are deliberately **not** readable
     // from the body: an HTTP caller that could claim `overseer:<id>` would be
@@ -202,6 +234,7 @@ function readSoloRequest(body: unknown): CreateSoloRequest {
   const scope = readScope(record);
   const write = optionalBoolean(record, 'write');
   const workItemIds = optionalStringArray(record, 'workItemIds');
+  const preGrants = readPreGrants(record);
   const goal = optionalString(record, 'goal');
 
   return {
@@ -213,6 +246,7 @@ function readSoloRequest(body: unknown): CreateSoloRequest {
     ...(scope === undefined ? {} : { scope }),
     ...(write === undefined ? {} : { write }),
     ...(workItemIds === undefined ? {} : { workItemIds }),
+    ...(preGrants === undefined ? {} : { preGrants }),
     ...(goal === undefined ? {} : { goal }),
   };
 }

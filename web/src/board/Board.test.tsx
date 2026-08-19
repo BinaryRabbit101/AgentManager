@@ -209,7 +209,8 @@ describe('a roster diagnostic (§5.2, IMPLEMENTATION §2)', () => {
   });
 
   it('surfaces a failed roster read as the server’s message, not a blank grid', async () => {
-    mount(<App />, { route: BOARD_ROUTE,
+    mount(<App />, {
+      route: BOARD_ROUTE,
       respond: () =>
         json({ error: 'roster_unreadable', message: 'The roster folder is not readable.' }, 500),
     });
@@ -409,7 +410,8 @@ describe('the remote grant badge on the card (§13.2, remote §12.4)', () => {
   }
 
   it('shows the expiry, and repaints when a grant event arrives', async () => {
-    const mounted = mount(<App />, { route: BOARD_ROUTE,
+    const mounted = mount(<App />, {
+      route: BOARD_ROUTE,
       respond: withGrants([
         {
           agentId: 'priya',
