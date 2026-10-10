@@ -1,5 +1,9 @@
 # AgentManager
 
+> **Discontinued 2026-10-10.** This project is no longer developed or deployed.
+> [ControlPanel](https://github.com/BinaryRabbit101/ControlPanel) is the ops console for launching and managing Claude sessions;
+> this repository is kept as history only.
+
 A graphical manager for a roster of Claude agents. Agents are defined like people on a team — each with a persona, specialty (bug patching, feature implementation, email response, overseeing other agents), model, and tool permissions — and pointed at a project with a session prompt. AgentManager starts, stops, watches, and coordinates them, locally or remotely.
 
 Successor to the ControlPanel web app, with deeper per-project agent management and remote start/stop. Inspired by [munder-difflin](https://github.com/chaitanyagiri/munder-difflin), minus most of the animation.
