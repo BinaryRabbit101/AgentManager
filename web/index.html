@@ -6,6 +6,17 @@
     <meta name="color-scheme" content="light dark" />
     <title>AgentManager</title>
     <!--
+      Icons and manifest. The app shipped with none of this, so a phone that
+      added :93 to its home screen had nothing to draw and fell back to a
+      generated letter tile. The mark lives in public/icon.svg; the PNGs beside
+      it are rasterised from that one source, never hand-drawn separately.
+    -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Agents" />
+    <!--
       Theme before first paint (DESIGN §14.2: "applies with a data-theme
       attribute on the root, so there is no flash on load").
 

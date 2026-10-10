@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512" role="img" aria-label="AgentManager">
+  <title>AgentManager</title>
+  <!-- Three agents, three lanes of work — the thing the app actually shows.
+
+       AgentManager shipped with no icon of any kind: no apple-touch-icon, no
+       manifest, no favicon, so a phone that added :93 to its home screen fell
+       back to a generated letter tile.
+
+       Deliberately not three bare bars, which read as a hamburger menu at 48px.
+       The leading dot per row is what makes it a list of agents instead: an
+       actor, then the work it is doing.
+
+       Flat fills only, no gradients and no strokes, so it survives an Android
+       maskable crop. Colours are this app's own dark-theme tokens from
+       web/src/theme/tokens.css — surface #1b1a18, accent #e0a06a, text-muted
+       #a9a196, border-strong #6e6a64 — so the icon and the UI cannot drift
+       apart. The rows fade top to bottom: the top one is live, the ones under
+       it are queued. -->
+  <rect width="100" height="100" fill="#1b1a18" />
+
+  <!-- Row 1: running. Accent, and the longest bar. -->
+  <circle cx="26" cy="31" r="7" fill="#e0a06a" />
+  <rect x="39" y="25" width="39" height="12" rx="6" fill="#e0a06a" />
+
+  <!-- Row 2: queued. -->
+  <circle cx="26" cy="50" r="7" fill="#a9a196" />
+  <rect x="39" y="44" width="27" height="12" rx="6" fill="#a9a196" />
+
+  <!-- Row 3: queued, furthest out. -->
+  <circle cx="26" cy="69" r="7" fill="#6e6a64" />
+  <rect x="39" y="63" width="33" height="12" rx="6" fill="#6e6a64" />
+</svg>
